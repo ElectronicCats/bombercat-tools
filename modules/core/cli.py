@@ -146,8 +146,10 @@ def identify_cmd(port, device_id):
         print_error(f"identify failed: {r.message}")
         if "unknown command" in r.message:
             # Pre-0.7.0 firmware has no `identify`; the CLI is newer than the board.
-            print_info("this firmware predates `identify` — reflash "
-                       "firmware/NFCGate to use it.")
+            print_info(
+                "this firmware predates `identify` — reflash "
+                "firmware/NFCGate to use it."
+            )
         raise SystemExit(1)
     print_success(f"{target} is blinking its LED for a couple of seconds")
 

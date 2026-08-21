@@ -75,8 +75,10 @@ def make_serverdata(apdu, source):
 
 
 def decode(blob):
-    sd = c2s_pb2.ServerData(); sd.ParseFromString(blob)
-    nfc = c2c_pb2.NFCData(); nfc.ParseFromString(sd.data)
+    sd = c2s_pb2.ServerData()
+    sd.ParseFromString(blob)
+    nfc = c2c_pb2.NFCData()
+    nfc.ParseFromString(sd.data)
     return sd, nfc
 
 
@@ -103,10 +105,14 @@ def main():
     got = recv_frame(card)
     assert got == reader_blob, "card did not receive identical blob"
     sd, nfc = decode(got)
-    print("[OK] reader->card  opcode=%s source=%s apdu=%s" % (
-        c2s_pb2.ServerData.Opcode.Name(sd.opcode),
-        c2c_pb2.NFCData.DataSource.Name(nfc.data_source),
-        bytes(nfc.data).hex()))
+    print(
+        "[OK] reader->card  opcode=%s source=%s apdu=%s"
+        % (
+            c2s_pb2.ServerData.Opcode.Name(sd.opcode),
+            c2c_pb2.NFCData.DataSource.Name(nfc.data_source),
+            bytes(nfc.data).hex(),
+        )
+    )
     assert bytes(nfc.data) == ppse
 
     # card -> reader : FCI response
@@ -117,13 +123,18 @@ def main():
     got2 = recv_frame(reader)
     assert got2 == card_blob, "reader did not receive identical blob"
     sd2, nfc2 = decode(got2)
-    print("[OK] card->reader  opcode=%s source=%s apdu=%s" % (
-        c2s_pb2.ServerData.Opcode.Name(sd2.opcode),
-        c2c_pb2.NFCData.DataSource.Name(nfc2.data_source),
-        bytes(nfc2.data).hex()))
+    print(
+        "[OK] card->reader  opcode=%s source=%s apdu=%s"
+        % (
+            c2s_pb2.ServerData.Opcode.Name(sd2.opcode),
+            c2c_pb2.NFCData.DataSource.Name(nfc2.data_source),
+            bytes(nfc2.data).hex(),
+        )
+    )
     assert bytes(nfc2.data) == resp
 
-    reader.close(); card.close()
+    reader.close()
+    card.close()
     print("\nRELAY SMOKE TEST PASSED")
 
 
@@ -131,5 +142,7 @@ if __name__ == "__main__":
     try:
         main()
     except (ConnectionRefusedError, OSError) as e:
-        sys.exit("Could not reach server at %s:%d (%s). Start it with "
-                 "tools/testserver/run.sh" % (HOST, PORT, e))
+        sys.exit(
+            "Could not reach server at %s:%d (%s). Start it with "
+            "tools/testserver/run.sh" % (HOST, PORT, e)
+        )

@@ -119,8 +119,7 @@ def main() -> int:
     finally:
         link.close()
 
-    print("\nSERIALCTL PROTOCOL TEST",
-          "PASSED" if fails == 0 else f"FAILED ({fails})")
+    print("\nSERIALCTL PROTOCOL TEST", "PASSED" if fails == 0 else f"FAILED ({fails})")
     return 1 if fails else 0
 
 

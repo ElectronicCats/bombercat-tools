@@ -98,7 +98,9 @@ def check_server_sources(server_dir: Path, fetch_script: Path) -> None:
                 "Check that [bold]git[/bold] is installed and you have network access",
                 f"Re-run {fmt_command(fetch)} once the cause is fixed",
             ],
-            notes=[f"Using an existing clone instead: SERVER_REPO=/path/to/clone {fetch}"],
+            notes=[
+                f"Using an existing clone instead: SERVER_REPO=/path/to/clone {fetch}"
+            ],
         )
         sys.exit(1)
     print_success("nfcgate-server fetched.")
@@ -251,7 +253,9 @@ def _permission_fix() -> tuple[str, list[str], list[str]]:
     # unusual socket ownership, SELinux/AppArmor, or a stale DOCKER_HOST.
     notes = ["Inspect the socket with: ls -l /var/run/docker.sock"]
     if os.environ.get("DOCKER_HOST"):
-        notes.insert(0, f"DOCKER_HOST is set to {os.environ['DOCKER_HOST']} — is it correct?")
+        notes.insert(
+            0, f"DOCKER_HOST is set to {os.environ['DOCKER_HOST']} — is it correct?"
+        )
     return (
         "The docker group is already in effect for this shell, yet the daemon\n"
         "still refuses the connection. That usually means the socket has\n"
@@ -312,9 +316,13 @@ def check_docker() -> None:
 
     if "Cannot connect to the Docker daemon" in err or "daemon is not running" in err:
         if platform.system() == "Darwin":
-            start = ["Start [bold]Docker Desktop[/bold] and wait for it to report 'running'"]
+            start = [
+                "Start [bold]Docker Desktop[/bold] and wait for it to report 'running'"
+            ]
         elif platform.system() == "Windows":
-            start = ["Start [bold]Docker Desktop[/bold] and wait for it to report 'running'"]
+            start = [
+                "Start [bold]Docker Desktop[/bold] and wait for it to report 'running'"
+            ]
         else:
             start = [
                 f"{fmt_command('sudo systemctl start docker')}\n"
@@ -325,7 +333,8 @@ def check_docker() -> None:
             "The Docker daemon is not running.",
             "The docker command is installed, but nothing is listening on the\n"
             "other end of its socket.",
-            fix=start + [f"{fmt_command('bombercat testserver run')}\n     re-run this command"],
+            fix=start
+            + [f"{fmt_command('bombercat testserver run')}\n     re-run this command"],
             notes=[f"Daemon said: {err.splitlines()[0]}" if err else ""],
         )
         sys.exit(1)
@@ -360,7 +369,14 @@ def check_port(port: int, container_name: str) -> None:
     # A container we started and never cleaned up is the likeliest culprit, and
     # the only one we can name precisely.
     ours = subprocess.run(
-        ["docker", "ps", "--filter", f"name={container_name}", "--format", "{{.Names}}"],
+        [
+            "docker",
+            "ps",
+            "--filter",
+            f"name={container_name}",
+            "--format",
+            "{{.Names}}",
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         text=True,

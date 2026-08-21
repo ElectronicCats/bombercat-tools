@@ -46,10 +46,10 @@ index 205461a..bfc8269 100755
 +            pass  # e.g. non-TCP transport; nothing to tune
 +
          self.log("server", "connected")
- 
+
      def handle(self):
 @@ -65,7 +79,15 @@ class NFCGateClientHandler(socketserver.StreamRequestHandler):
- 
+
              msg_len, session = struct.unpack("!IB", msg_len_data)
              data = self.rfile.read(msg_len)
 -            self.log("server", "data:", bytes(data))
@@ -62,27 +62,27 @@ index 205461a..bfc8269 100755
 +            # default relay path never pays it; enable -v only to diagnose.
 +            if self.server.verbose:
 +                self.log("server", "data:", bytes(data))
- 
+
              # no data was sent or no session number supplied and none set yet
              if msg_len == 0 or session == 0 and self.session is None:
 @@ -90,10 +112,14 @@ class NFCGateClientHandler(socketserver.StreamRequestHandler):
- 
- 
+
+
  class NFCGateServer(socketserver.ThreadingTCPServer):
 -    def __init__(self, server_address, request_handler, plugins, tls_options=None, bind_and_activate=True):
 +    def __init__(self, server_address, request_handler, plugins, tls_options=None, bind_and_activate=True,
 +                 verbose=False):
          self.allow_reuse_address = True
          super().__init__(server_address, request_handler, bind_and_activate)
- 
+
 +        # Fase H: when False (default) the per-frame hot-path logs are skipped so a
 +        # relay run stays quiet and fast; -v turns them back on for diagnostics.
 +        self.verbose = verbose
          self.clients = {}
          self.plugins = PluginHandler(plugins)
- 
+
 @@ -146,15 +172,26 @@ class NFCGateServer(socketserver.ThreadingTCPServer):
- 
+
              with client.write_lock:
                  for msg in msgs:
 -                    client.wfile.write(int.to_bytes(len(msg), 4, byteorder='big'))
@@ -92,15 +92,15 @@ index 205461a..bfc8269 100755
 +                    # wfile the previous two writes produced two segments and, under
 +                    # Nagle, a ~40 ms delayed-ACK stall between them on every relay.
 +                    client.wfile.write(int.to_bytes(len(msg), 4, byteorder='big') + bytes(msg))
- 
+
 -        self.log("Publish reached", len(self.clients[session]) - 1, "clients")
 +        # Also a hot-path per-frame log (Fase H): the forward already happened above,
 +        # but this print still steals the thread (and the GIL) once per relayed frame.
 +        # Gated behind --verbose like the receive-side dump.
 +        if self.verbose:
 +            self.log("Publish reached", len(self.clients[session]) - 1, "clients")
- 
- 
+
+
  def parse_args():
      parser = argparse.ArgumentParser(prog="NFCGate server")
      parser.add_argument("plugins", type=str, nargs="*", help="List of plugin modules to load.")
@@ -117,14 +117,14 @@ index 205461a..bfc8269 100755
              sys.exit(1)
 -    return args.plugins, tls_options
 +    return args.plugins, tls_options, args.verbose
- 
- 
+
+
  def main():
 -    plugins, tls_options = parse_args()
 -    NFCGateServer((HOST, PORT), NFCGateClientHandler, plugins, tls_options).serve_forever()
 +    plugins, tls_options, verbose = parse_args()
 +    NFCGateServer((HOST, PORT), NFCGateClientHandler, plugins, tls_options,
 +                  verbose=verbose).serve_forever()
- 
- 
+
+
  if __name__ == "__main__":

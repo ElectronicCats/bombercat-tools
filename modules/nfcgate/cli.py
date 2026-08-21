@@ -25,9 +25,9 @@ from ..utils.output import (
 
 
 @contextmanager
-def _device_session(port: Optional[str],
-                    device_id: Optional[int] = None
-                    ) -> Iterator[Tuple[str, DeviceLink]]:
+def _device_session(
+    port: Optional[str], device_id: Optional[int] = None
+) -> Iterator[Tuple[str, DeviceLink]]:
     """Open a verified link, yield ``(target, link)``, and always close it.
 
     The board is picked by ``--port`` (raw path) or ``--device/-d`` (ID from
@@ -96,16 +96,20 @@ def _blink(link: DeviceLink, target: str) -> None:
         print_warning(f"could not blink {target}: {e}")
         return
     if r.ok:
-        print_info(f"{target} is blinking its LED — that's the board you just "
-                   "configured")
+        print_info(
+            f"{target} is blinking its LED — that's the board you just " "configured"
+        )
     elif "unknown command" in r.message:
-        print_warning("this firmware predates `identify` — reflash "
-                      "firmware/NFCGate to see which board was configured")
+        print_warning(
+            "this firmware predates `identify` — reflash "
+            "firmware/NFCGate to see which board was configured"
+        )
     else:
         print_warning(f"identify failed: {r.message}")
 
 
 # ── config group ──────────────────────────────────────────────────────────────
+
 
 @click.group("config", context_settings={"help_option_names": ["-h", "--help"]})
 def config():
@@ -114,9 +118,16 @@ def config():
 
 @config.command("wifi")
 @click.option("--ssid", required=True, help="WiFi network name.")
-@click.option("--password", "--pass", "password", default="",
-              help="WiFi passphrase (empty for an open network).")
-@click.option("--save/--no-save", default=True, help="Persist to flash (default: save).")
+@click.option(
+    "--password",
+    "--pass",
+    "password",
+    default="",
+    help="WiFi passphrase (empty for an open network).",
+)
+@click.option(
+    "--save/--no-save", default=True, help="Persist to flash (default: save)."
+)
 @target_options
 def config_wifi(ssid, password, save, port, device_id):
     """Set the WiFi credentials."""
@@ -126,13 +137,22 @@ def config_wifi(ssid, password, save, port, device_id):
 
 
 @config.command("nfcgate")
-@click.option("--server", required=True,
-              help="nfcgate-server as host or host:port.")
-@click.option("--session", type=click.IntRange(1, 255), required=True,
-              help="Session byte 1..255; both peers must match.")
-@click.option("--role", type=click.Choice(["reader", "card"]), required=True,
-              help="reader = read a physical card, card = emulate to a terminal.")
-@click.option("--save/--no-save", default=True, help="Persist to flash (default: save).")
+@click.option("--server", required=True, help="nfcgate-server as host or host:port.")
+@click.option(
+    "--session",
+    type=click.IntRange(1, 255),
+    required=True,
+    help="Session byte 1..255; both peers must match.",
+)
+@click.option(
+    "--role",
+    type=click.Choice(["reader", "card"]),
+    required=True,
+    help="reader = read a physical card, card = emulate to a terminal.",
+)
+@click.option(
+    "--save/--no-save", default=True, help="Persist to flash (default: save)."
+)
 @target_options
 def config_nfcgate(server, session, role, save, port, device_id):
     """Set the nfcgate-server, session and role."""
@@ -222,8 +242,10 @@ def run_cmd(port, device_id):
                 return
             if state == "error":
                 print_error(f"relay failed to start: {detail or 'bring-up error'}")
-                print_info("check WiFi credentials and the nfcgate-server host/port "
-                           "(bombercat config show)")
+                print_info(
+                    "check WiFi credentials and the nfcgate-server host/port "
+                    "(bombercat config show)"
+                )
                 raise SystemExit(1)
             time.sleep(_RUN_POLL_INTERVAL)
 
@@ -248,8 +270,11 @@ def stop_cmd(port, device_id):
     """Stop the relay."""
     with _device_session(port, device_id) as (target, link):
         r = link.stop()
-    print_success(f"relay stopped on {target}") if r.ok else \
-        print_error(f"stop failed: {r.message}")
+    (
+        print_success(f"relay stopped on {target}")
+        if r.ok
+        else print_error(f"stop failed: {r.message}")
+    )
 
 
 @click.command("status", context_settings={"help_option_names": ["-h", "--help"]})

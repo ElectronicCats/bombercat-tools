@@ -15,8 +15,10 @@ DLT_ISO_14443 = 264
 
 # Classic pcap headers.
 PCAP_MAGIC = 0xA1B2C3D4
-_GLOBAL_HEADER = "<LHHIILL"   # magic, ver_major, ver_minor, thiszone, sigfigs, snaplen, network
-_PACKET_HEADER = "<LLLL"      # ts_sec, ts_usec, incl_len, orig_len
+_GLOBAL_HEADER = (
+    "<LHHIILL"  # magic, ver_major, ver_minor, thiszone, sigfigs, snaplen, network
+)
+_PACKET_HEADER = "<LLLL"  # ts_sec, ts_usec, incl_len, orig_len
 SNAPLEN = 0xFFFF
 
 # ISO 14443 pcap pseudo-header: version(1) + event(1) + len(2, big-endian) + data.
@@ -37,9 +39,7 @@ _IBLOCK_BASE = 0x02
 
 def global_header(dlt: int = DLT_ISO_14443) -> bytes:
     """The one-time pcap file/stream header. Write it once before any packet."""
-    return struct.pack(
-        _GLOBAL_HEADER, PCAP_MAGIC, 2, 4, 0, 0, SNAPLEN, dlt
-    )
+    return struct.pack(_GLOBAL_HEADER, PCAP_MAGIC, 2, 4, 0, 0, SNAPLEN, dlt)
 
 
 def iso14443_payload(is_command: bool, apdu: bytes, block_no: int = 0) -> bytes:

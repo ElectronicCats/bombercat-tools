@@ -72,8 +72,9 @@ def _new_pipe():
     return WindowsPipe() if platform.system() == "Windows" else UnixPipe()
 
 
-def _watch_wireshark(ws: Wireshark, sink: "_CaptureSink",
-                     stop_event: threading.Event) -> None:
+def _watch_wireshark(
+    ws: Wireshark, sink: "_CaptureSink", stop_event: threading.Event
+) -> None:
     """Notice when the user quits Wireshark and react without waiting for APDUs.
 
     The FIFO write end only breaks on the *next* write, so a capture that is
@@ -97,14 +98,20 @@ def _watch_wireshark(ws: Wireshark, sink: "_CaptureSink",
 
 # ── capture group ─────────────────────────────────────────────────────────────
 
+
 @click.group("capture", context_settings={"help_option_names": ["-h", "--help"]})
 def capture():
     """Capture relayed APDUs to pcap (live Wireshark and/or a file)."""
 
 
 @capture.command("start")
-@click.option("-o", "--output", "output", type=click.Path(dir_okay=False),
-              default=None, help="Also write a .pcap file (opens in Wireshark)."
+@click.option(
+    "-o",
+    "--output",
+    "output",
+    type=click.Path(dir_okay=False),
+    default=None,
+    help="Also write a .pcap file (opens in Wireshark).",
 )
 @click.option(
     "--wireshark/--no-wireshark",
@@ -113,8 +120,9 @@ def capture():
     default=False,
     help="Launch Wireshark on a live FIFO (opt-in, like catnip's -ws).",
 )
-@click.option("--profile", default=None,
-              help="Wireshark configuration profile to launch with.")
+@click.option(
+    "--profile", default=None, help="Wireshark configuration profile to launch with."
+)
 @target_options
 def capture_start(output, wireshark, profile, port, device_id):
     """Arm the tap and stream APDUs to Wireshark and/or a file until Ctrl-C.
@@ -145,7 +153,8 @@ def capture_start(output, wireshark, profile, port, device_id):
         else:
             print_error(
                 "Wireshark not found. Install it, or use -o FILE to capture "
-                "to a file.")
+                "to a file."
+            )
             raise SystemExit(1)
 
     with _device_session(port, device_id) as (target, link):
@@ -154,8 +163,10 @@ def capture_start(output, wireshark, profile, port, device_id):
         if not r.ok:
             print_error(f"could not arm capture: {r.message}")
             if "unknown command" in r.message:
-                print_info("this firmware predates `capture` — reflash "
-                           "firmware/NFCGate (>= v0.8.0) to use it.")
+                print_info(
+                    "this firmware predates `capture` — reflash "
+                    "firmware/NFCGate (>= v0.8.0) to use it."
+                )
             raise SystemExit(1)
 
         pipe = None
@@ -257,6 +268,7 @@ def _pump(link: DeviceLink, sink: _CaptureSink) -> None:
 
 
 # ── capture stop (disarm a board left armed) ──────────────────────────────────
+
 
 @capture.command("stop")
 @target_options

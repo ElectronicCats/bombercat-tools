@@ -14,12 +14,22 @@
 import click
 
 PORT_OPTION = click.option(
-    "-p", "--port", default=None, metavar="PATH",
-    help="Serial port (auto-detected if omitted).")
+    "-p",
+    "--port",
+    default=None,
+    metavar="PATH",
+    help="Serial port (auto-detected if omitted).",
+)
 
 DEVICE_OPTION = click.option(
-    "-d", "--device", "device_id", default=None, type=int, metavar="ID",
-    help="Device ID from `bombercat device list` (for multiple BomberCats).")
+    "-d",
+    "--device",
+    "device_id",
+    default=None,
+    type=int,
+    metavar="ID",
+    help="Device ID from `bombercat device list` (for multiple BomberCats).",
+)
 
 
 def target_options(func):

@@ -27,6 +27,7 @@ from .usb_connection import (
 @dataclass
 class Response:
     """One command's reply. `data` holds the `:key value` lines by key."""
+
     ok: bool
     message: str = ""
     data: Dict[str, str] = field(default_factory=dict)
@@ -46,9 +47,12 @@ class DeviceLink:
     without a `:`/`+`/`-` marker is device log noise and is ignored.
     """
 
-    def __init__(self, port: str,
-                 baudrate: int = DEFAULT_BAUDRATE,
-                 timeout: float = DEFAULT_TIMEOUT):
+    def __init__(
+        self,
+        port: str,
+        baudrate: int = DEFAULT_BAUDRATE,
+        timeout: float = DEFAULT_TIMEOUT,
+    ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
@@ -90,7 +94,8 @@ class DeviceLink:
             # endpoint (wedged firmware / wrong sketch). See usb_connection.py.
             raise DeviceError(
                 f"device did not accept {line!r} (write timed out); it may be "
-                "wedged or not running the relay firmware")
+                "wedged or not running the relay firmware"
+            )
         except serial.SerialException as e:
             raise DeviceError(f"serial error sending {line!r}: {e}")
 
@@ -171,8 +176,10 @@ class DeviceLink:
 
 # ── Discovery helpers ─────────────────────────────────────────────────────────
 
-def discover_devices(baudrate: int = DEFAULT_BAUDRATE,
-                     timeout: float = 1.0) -> List[BomberCatDevice]:
+
+def discover_devices(
+    baudrate: int = DEFAULT_BAUDRATE, timeout: float = 1.0
+) -> List[BomberCatDevice]:
     """Return the numbered BomberCats that answer the handshake.
 
     Candidates and their IDs come from find_devices(): when any port is
@@ -194,9 +201,11 @@ def discover_devices(baudrate: int = DEFAULT_BAUDRATE,
     return found
 
 
-def resolve_port(preferred: Optional[str] = None,
-                 device_id: Optional[int] = None,
-                 baudrate: int = DEFAULT_BAUDRATE) -> str:
+def resolve_port(
+    preferred: Optional[str] = None,
+    device_id: Optional[int] = None,
+    baudrate: int = DEFAULT_BAUDRATE,
+) -> str:
     """
     Pick the port to talk to:
 
@@ -207,8 +216,9 @@ def resolve_port(preferred: Optional[str] = None,
         zero or many -> DeviceError telling the user to pass -d/--port.
     """
     if preferred and device_id is not None:
-        raise DeviceError("--port and --device are mutually exclusive; "
-                          "pass one or the other")
+        raise DeviceError(
+            "--port and --device are mutually exclusive; " "pass one or the other"
+        )
     if preferred:
         return preferred
 
@@ -220,10 +230,12 @@ def resolve_port(preferred: Optional[str] = None,
         if known:
             raise DeviceError(
                 f"no BomberCat with ID {device_id}; attached: "
-                f"{describe_devices(known)} (see `bombercat device list`)")
+                f"{describe_devices(known)} (see `bombercat device list`)"
+            )
         raise DeviceError(
             f"no BomberCat with ID {device_id}: none is attached "
-            "(see `bombercat device list`)")
+            "(see `bombercat device list`)"
+        )
 
     devices = discover_devices(baudrate)
     if len(devices) == 1:
@@ -231,7 +243,8 @@ def resolve_port(preferred: Optional[str] = None,
     if len(devices) > 1:
         raise DeviceError(
             f"multiple BomberCats found ({describe_devices(devices)}); "
-            "pass --device/-d <id> (or --port)")
+            "pass --device/-d <id> (or --port)"
+        )
 
     # None answered. If USB still shows a BomberCat by VID/PID, the board is
     # there but its firmware isn't serving the control REPL — point the user at
@@ -242,11 +255,12 @@ def resolve_port(preferred: Optional[str] = None,
         raise DeviceError(
             f"a BomberCat is connected at {p.device} (USB {p.hwid}) but it did "
             "not answer the handshake — is it running the NFCGate relay "
-            "firmware?")
+            "firmware?"
+        )
     if len(tagged) > 1:
         raise DeviceError(
             f"BomberCats detected by USB id ({describe_devices()}) but none "
             "answered the handshake; pass --device/-d <id> and check the "
-            "firmware")
-    raise DeviceError(
-        "no BomberCat found; pass --port (e.g. --port /dev/ttyACM0)")
+            "firmware"
+        )
+    raise DeviceError("no BomberCat found; pass --port (e.g. --port /dev/ttyACM0)")

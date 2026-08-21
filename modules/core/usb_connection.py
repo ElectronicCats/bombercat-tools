@@ -58,9 +58,9 @@ BOMBERCAT_USB_IDS: Set[Tuple[int, int]] = {
 
 # ── Serial defaults ───────────────────────────────────────────────────────────
 DEFAULT_BAUDRATE = 115200
-DEFAULT_TIMEOUT = 2.0        # seconds, per readline
+DEFAULT_TIMEOUT = 2.0  # seconds, per readline
 DEFAULT_WRITE_TIMEOUT = 2.0  # seconds; bound writes so a firmware that stops
-                             # draining its USB-OUT endpoint can't hang us forever
+# draining its USB-OUT endpoint can't hang us forever
 
 # Ports that are almost never a BomberCat; skipped by default when listing.
 _NOISE_HINTS = ("ttyS", "Bluetooth", "debug-console")
@@ -68,19 +68,18 @@ _NOISE_HINTS = ("ttyS", "Bluetooth", "debug-console")
 
 @dataclass
 class PortInfo:
-    device: str          # e.g. /dev/ttyACM0
-    description: str      # human label from the OS
-    hwid: str            # VID:PID / serial, when known
+    device: str  # e.g. /dev/ttyACM0
+    description: str  # human label from the OS
+    hwid: str  # VID:PID / serial, when known
     vid: Optional[int] = None  # USB vendor id, when the OS reports one
     pid: Optional[int] = None  # USB product id, when the OS reports one
     serial_number: Optional[str] = None  # USB iSerial, when the OS reports one
-    location: Optional[str] = None       # USB topology "bus-hub.port:cfg.intf"
+    location: Optional[str] = None  # USB topology "bus-hub.port:cfg.intf"
 
     @property
     def is_candidate(self) -> bool:
         """Rough filter: hide obvious non-USB-CDC ports (built-in UARTs, BT)."""
-        return not any(h in self.device or h in self.description
-                       for h in _NOISE_HINTS)
+        return not any(h in self.device or h in self.description for h in _NOISE_HINTS)
 
     @property
     def matches_bombercat(self) -> bool:
@@ -91,13 +90,15 @@ class PortInfo:
 def list_ports_info(include_all: bool = False) -> List[PortInfo]:
     """Enumerate serial ports. By default hides obvious non-candidate ports."""
     ports = [
-        PortInfo(device=p.device,
-                 description=p.description or "",
-                 hwid=p.hwid or "",
-                 vid=p.vid,
-                 pid=p.pid,
-                 serial_number=p.serial_number,
-                 location=p.location)
+        PortInfo(
+            device=p.device,
+            description=p.description or "",
+            hwid=p.hwid or "",
+            vid=p.vid,
+            pid=p.pid,
+            serial_number=p.serial_number,
+            location=p.location,
+        )
         for p in list_ports.comports()
     ]
     # BomberCat-tagged ports first (stable within each group by device name), so
@@ -129,14 +130,14 @@ def bombercat_ports() -> List[PortInfo]:
 class BomberCatDevice:
     """One physical BomberCat, addressable by `--device/-d <id>`."""
 
-    device_id: int                       # 1-based, stable while the set of
-                                         # attached boards doesn't change
-    port: str                            # serial port path (/dev/ttyACM0, COM3)
+    device_id: int  # 1-based, stable while the set of
+    # attached boards doesn't change
+    port: str  # serial port path (/dev/ttyACM0, COM3)
     serial_number: Optional[str] = None  # USB iSerial — the identity we sort on
     description: str = ""
     hwid: str = ""
-    usb_tagged: bool = True              # False = matched only as a fallback,
-                                         # its USB VID/PID isn't a BomberCat's
+    usb_tagged: bool = True  # False = matched only as a fallback,
+    # its USB VID/PID isn't a BomberCat's
 
     @property
     def identity(self) -> str:
@@ -147,8 +148,10 @@ class BomberCatDevice:
         return f"BomberCat #{self.device_id}"
 
     def __repr__(self) -> str:
-        return (f"BomberCatDevice(id={self.device_id}, port={self.port!r}, "
-                f"serial={self.serial_number!r})")
+        return (
+            f"BomberCatDevice(id={self.device_id}, port={self.port!r}, "
+            f"serial={self.serial_number!r})"
+        )
 
 
 def _identity_key(port: PortInfo) -> Tuple[int, str]:
@@ -166,8 +169,7 @@ def _identity_key(port: PortInfo) -> Tuple[int, str]:
     return (2, port.device)
 
 
-def find_devices(ports: Optional[Sequence[PortInfo]] = None
-                 ) -> List[BomberCatDevice]:
+def find_devices(ports: Optional[Sequence[PortInfo]] = None) -> List[BomberCatDevice]:
     """Enumerate attached BomberCats and number them 1..N (no handshake).
 
     Numbering is USB-only — cheap, and it doesn't open any port (opening one can
@@ -180,12 +182,14 @@ def find_devices(ports: Optional[Sequence[PortInfo]] = None
     tagged = [p for p in all_ports if p.matches_bombercat]
     pool = tagged or all_ports
     return [
-        BomberCatDevice(device_id=i,
-                        port=p.device,
-                        serial_number=p.serial_number,
-                        description=p.description,
-                        hwid=p.hwid,
-                        usb_tagged=p.matches_bombercat)
+        BomberCatDevice(
+            device_id=i,
+            port=p.device,
+            serial_number=p.serial_number,
+            description=p.description,
+            hwid=p.hwid,
+            usb_tagged=p.matches_bombercat,
+        )
         for i, p in enumerate(sorted(pool, key=_identity_key), start=1)
     ]
 
@@ -206,15 +210,18 @@ def describe_devices(devices: Optional[Sequence[BomberCatDevice]] = None) -> str
     return ", ".join(f"#{d.device_id} {d.port}" for d in devices)
 
 
-def open_serial(port: str,
-                baudrate: int = DEFAULT_BAUDRATE,
-                timeout: float = DEFAULT_TIMEOUT,
-                write_timeout: float = DEFAULT_WRITE_TIMEOUT) -> serial.Serial:
+def open_serial(
+    port: str,
+    baudrate: int = DEFAULT_BAUDRATE,
+    timeout: float = DEFAULT_TIMEOUT,
+    write_timeout: float = DEFAULT_WRITE_TIMEOUT,
+) -> serial.Serial:
     """Open a serial port for the control protocol. Raises serial.SerialException.
 
     ``write_timeout`` bounds blocking writes so a wedged firmware (one that stops
     servicing its USB-OUT endpoint) surfaces as a clean error instead of hanging
     the CLI indefinitely.
     """
-    return serial.Serial(port=port, baudrate=baudrate, timeout=timeout,
-                         write_timeout=write_timeout)
+    return serial.Serial(
+        port=port, baudrate=baudrate, timeout=timeout, write_timeout=write_timeout
+    )

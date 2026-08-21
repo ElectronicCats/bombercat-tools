@@ -26,8 +26,13 @@ def device():
 
 
 @device.command("list")
-@click.option("-a", "--all", "show_all", is_flag=True,
-              help="Include non-candidate ports (built-in UARTs, Bluetooth).")
+@click.option(
+    "-a",
+    "--all",
+    "show_all",
+    is_flag=True,
+    help="Include non-candidate ports (built-in UARTs, Bluetooth).",
+)
 def list_cmd(show_all):
     """List serial ports, the device ID of each BomberCat and who answers."""
     ports = list_ports_info(include_all=show_all)
@@ -57,25 +62,37 @@ def list_cmd(show_all):
             usb_only = True
         else:
             mark = ""
-        table.add_row(f"#{dev_id}" if dev_id else "",
-                      p.device, mark,
-                      p.serial_number or "", p.hwid)
+        table.add_row(
+            f"#{dev_id}" if dev_id else "",
+            p.device,
+            mark,
+            p.serial_number or "",
+            p.hwid,
+        )
     console.print(table)
 
     if devices:
-        print_info("Target one with:  bombercat <command> -d <ID>   "
-                   "(e.g. bombercat config show -d 1)")
+        print_info(
+            "Target one with:  bombercat <command> -d <ID>   "
+            "(e.g. bombercat config show -d 1)"
+        )
     if untagged:
-        print_warning("No port carries a BomberCat USB id, so every candidate "
-                      "port was numbered — check the IDs above before using -d.")
+        print_warning(
+            "No port carries a BomberCat USB id, so every candidate "
+            "port was numbered — check the IDs above before using -d."
+        )
 
     if not responders and usb_only:
-        print_info("A BomberCat is present by USB id but did not answer the "
-                   "handshake — it may not be running the NFCGate relay "
-                   "firmware.")
+        print_info(
+            "A BomberCat is present by USB id but did not answer the "
+            "handshake — it may not be running the NFCGate relay "
+            "firmware."
+        )
     elif not responders:
-        print_info("No BomberCat answered the handshake. Is one connected and "
-                   "flashed with the NFCGate firmware?")
+        print_info(
+            "No BomberCat answered the handshake. Is one connected and "
+            "flashed with the NFCGate firmware?"
+        )
 
 
 @device.command("info")

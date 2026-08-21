@@ -205,28 +205,55 @@ class Reporter:
 
     def start(self, host, port, session, rounds):
         if self.as_json:
-            self._emit(event="start", host=host, port=port,
-                       session=session, rounds=rounds)
+            self._emit(
+                event="start", host=host, port=port, session=session, rounds=rounds
+            )
         else:
-            print("Verifying %s:%d (session 0x%02X, %d rounds)\n"
-                  % (host, port, session, rounds))
+            print(
+                "Verifying %s:%d (session 0x%02X, %d rounds)\n"
+                % (host, port, session, rounds)
+            )
 
     def round(self, i, rounds, first_len, whole, gap_ms, total_ms):
         if self.as_json:
-            self._emit(event="round", i=i, rounds=rounds, first_len=first_len,
-                       whole=whole, gap_ms=gap_ms, total_ms=total_ms)
+            self._emit(
+                event="round",
+                i=i,
+                rounds=rounds,
+                first_len=first_len,
+                whole=whole,
+                gap_ms=gap_ms,
+                total_ms=total_ms,
+            )
         else:
-            print("  round %d/%d  first recv: %-3d B (%s)  gap after header: %6.2f ms"
-                  " | relay total: %6.2f ms"
-                  % (i, rounds, first_len,
-                     "whole frame" if whole else "HEADER ONLY", gap_ms, total_ms))
+            print(
+                "  round %d/%d  first recv: %-3d B (%s)  gap after header: %6.2f ms"
+                " | relay total: %6.2f ms"
+                % (
+                    i,
+                    rounds,
+                    first_len,
+                    "whole frame" if whole else "HEADER ONLY",
+                    gap_ms,
+                    total_ms,
+                )
+            )
 
-    def result(self, verdict, headline, split, rounds, median_gap, median_total,
-               notes, fix):
+    def result(
+        self, verdict, headline, split, rounds, median_gap, median_total, notes, fix
+    ):
         if self.as_json:
-            self._emit(event="result", verdict=verdict, headline=headline,
-                       split=split, rounds=rounds, median_gap_ms=median_gap,
-                       median_total_ms=median_total, notes=notes, fix=fix)
+            self._emit(
+                event="result",
+                verdict=verdict,
+                headline=headline,
+                split=split,
+                rounds=rounds,
+                median_gap_ms=median_gap,
+                median_total_ms=median_total,
+                notes=notes,
+                fix=fix,
+            )
             return
         print("\n  frames split across segments : %d / %d" % (split, rounds))
         print("  median gap after header      : %.2f ms" % median_gap)
@@ -246,8 +273,7 @@ class Reporter:
             return
         print("\nERROR: %s" % message, file=sys.stderr)
         for i, step in enumerate(fix or [], 1):
-            print(self._wrap(step, indent="     ", first="  %d. " % i),
-                  file=sys.stderr)
+            print(self._wrap(step, indent="     ", first="  %d. " % i), file=sys.stderr)
 
 
 def run(args, rep):
@@ -304,10 +330,19 @@ def run(args, rep):
     # server just because you tested it from the same machine.
     if split > args.rounds // 2:
         notes = [SPLIT_WHY]
-        notes.append(STALL_VISIBLE % median_gap if median_gap > STALL_MS
-                     else STALL_HIDDEN)
-        rep.result("missing", "PATCH MISSING (or an old build is still running)",
-                   split, args.rounds, median_gap, median_total, notes, SPLIT_FIX)
+        notes.append(
+            STALL_VISIBLE % median_gap if median_gap > STALL_MS else STALL_HIDDEN
+        )
+        rep.result(
+            "missing",
+            "PATCH MISSING (or an old build is still running)",
+            split,
+            args.rounds,
+            median_gap,
+            median_total,
+            notes,
+            SPLIT_FIX,
+        )
         return 1
 
     notes = [PATCH_OK]
@@ -315,8 +350,16 @@ def run(args, rep):
         notes.append(ODD_NOTE % median_gap)
     if median_total > SLOW_RTT_MS:
         notes.append(SLOW_NOTE % median_total)
-    rep.result("active", "PATCH ACTIVE", split, args.rounds,
-               median_gap, median_total, notes, [])
+    rep.result(
+        "active",
+        "PATCH ACTIVE",
+        split,
+        args.rounds,
+        median_gap,
+        median_total,
+        notes,
+        [],
+    )
     return 0
 
 
@@ -326,10 +369,18 @@ def main():
     )
     ap.add_argument("host", nargs="?", default="127.0.0.1")
     ap.add_argument("port", nargs="?", default=5566, type=int)
-    ap.add_argument("-n", "--rounds", default=8, type=int,
-                    help="relayed frames to measure (default: 8)")
-    ap.add_argument("--json", action="store_true",
-                    help="emit one JSON object per line instead of a text report")
+    ap.add_argument(
+        "-n",
+        "--rounds",
+        default=8,
+        type=int,
+        help="relayed frames to measure (default: 8)",
+    )
+    ap.add_argument(
+        "--json",
+        action="store_true",
+        help="emit one JSON object per line instead of a text report",
+    )
     args = ap.parse_args()
 
     rep = Reporter(args.json)
@@ -341,8 +392,9 @@ def main():
     except (ConnectionRefusedError, socket.timeout, OSError) as e:
         rep.error(
             "Could not reach the server at %s:%d (%s)." % (args.host, args.port, e),
-            fix=[step % args.port if "%d" in step else step
-                 for step in UNREACHABLE_FIX],
+            fix=[
+                step % args.port if "%d" in step else step for step in UNREACHABLE_FIX
+            ],
         )
         return 2
 

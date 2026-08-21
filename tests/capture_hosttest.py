@@ -90,11 +90,26 @@ def main() -> int:
             return 0
 
         # Dissect and check: one row per frame, all ISO 14443, correct direction.
-        out = subprocess.run(
-            [tshark, "-r", str(pcap), "-T", "fields",
-             "-e", "frame.protocols", "-e", "iso14443.event"],
-            capture_output=True, text=True, check=True,
-        ).stdout.strip().splitlines()
+        out = (
+            subprocess.run(
+                [
+                    tshark,
+                    "-r",
+                    str(pcap),
+                    "-T",
+                    "fields",
+                    "-e",
+                    "frame.protocols",
+                    "-e",
+                    "iso14443.event",
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            .stdout.strip()
+            .splitlines()
+        )
         assert len(out) == n, f"tshark saw {len(out)} frames, expected {n}"
 
         want_events = expected_events()
@@ -106,12 +121,16 @@ def main() -> int:
         # No packet may be flagged malformed.
         malformed = subprocess.run(
             [tshark, "-r", str(pcap), "-Y", "_ws.malformed"],
-            capture_output=True, text=True, check=True,
+            capture_output=True,
+            text=True,
+            check=True,
         ).stdout.strip()
         assert not malformed, f"tshark flagged malformed frames:\n{malformed}"
 
-        print(f"[*] tshark dissected all {n} frames as ISO 14443, directions OK, "
-              "none malformed")
+        print(
+            f"[*] tshark dissected all {n} frames as ISO 14443, directions OK, "
+            "none malformed"
+        )
         print("CAPTURE HOST TEST PASSED")
         return 0
 

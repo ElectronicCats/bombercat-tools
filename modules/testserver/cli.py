@@ -82,9 +82,7 @@ def _smoketest_python() -> str:
 
     print_info(f"Bootstrapping protobuf runtime in {SMOKE_VENV} (one time) …")
     try:
-        subprocess.run(
-            [sys.executable, "-m", "venv", str(SMOKE_VENV)], check=True
-        )
+        subprocess.run([sys.executable, "-m", "venv", str(SMOKE_VENV)], check=True)
         subprocess.run(
             [str(venv_python), "-m", "pip", "install", "-q", "-r", str(SMOKE_REQS)],
             check=True,
@@ -155,8 +153,9 @@ def run(port):
 @testserver.command("verify")
 @click.argument("host", default="127.0.0.1")
 @click.argument("port", default=5566, type=int)
-@click.option("-n", "--rounds", default=8, show_default=True,
-              help="Relayed frames to measure.")
+@click.option(
+    "-n", "--rounds", default=8, show_default=True, help="Relayed frames to measure."
+)
 def verify(host, port, rounds):
     """Check that a RUNNING server carries the relay latency patch.
 
@@ -220,8 +219,9 @@ def _render_verify(python, host, port, rounds) -> int:
             kind = event.get("event")
             if kind == "start":
                 progress.update(task, total=event["rounds"])
-                print_dim("session 0x%02X · %d rounds"
-                          % (event["session"], event["rounds"]))
+                print_dim(
+                    "session 0x%02X · %d rounds" % (event["session"], event["rounds"])
+                )
             elif kind == "round":
                 _add_round(table, event)
                 progress.update(
@@ -257,8 +257,9 @@ def _render_verify(python, host, port, rounds) -> int:
 
 def _rounds_table() -> Table:
     """One row per relayed frame: how it arrived, and what that cost."""
-    table = Table(box=box.SIMPLE_HEAD, header_style="cyan bold",
-                  pad_edge=False, padding=(0, 2))
+    table = Table(
+        box=box.SIMPLE_HEAD, header_style="cyan bold", pad_edge=False, padding=(0, 2)
+    )
     table.add_column("#", justify="right", style="dim")
     table.add_column("First recv", justify="right")
     table.add_column("Frame arrived")
@@ -296,8 +297,10 @@ def _summary_grid(result) -> Table:
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="dim")
     grid.add_column(justify="right")
-    grid.add_row("  frames split across segments",
-                 f"[{split_style}]{split} / {rounds}[/{split_style}]")
+    grid.add_row(
+        "  frames split across segments",
+        f"[{split_style}]{split} / {rounds}[/{split_style}]",
+    )
     grid.add_row("  median gap after header", "%.2f ms" % result["median_gap_ms"])
     grid.add_row("  median relay round trip", "%.2f ms" % result["median_total_ms"])
     return grid

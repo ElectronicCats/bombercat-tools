@@ -98,11 +98,25 @@ See [`testserver/README.md`](testserver/README.md) for the local server fixture.
 
 ## Tests (dev-only, no hardware)
 
+Unit tests — the CLI surface (every command, its output and its exit code) with
+the serial, Docker and Wireshark layers faked, so they run anywhere:
+
+```sh
+pytest                          # the whole suite (tools/tests/test_*.py)
+pytest -k capture               # one area
+pytest --cov=modules            # with coverage
+```
+
+End-to-end host tests — standalone scripts that exercise the real protocol
+against a fake device or a live server:
+
 ```sh
 python3 tools/tests/serialctl_hosttest.py         # DeviceLink protocol parser (pty)
 python3 tools/tests/capture_hosttest.py           # pcap writer + ISO 14443 vs tshark
 tools/testserver/codec_hosttest/build_and_run.sh  # firmware codec vs live server
 ```
+
+Both suites run on every push — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
 
 ## Current limitations
 
@@ -123,6 +137,7 @@ POSIX-only APIs, so support thins out elsewhere:
 | `completion install` | bash/zsh/fish | bash/zsh/fish | not offered |
 | `proto gen` | tested | should work | needs `bash` (WSL / Git Bash) |
 | `testserver run` | tested | needs Docker Desktop | needs `bash` + Docker |
+| `tools/tests/` unit tests (`pytest`) | tested | should work | FIFO/`pywin32` tests skip themselves |
 | `tools/tests/` host tests | tested | should work | `serialctl_hosttest.py` needs `os.openpty()` |
 | `testserver/codec_hosttest` | tested | needs `g++` | needs `bash` + `g++` |
 

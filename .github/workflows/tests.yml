@@ -9,6 +9,7 @@ on:
       - "tests/**"
       - "bombercat.py"
       - "requirements.txt"
+      - "pytest.ini"
       - ".github/workflows/tests.yml"
   pull_request:
     paths:
@@ -16,6 +17,7 @@ on:
       - "tests/**"
       - "bombercat.py"
       - "requirements.txt"
+      - "pytest.ini"
       - ".github/workflows/tests.yml"
   workflow_dispatch:
 
@@ -69,7 +71,13 @@ jobs:
       - name: Smoke test the CLI
         run: python bombercat.py --help
 
-      # ── 6. Run host tests ────────────────────────────────────────────────
+      # ── 6. Unit tests ────────────────────────────────────────────────────
+      # tests/test_*.py: the CLI surface driven through Click's CliRunner with
+      # the serial/Docker/Wireshark layers faked. No hardware, no network.
+      - name: Run unit tests
+        run: coverage run -p --source=modules -m pytest -q
+
+      # ── 7. Run host tests ────────────────────────────────────────────────
       # These are standalone scripts (main() -> exit code), not pytest cases,
       # so each is run directly under coverage and the results are combined.
       - name: Run host tests
@@ -88,7 +96,7 @@ jobs:
           done
           exit $rc
 
-      # ── 7. Coverage report ───────────────────────────────────────────────
+      # ── 8. Coverage report ───────────────────────────────────────────────
       - name: Build coverage report
         if: always()
         run: |
@@ -96,7 +104,7 @@ jobs:
           coverage report -m
           coverage xml
 
-      # ── 8. Upload coverage to Codecov ────────────────────────────────────
+      # ── 9. Upload coverage to Codecov ────────────────────────────────────
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.12'

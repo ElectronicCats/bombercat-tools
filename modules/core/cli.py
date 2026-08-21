@@ -23,6 +23,7 @@ from ..nfcgate.cli import (
     stop_cmd as _stop,
 )
 from ..capture.cli import capture as _capture
+from ..firmware.cli import flash as _flash
 from ..proto.cli import proto as _proto
 from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
@@ -396,6 +397,7 @@ def main_cli() -> None:
     cli.add_command(_status)
     cli.add_command(_monitor)
     cli.add_command(_capture)
+    cli.add_command(_flash)
 
     # Dev tooling under tools/
     cli.add_command(_proto)

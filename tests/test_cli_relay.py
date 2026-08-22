@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_cli_nfcgate.py — `bombercat config|run|stop|status|monitor`
-# (modules/nfcgate/cli.py). Every command is driven through Click's CliRunner
-# with the link replaced by a FakeLink, so what is checked is the CLI's own
-# behaviour: which commands it sends the board, what it prints, and the exit
-# code it leaves behind. docs/NFCGATE_PLAN.md Fase 6.
+# test_cli_relay.py — `bombercat relay config|run|stop|status|monitor`
+# (modules/nfcgate/cli.py, exposed as the `relay` group). Every command is
+# driven through Click's CliRunner with the link replaced by a FakeLink, so what
+# is checked is the CLI's own behaviour: which commands it sends the board, what
+# it prints, and the exit code it leaves behind.
+# docs/NFCGATE_PLAN.md Fase 6, docs/GENERALIZE_CLI_PLAN.md §2.3.
 
 import pytest
 import serial
@@ -15,6 +16,7 @@ from modules.nfcgate import cli as nfc
 from modules.nfcgate.cli import (
     config,
     monitor_cmd,
+    relay,
     run_cmd,
     status_cmd,
     stop_cmd,
@@ -402,3 +404,45 @@ def test_monitor_works_on_firmware_without_loglevel(runner, use_link):
 
     assert result.exit_code == 0
     assert "alive" in flat(result.output)
+
+
+# ── relay group wiring ───────────────────────────────────────────────────────
+# The commands above are also reachable through the `relay` group; these prove
+# the subcommands are wired and run their real logic when invoked that way.
+
+
+def test_relay_group_exposes_every_subcommand():
+    assert set(relay.commands) == {"config", "run", "stop", "status", "monitor"}
+
+
+def test_relay_status_runs_through_the_group(runner, use_link):
+    use_link(
+        nfc,
+        FakeLink(
+            {"status": ok(state="relaying", connected="1", peer="0", relayed="3")}
+        ),
+    )
+    result = runner.invoke(relay, ["status"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "relaying" in out and "3" in out
+
+
+def test_relay_run_runs_through_the_group(runner, use_link):
+    link = use_link(
+        nfc, FakeLink({"run": ok("accepted"), "status": ok(state="relaying")})
+    )
+    result = runner.invoke(relay, ["run"])
+
+    assert result.exit_code == 0
+    assert link.sent[0] == "run"
+    assert "relay started" in flat(result.output)
+
+
+def test_relay_config_show_runs_through_the_group(runner, use_link):
+    use_link(nfc, FakeLink({"info": ok(fw="0.9.7", role="reader")}))
+    result = runner.invoke(relay, ["config", "show"])
+
+    assert result.exit_code == 0
+    assert "0.9.7" in flat(result.output)

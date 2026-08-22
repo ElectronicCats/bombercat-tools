@@ -171,6 +171,10 @@ class FakeLink:
     def identify(self) -> Response:
         return self.command("identify")
 
+    def read_lines(self, duration: float = 1.5) -> List[str]:
+        """Passive banner sniff stand-in: hand back the scripted stream lines."""
+        return list(self.stream_lines)
+
     def stream(self) -> Iterator[str]:
         yield from self.stream_lines
 

@@ -71,14 +71,16 @@ def test_header_warns_when_running_as_root(capsys, monkeypatch):
     [
         "device",
         "identify",
-        "config",
-        "run",
-        "stop",
-        "status",
-        "monitor",
+        "status",  # now the FIRMWARE status (relay state moved under `relay`)
+        "relay",
         "capture",
         "proto",
         "testserver",
+        # deprecated root aliases, still registered (hidden) for one cycle
+        "config",
+        "run",
+        "stop",
+        "monitor",
     ],
 )
 def test_every_command_is_registered(monkeypatch, name):
@@ -88,6 +90,33 @@ def test_every_command_is_registered(monkeypatch, name):
 
     assert e.value.code == 0
     assert name in cli.commands
+
+
+def test_relay_group_holds_the_nfcgate_subcommands(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
+    with pytest.raises(SystemExit):
+        main_cli()
+
+    relay = cli.commands["relay"]
+    assert set(relay.commands) == {"config", "run", "stop", "status", "monitor"}
+
+
+@pytest.mark.parametrize("name", ["config", "run", "stop", "monitor"])
+def test_deprecated_root_aliases_are_hidden(monkeypatch, name):
+    monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
+    with pytest.raises(SystemExit):
+        main_cli()
+
+    assert cli.commands[name].hidden is True
+
+
+def test_status_is_the_firmware_status_command(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
+    with pytest.raises(SystemExit):
+        main_cli()
+
+    assert cli.commands["status"].hidden is False
+    assert "firmware is flashed" in (cli.commands["status"].help or "")
 
 
 @pytest.mark.skipif(platform.system() == "Windows", reason="POSIX shells only")

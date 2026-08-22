@@ -32,8 +32,15 @@ flowchart LR
 ## 0. Prerequisites
 
 - Both boards flashed with the **NFCGate relay firmware** and answering the
-  handshake (`bombercat device info` shows a `fw` version and `state idle`). For
-  wiring, board profile and flashing, see
+  handshake (`bombercat device info` shows a `fw` version and `state idle`).
+  Check what each one is running with `bombercat status`, and flash it from the
+  CLI if it isn't NFCGate:
+  ```sh
+  bombercat flash NFCGate -d 1       # download the published .uf2 and write it
+  bombercat flash NFCGate -d 2
+  ```
+  See [`flash`](reference.md#flash). For wiring, the board profile, or to build
+  the firmware from source, see
   [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md).
   - The PN7150 pins are the BomberCat defaults; no extra wiring is needed.
   - The firmware must boot into the control REPL, i.e. `RELAY_AUTOSTART = 0`

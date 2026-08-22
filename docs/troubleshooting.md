@@ -9,6 +9,7 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [Board present by USB id but no handshake](#board-present-but-no-handshake)
 - [Wrong board answers to `-d`](#wrong-board)
 - [Old firmware without `identify` / `capture`](#old-firmware)
+- [`flash`: no `RPI-RP2` drive appears](#no-rpi-rp2-drive)
 - [`run` times out](#run-times-out)
 - [`peer present` stays `no`](#peer-stays-no)
 - [Capture: Wireshark doesn't open / no frames](#capture-issues)
@@ -67,9 +68,11 @@ Symptom: `device list` shows `USB id` (yellow) instead of `✓`, or:
 The board is there, but its firmware isn't serving the control REPL. Usually one
 of:
 
-- **It isn't running the NFCGate relay firmware.** Flash it — see
-  [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md). After
-  flashing, `bombercat device info` should show a `fw` version and `state idle`.
+- **It isn't running the NFCGate relay firmware.** Check with `bombercat
+  status`, and flash it: `bombercat flash NFCGate`
+  ([reference](reference.md#flash)). Afterwards `bombercat device info` should
+  show a `fw` version and `state idle`. To build from source instead, see
+  [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md).
 - **`RELAY_AUTOSTART = 1` with a non-empty SSID.** The sketch then blocks on the
   WiFi/TCP bring-up in `setup()` before the REPL starts, so the CLI can't reach
   it. Set `RELAY_AUTOSTART = 0` (the default, required for CLI-driven use) and
@@ -109,9 +112,73 @@ The CLI can be newer than the board's firmware. You'll see:
 - `capture start` → `✗ could not arm capture: unknown command` and a hint to
   reflash `firmware/NFCGate` (needs ≥ 0.8.0).
 
-Fix: reflash the current NFCGate firmware
-([`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md)). Check the
-version with `bombercat device info` (the `fw` field).
+Fix: reflash the current NFCGate firmware — `bombercat flash NFCGate`
+([reference](reference.md#flash)), or build it from source with
+[`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md). Check the
+version afterwards with `bombercat device info` (the `fw` field).
+
+<a id="no-rpi-rp2-drive"></a>
+## `flash`: no `RPI-RP2` drive appears
+
+Symptom: `bombercat flash <name>` reboots the board and then gives up on the
+bootloader drive:
+
+```
+╭─ Board did not enter bootloader mode ────────────────────────────────────╮
+│  ✗  No RPI-RP2 drive appeared after the 1200-bps reset.                  │
+│  …                                                                       │
+│  How to fix it                                                           │
+│    1. Double-tap the RESET button on the board.                          │
+│    2. Check that a drive named RPI-RP2 appears.                          │
+│    3. Run bombercat flash NFCGate again — it will find the drive and     │
+│       copy straight to it.                                               │
+╰──────────────────────────────────────────────────────────────────────────╯
+```
+
+Flashing needs the RP2040's UF2 bootloader to show up as a mounted drive named
+`RPI-RP2`. Two different things stop that:
+
+**1. The board never entered bootloader mode.** The 1200-bps touch is a
+convention the running firmware implements; a sketch built against a different
+core simply ignores it. The bootloader itself is in ROM and always reachable by
+hand:
+
+1. **Double-tap the RESET button** on the board.
+2. Check that the drive appears (`ls /media/$USER/RPI-RP2`, or your file
+   manager).
+3. Run the same `bombercat flash <name>` again — it detects the drive and
+   copies straight to it, without touching the serial port.
+
+That manual route also works when the board is running a firmware with no
+serial port at all.
+
+**2. The drive is not auto-mounted.** On a headless box (or WSL) without
+`udisks`, the kernel sees the bootloader but nothing mounts it. `flash` detects
+this case and says so, because mounting needs privileges it will not take on its
+own:
+
+```
+╭─ Bootloader drive not mounted ───────────────────────────────────────────╮
+│  ✗  The board is in bootloader mode, but RPI-RP2 is not mounted.         │
+╰──────────────────────────────────────────────────────────────────────────╯
+```
+
+Mount it and retry:
+
+```sh
+udisksctl mount -b /dev/sdX1                  # or:
+sudo mkdir -p /mnt/RPI-RP2 && sudo mount /dev/sdX1 /mnt/RPI-RP2
+```
+
+The panel prints the actual device node in place of `/dev/sdX1`, and the exact
+commands to run. `flash` looks the drive up in `/proc/mounts` and, failing that,
+globs `/media/*`, `/media/*/*`, `/run/media/*/*`, `/mnt/*` and `/mnt/RPI-RP2`,
+so any of those mount points works.
+
+Related: a copy that ends in `OSError` after every byte was written is **not** a
+failure — the bootloader restarts the board the moment it has the last block,
+sometimes before the kernel finishes the write. `flash` treats that as success
+and only reports an error on a short write.
 
 <a id="run-times-out"></a>
 ## `run` times out

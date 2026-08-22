@@ -64,56 +64,58 @@ _ENTRIES = (
         id="detecttags",
         display="DetectTags",
         uf2="DetectTags.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("Detect NFC tags with PN7150", "Detect NFC tags"),
     ),
     Firmware(
         id="magspoof",
         display="magspoof",
         uf2="magspoof.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("Default tracks:", "Track 1:"),
     ),
     Firmware(
         id="magspoofcvsattack",
         display="MagspoofCVSAttack",
         uf2="MagspoofCVSAttack.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("data.csv", "Track"),
     ),
     Firmware(
         id="magspoofmqtt",
         display="MagSpoofMqtt",
         uf2="MagSpoofMqtt.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("Connecting to", "MQTT"),
     ),
     Firmware(
         id="nfcgate_wifiwebserver",
         display="WiFiWebServer",
         uf2="WiFiWebServer.uf2",
-        has_repl=False,
-        capabilities=frozenset(),  # driven from a browser, nothing on serial
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset(
+            {CAP_IDENTIFY}
+        ),  # driven from a browser, nothing on serial
         banners=("AP", "WebServer"),
     ),
     Firmware(
         id="host_relay_nfc",
         display="host_Relay_NFC",
         uf2="host_Relay_NFC.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("Reset", "PN7150"),
     ),
     Firmware(
         id="client_relay_nfc",
         display="client_Relay_NFC",
         uf2="client_Relay_NFC.uf2",
-        has_repl=False,
-        capabilities=frozenset({CAP_MONITOR}),
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
         banners=("Activating MagSpoof",),
     ),
     Firmware(

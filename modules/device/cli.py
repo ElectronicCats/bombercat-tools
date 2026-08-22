@@ -121,6 +121,6 @@ def info_cmd(port, device_id):
     table = Table(title=f"BomberCat @ {target}", header_style="cyan bold")
     table.add_column("Field")
     table.add_column("Value")
-    for key in ("fw", "role", "ssid", "server", "port", "session", "state"):
+    for key in ("fw", "fw_name", "role", "ssid", "server", "port", "session", "state"):
         table.add_row(key, r.data.get(key, "[dim]—[/dim]"))
     console.print(table)

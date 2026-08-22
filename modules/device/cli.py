@@ -85,13 +85,14 @@ def list_cmd(show_all):
     if not responders and usb_only:
         print_info(
             "A BomberCat is present by USB id but did not answer the "
-            "handshake — it may not be running the NFCGate relay "
-            "firmware."
+            "handshake — it may be running a firmware without the control "
+            "REPL (only the NFCGate relay answers). See what's flashed with:  "
+            "bombercat status"
         )
     elif not responders:
         print_info(
-            "No BomberCat answered the handshake. Is one connected and "
-            "flashed with the NFCGate firmware?"
+            "No BomberCat answered the handshake. Is one connected? "
+            "Check what firmware it's running with:  bombercat status"
         )
 
 

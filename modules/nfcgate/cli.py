@@ -47,7 +47,8 @@ def _device_session(
         if not link.ping():
             print_error(
                 f"{target} did not answer the handshake. "
-                "Is it plugged in and running the relay firmware?"
+                "The relay commands need the NFCGate firmware — check what's "
+                "flashed with:  bombercat status"
             )
             raise SystemExit(1)
         yield target, link
@@ -101,8 +102,8 @@ def _blink(link: DeviceLink, target: str) -> None:
         )
     elif "unknown command" in r.message:
         print_warning(
-            "this firmware predates `identify` — reflash "
-            "firmware/NFCGate to see which board was configured"
+            "this firmware predates `identify` — reflash the NFCGate image "
+            "(bombercat flash NFCGate) to see which board was configured"
         )
     else:
         print_warning(f"identify failed: {r.message}")
@@ -333,3 +334,26 @@ def monitor_cmd(port, device_id):
                 link.command("loglevel 2")  # back to silent (Warn)
             except Exception:
                 pass
+
+
+# ── relay group ───────────────────────────────────────────────────────────────
+# The NFCGate relay commands, regrouped under `bombercat relay …` so the root
+# `status` can be repurposed to report the flashed firmware (docs/
+# GENERALIZE_CLI_PLAN.md §2.3). The command objects above are reused as-is; the
+# root keeps hidden compat aliases for one deprecation cycle (§2.4).
+
+
+@click.group("relay", context_settings={"help_option_names": ["-h", "--help"]})
+def relay():
+    """NFCGate relay: configure it, run it, and watch the APDU relay.
+
+    Requires a board flashed with the NFCGate firmware — check with
+    `bombercat status`.
+    """
+
+
+relay.add_command(config)
+relay.add_command(run_cmd)
+relay.add_command(stop_cmd)
+relay.add_command(status_cmd)
+relay.add_command(monitor_cmd)

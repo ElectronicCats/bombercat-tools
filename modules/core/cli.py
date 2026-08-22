@@ -14,10 +14,22 @@ import sys
 # Internal
 from ..utils._version import __version__
 from .bombercat import DeviceError, DeviceLink, resolve_port
+from .firmwares import (
+    BANNER,
+    HANDSHAKE,
+    NONE,
+    USB,
+    CAP_MONITOR,
+    CAP_PASSTHROUGH,
+    CAP_RELAY,
+    detect_firmware,
+    resolve_status_port,
+)
 from ..device.cli import device as _device
 from ..nfcgate.cli import (
     config as _config,
     monitor_cmd as _monitor,
+    relay as _relay,
     run_cmd as _run,
     status_cmd as _status,
     stop_cmd as _stop,
@@ -32,6 +44,7 @@ from ..utils.cli_options import target_options
 import click
 from rich.logging import RichHandler
 from rich.panel import Panel
+from rich.table import Table
 
 from ..utils.output import (
     console,
@@ -42,6 +55,7 @@ from ..utils.output import (
     print_dim,
     print_empty_line,
     print_example,
+    print_warning,
 )
 
 import platform
@@ -148,11 +162,151 @@ def identify_cmd(port, device_id):
         if "unknown command" in r.message:
             # Pre-0.7.0 firmware has no `identify`; the CLI is newer than the board.
             print_info(
-                "this firmware predates `identify` — reflash "
-                "firmware/NFCGate to use it."
+                "this firmware predates `identify` — reflash the NFCGate "
+                "image (bombercat flash NFCGate) to use it."
             )
         raise SystemExit(1)
     print_success(f"{target} is blinking its LED for a couple of seconds")
+
+
+# ===================== Firmware status =====================
+#
+# `bombercat status` now reports the *flashed firmware* (name/version/
+# capabilities), not the relay state — that moved to `bombercat relay status`.
+# Detection is handshake-optional so it works for the eight firmwares that have
+# no control REPL, reporting each with the confidence it deserves.
+# See docs/GENERALIZE_CLI_PLAN.md §2.3.
+
+_CONFIDENCE_LABEL = {
+    HANDSHAKE: "handshake (certain)",
+    BANNER: "boot banner (likely)",
+    USB: "USB id only (firmware unknown)",
+    NONE: "not detected",
+}
+
+
+def _next_steps(detection):
+    """Commands worth suggesting for the detected firmware, honestly.
+
+    Only surface what the *current* CLI can actually do with this board: the
+    relay controls need the NFCGate REPL, so we never point a REPL-less board at
+    them. An unidentified board is steered at `flash`, not a guess.
+    """
+    fw = detection.firmware
+    steps = []
+    if fw.can(CAP_RELAY):
+        steps.append("bombercat relay status    — live relay state")
+        steps.append("bombercat relay run       — start the relay")
+    elif detection.confidence in (USB, NONE):
+        steps.append("bombercat flash --list    — see the firmwares you can write")
+        steps.append("bombercat device list     — what is attached and its IDs")
+    elif fw.can(CAP_PASSTHROUGH):
+        steps.append(
+            "passthrough firmware: bridge the ESP32 with an external serial tool"
+        )
+    elif fw.can(CAP_MONITOR):
+        steps.append("watch its serial output with a terminal (screen/minicom), or")
+        steps.append("bombercat flash NFCGate   — switch to the relay firmware")
+    else:
+        steps.append("bombercat flash --list    — this firmware has no serial UI")
+    return steps
+
+
+@click.command("status", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--no-sniff", is_flag=True, help="Skip boot-banner sniffing (levels 1 & 3 only)."
+)
+@target_options
+def firmware_status_cmd(no_sniff, port, device_id):
+    """Report which firmware is flashed on a BomberCat, and what it can do."""
+    try:
+        target, usb_tagged = resolve_status_port(port, device_id)
+    except DeviceError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+
+    detection = detect_firmware(target, sniff=not no_sniff, usb_present=usb_tagged)
+
+    if detection.confidence == NONE:
+        print_error(f"nothing responded on {target}.")
+        print_info("check the cable, or list what's attached:  bombercat device list")
+        raise SystemExit(1)
+
+    fw = detection.firmware
+    caps = ", ".join(sorted(fw.capabilities)) or "[dim]—[/dim]"
+
+    table = Table(
+        title=f"Firmware @ {target}", header_style="cyan bold", show_header=False
+    )
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    table.add_row("name", fw.display)
+    table.add_row("version", detection.version or "[dim]—[/dim]")
+    table.add_row(
+        "detected", _CONFIDENCE_LABEL.get(detection.confidence, detection.confidence)
+    )
+    table.add_row("capabilities", caps)
+    console.print(table)
+
+    if fw.description:
+        print_dim(fw.description)
+
+    if detection.confidence == USB:
+        print_info(
+            "A BomberCat is present but its firmware could not be identified "
+            "from the host (no control REPL, no known boot banner)."
+        )
+
+    print_empty_line()
+    print_info("Next:")
+    for step in _next_steps(detection):
+        print_example(step)
+
+
+# ===================== Deprecated compatibility aliases =====================
+#
+# The relay commands used to live at the root; they now live under `relay`.
+# For one deprecation cycle the old spellings keep working as HIDDEN aliases
+# that forward to the new location and warn once. See GENERALIZE_CLI_PLAN §2.4.
+
+
+def _relay_alias(cmd, new_path):
+    """A hidden root command mirroring `cmd` that warns and forwards to `relay`."""
+
+    @click.command(
+        cmd.name,
+        hidden=True,
+        params=list(cmd.params),
+        context_settings=cmd.context_settings,
+        help=(cmd.help or "") + f"\n\n[deprecated] use `bombercat {new_path}`.",
+    )
+    @click.pass_context
+    def _wrapper(ctx, **kwargs):
+        print_warning(
+            f"`bombercat {cmd.name}` is deprecated — use `bombercat {new_path}`."
+        )
+        return ctx.invoke(cmd.callback, **kwargs)
+
+    return _wrapper
+
+
+def _config_alias():
+    """Hidden `config` group forwarding to `relay config` with a deprecation warning."""
+
+    @click.group(
+        "config",
+        hidden=True,
+        context_settings={"help_option_names": ["-h", "--help"]},
+        help="[deprecated] use `bombercat relay config …`.",
+    )
+    def _alias():
+        print_warning(
+            "`bombercat config …` is deprecated — use `bombercat relay config …`."
+        )
+
+    for name, sub in _config.commands.items():
+        _alias.add_command(sub, name)
+    return _alias
 
 
 # ===================== Shell Completion Commands =====================
@@ -391,13 +545,18 @@ def main_cli() -> None:
     # Device control plane (Fase 6): talk to a BomberCat over USB-serial.
     cli.add_command(_device)
     cli.add_command(identify_cmd)
-    cli.add_command(_config)
-    cli.add_command(_run)
-    cli.add_command(_stop)
-    cli.add_command(_status)
-    cli.add_command(_monitor)
+    # `status` reports the flashed firmware; the NFCGate relay lives under `relay`.
+    cli.add_command(firmware_status_cmd)
+    cli.add_command(_relay)
     cli.add_command(_capture)
     cli.add_command(_flash)
+
+    # Deprecated compatibility aliases (hidden): old root spellings still work
+    # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).
+    cli.add_command(_config_alias())
+    cli.add_command(_relay_alias(_run, "relay run"))
+    cli.add_command(_relay_alias(_stop, "relay stop"))
+    cli.add_command(_relay_alias(_monitor, "relay monitor"))
 
     # Dev tooling under tools/
     cli.add_command(_proto)

@@ -158,6 +158,27 @@ class DeviceLink:
         """Blink the device's LED so the user can tell which board is which."""
         return self.command("identify")
 
+    def read_lines(self, duration: float = 1.5) -> List[str]:
+        """Passively collect whatever the device prints for up to ``duration``
+        seconds and return the non-empty lines. Sends nothing, so it does not
+        disturb a running firmware — used for best-effort boot-banner sniffing
+        during firmware detection (see firmwares.detect_firmware)."""
+        if self._ser is None:
+            raise DeviceError("link not open")
+        lines: List[str] = []
+        deadline = time.monotonic() + duration
+        while time.monotonic() < deadline:
+            try:
+                raw = self._ser.readline()
+            except serial.SerialException:
+                break  # link lost mid-sniff: return whatever we already have
+            if not raw:
+                continue
+            text = raw.decode("ascii", "replace").rstrip("\r\n")
+            if text:
+                lines.append(text)
+        return lines
+
     def stream(self) -> Iterator[str]:
         """Yield decoded serial lines forever (for `monitor`). Read-only; does
         not send anything, so it does not disturb a running relay."""

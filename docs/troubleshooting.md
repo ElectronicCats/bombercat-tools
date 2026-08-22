@@ -126,10 +126,10 @@ version with `bombercat device info` (the `fw` field).
 
 The device is **not** wedged — the REPL stayed live, so keep diagnosing:
 
-- **WiFi**: wrong SSID/password? `bombercat config show` and re-`config wifi`.
+- **WiFi**: wrong SSID/password? `bombercat relay config show` and re-run `relay config wifi`.
 - **Server reachable?** From the same network: `nc -vz <host> <port>`. Is the
   `nfcgate-server` actually listening? For a bench server, `bombercat testserver run`.
-- **PN7150 / NFC bring-up**: `bombercat monitor` shows where it's stuck.
+- **PN7150 / NFC bring-up**: `bombercat relay monitor` shows where it's stuck.
 - If `run` was **rejected** outright (`✗ relay rejected 'run': …`), the config is
   incomplete (e.g. empty SSID) or it's already running — check `config show` /
   `status`.
@@ -140,7 +140,7 @@ The device is **not** wedged — the REPL stayed live, so keep diagnosing:
 Both peers must share the **same `--server` and the same `--session`**, with
 **opposite roles** (`reader` / `card`). A mismatched session byte means each peer
 joins a different session and they never see each other. `session == 0` is treated
-as a disconnect — use `1..255`. Confirm both with `bombercat config show` on each
+as a disconnect — use `1..255`. Confirm both with `bombercat relay config show` on each
 board (or check the app's session/role for Path B).
 
 <a id="capture-issues"></a>
@@ -151,7 +151,7 @@ board (or check the app's session/role for Path B).
   locations and `PATH`.
 - **"nothing to do"** — you passed neither `-ws` nor `-o`. Pass at least one.
 - **Wireshark opens but no packets** — no APDUs are flowing. Capture only shows
-  frames while the relay is actually relaying: `bombercat status` should be
+  frames while the relay is actually relaying: `bombercat relay status` should be
   `relaying` with a peer present, and a real transaction must be happening (card
   on the reader, terminal on the card board).
 - **"Wireshark did not attach to the pipe in time"** — it took longer than 30 s

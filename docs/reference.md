@@ -16,14 +16,17 @@ control link — see [Capture / Wireshark](capture.md).
     - [`device list`](#device-list)
     - [`device info`](#device-info)
   - [`identify`](#identify)
-  - [`config`](#config)
-    - [`config wifi`](#config-wifi)
-    - [`config nfcgate`](#config-nfcgate)
-    - [`config show`](#config-show)
-  - [`run`](#run)
-  - [`stop`](#stop)
   - [`status`](#status)
-  - [`monitor`](#monitor)
+  - [Firmwares](#firmwares)
+  - [`relay`](#relay)
+    - [`relay config`](#relay-config)
+      - [`relay config wifi`](#relay-config-wifi)
+      - [`relay config nfcgate`](#relay-config-nfcgate)
+      - [`relay config show`](#relay-config-show)
+    - [`relay run`](#relay-run)
+    - [`relay stop`](#relay-stop)
+    - [`relay status`](#relay-status)
+    - [`relay monitor`](#relay-monitor)
   - [`capture`](#capture)
     - [`capture start`](#capture-start)
     - [`capture stop`](#capture-stop)
@@ -125,7 +128,7 @@ Expected output (two boards attached):
 │ #1 │ /dev/ttyACM1 │ ✓         │ 36A864E62A367EA3 │ USB VID:PID=…       │
 │ #2 │ /dev/ttyACM0 │ ✓         │ E6614C775B4F2A21 │ USB VID:PID=…       │
 └────┴──────────────┴───────────┴──────────────────┴─────────────────────┘
-Target one with:  bombercat <command> -d <ID>   (e.g. bombercat config show -d 1)
+Target one with:  bombercat <command> -d <ID>   (e.g. bombercat relay config show -d 1)
 ```
 
 The **BomberCat** column:
@@ -194,7 +197,83 @@ bombercat identify -d 1          # blink board #1's LED for a couple of seconds
 
 ---
 
-## `config`
+## `status`
+
+> Report which firmware is flashed on a BomberCat, and what it can do.
+
+Takes the [device selectors](#device-selection), plus `--no-sniff`. Unlike the
+relay commands, `status` does **not** require the NFCGate REPL — it identifies a
+board by levels of confidence so it works for any of the firmwares below:
+
+1. **handshake (certain)** — the board answers the control REPL. Today only
+   NFCGate does; its version comes from `info`.
+2. **boot banner (likely)** — no REPL, but a known boot-output string matched.
+   Best-effort and reset-sensitive; disable with `--no-sniff`.
+3. **USB id only (firmware unknown)** — a BomberCat is present by USB VID/PID but
+   nothing identified it. Reported honestly, not guessed.
+
+| Option | Description |
+|---|---|
+| `--no-sniff` | Skip the boot-banner sniff (use handshake + USB id only). |
+
+```sh
+bombercat status
+```
+
+```
+                  Firmware @ /dev/ttyACM0
+┌──────────────┬───────────────────────────────────────────┐
+│ name         │ NFCGate                                   │
+│ version      │ 0.9.7                                     │
+│ detected     │ handshake (certain)                       │
+│ capabilities │ capture, config, identify, monitor, relay │
+└──────────────┴───────────────────────────────────────────┘
+ℹ Next:
+  bombercat relay status    — live relay state
+  bombercat relay run       — start the relay
+```
+
+`status` ends by suggesting the commands the detected firmware actually
+supports. An unidentified board is pointed at [`flash`](#flash), never at the
+relay controls it cannot serve. Exit code is `1` only when **nothing** responds
+on the port.
+
+> The previous `bombercat status` (relay state) is now
+> [`bombercat relay status`](#relay-status).
+
+## Firmwares
+
+`status` recognises the images published by
+[bombercat-firmware](https://github.com/ElectronicCats/bombercat-firmware) (the
+same set [`flash`](#flash) can write). Only **NFCGate** speaks the control REPL,
+so it is the only one identified with certainty from the host; the rest are
+best-effort (USB presence + optional boot banner).
+
+| Firmware | Control REPL | Host capabilities |
+|---|---|---|
+| **NFCGate** | ✅ handshake | relay, config, monitor, identify, capture |
+| DetectTags | ❌ | monitor (read-only) |
+| magspoof | ❌ | monitor |
+| MagspoofCVSAttack | ❌ | monitor |
+| MagSpoofMqtt | ❌ | monitor |
+| WiFiWebServer | ❌ | (browser UI; nothing on serial) |
+| host_Relay_NFC | ❌ | monitor |
+| client_Relay_NFC | ❌ | monitor |
+| ESP32SerialPassthroughFlash | ❌ | passthrough |
+
+---
+
+## `relay`
+
+> NFCGate relay: configure it, run it, and watch the APDU relay.
+
+The relay commands live under `bombercat relay …`. They need a board flashed
+with the **NFCGate** firmware (the only one that answers the control REPL —
+confirm with [`bombercat status`](#status)). The old root spellings (`config`,
+`run`, `stop`, `monitor`) still work for one release as hidden aliases that warn
+and forward here.
+
+### `relay config`
 
 > Configure the relay (WiFi + nfcgate parameters), persisted in flash.
 
@@ -203,7 +282,7 @@ All three subcommands take the [device selectors](#device-selection). The two
 non-fatal courtesy — a board on pre-0.7.0 firmware just earns a warning), so you
 can match `-d 2` to a physical board on the desk.
 
-### `config wifi`
+#### `relay config wifi`
 
 Set the WiFi credentials.
 
@@ -214,7 +293,7 @@ Set the WiFi credentials.
 | `--save` / `--no-save` | Persist to flash (default: `--save`). `--no-save` applies for this session only, lost on reboot. |
 
 ```sh
-bombercat config wifi --ssid MyNet --pass 's3cret'
+bombercat relay config wifi --ssid MyNet --pass 's3cret'
 ```
 
 ```
@@ -224,7 +303,7 @@ bombercat config wifi --ssid MyNet --pass 's3cret'
 ℹ /dev/ttyACM0 is blinking its LED — that's the board you just configured
 ```
 
-### `config nfcgate`
+#### `relay config nfcgate`
 
 Set the `nfcgate-server`, session and role.
 
@@ -239,7 +318,7 @@ Set the `nfcgate-server`, session and role.
 with a clean error. If omitted, the device keeps its stored port (default 5566).
 
 ```sh
-bombercat config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
+bombercat relay config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
 ```
 
 ```
@@ -250,17 +329,17 @@ bombercat config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
 ✓ saved to flash
 ```
 
-### `config show`
+#### `relay config show`
 
 Show the device's current configuration (same table as `device info`).
 
 ```sh
-bombercat config show -d 2
+bombercat relay config show -d 2
 ```
 
 ---
 
-## `run`
+### `relay run`
 
 > Start the relay (associate WiFi, connect the server, begin the session).
 
@@ -273,7 +352,7 @@ expires. A `-ERR` on acceptance means it could not even start (e.g. empty SSID,
 already running).
 
 ```sh
-bombercat run
+bombercat relay run
 ```
 
 Successful bring-up:
@@ -283,36 +362,36 @@ Successful bring-up:
 ℹ   … associating WiFi
 ℹ   … connecting nfcgate-server
 ✓ relay started on /dev/ttyACM0
-ℹ watch it with:  bombercat monitor   /   bombercat status
+ℹ watch it with:  bombercat relay monitor   /   bombercat relay status
 ```
 
 If it does not reach `relaying` in time the device is **not** wedged (the REPL
 stayed live) — the CLI points you at the likely culprit (server not listening,
-PN7150 not responding) and suggests `bombercat status` / `monitor`. See
+PN7150 not responding) and suggests `bombercat relay status` / `monitor`. See
 [Troubleshooting](troubleshooting.md#run-times-out).
 
-## `stop`
+### `relay stop`
 
 > Stop the relay.
 
 Takes the [device selectors](#device-selection).
 
 ```sh
-bombercat stop
+bombercat relay stop
 ```
 
 ```
 ✓ relay stopped on /dev/ttyACM0
 ```
 
-## `status`
+### `relay status`
 
 > Show live relay status (state, link, peer, relayed count).
 
 Takes the [device selectors](#device-selection).
 
 ```sh
-bombercat status -d 2
+bombercat relay status -d 2
 ```
 
 ```
@@ -330,7 +409,7 @@ bombercat status -d 2
 `state` is one of `idle`, `connecting`, `relaying`, `error` (see the
 [protocol](protocol.md#status-fields)).
 
-## `monitor`
+### `relay monitor`
 
 > Stream the device's serial output live (relay logs + APDU hex). Ctrl-C to quit.
 
@@ -342,7 +421,7 @@ Warn on exit. Lines are colorized: APDU hex (`cmd:`/`resp:`) in cyan, errors in
 red, protocol markers dimmed.
 
 ```sh
-bombercat monitor -d 1
+bombercat relay monitor -d 1
 ```
 
 ```

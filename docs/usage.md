@@ -61,12 +61,12 @@ One board reads a physical card (`reader`), the other emulates it to a terminal
 
 ```sh
 # WiFi (same network for both)
-bombercat config wifi -d 1 --ssid MyNet --pass 's3cret'
-bombercat config wifi -d 2 --ssid MyNet --pass 's3cret'
+bombercat relay config wifi -d 1 --ssid MyNet --pass 's3cret'
+bombercat relay config wifi -d 2 --ssid MyNet --pass 's3cret'
 
 # nfcgate: same server + session, opposite roles
-bombercat config nfcgate -d 1 --server 192.168.1.5:5566 --session 42 --role reader
-bombercat config nfcgate -d 2 --server 192.168.1.5:5566 --session 42 --role card
+bombercat relay config nfcgate -d 1 --server 192.168.1.5:5566 --session 42 --role reader
+bombercat relay config nfcgate -d 2 --server 192.168.1.5:5566 --session 42 --role card
 ```
 
 Each `config` blinks the LED of the board it configured, so you can confirm which
@@ -76,8 +76,8 @@ physical board is `-d 1` vs `-d 2`. Not sure which is which beforehand?
 Confirm:
 
 ```sh
-bombercat config show -d 1
-bombercat config show -d 2
+bombercat relay config show -d 1
+bombercat relay config show -d 2
 ```
 
 ### 2. Start the relay on both
@@ -86,16 +86,16 @@ bombercat config show -d 2
 out):
 
 ```sh
-bombercat run -d 1        # reader
-bombercat run -d 2        # card
+bombercat relay run -d 1        # reader
+bombercat relay run -d 2        # card
 ```
 
 A relay is live once **both** peers are up: `status` shows `state relaying`,
 `link connected yes`, and `peer present yes`.
 
 ```sh
-bombercat status -d 1
-bombercat status -d 2
+bombercat relay status -d 1
+bombercat relay status -d 2
 ```
 
 ### 3. Watch it
@@ -104,7 +104,7 @@ Present the physical card to the reader board and a terminal to the card board.
 Watch either side live:
 
 ```sh
-bombercat monitor -d 1     # reader side
+bombercat relay monitor -d 1     # reader side
 ```
 
 You'll see the relay logs and the per-APDU hex dumps as an EMV transaction flows
@@ -125,8 +125,8 @@ Ctrl-C stops and disarms the tap.
 ### 5. Stop
 
 ```sh
-bombercat stop -d 1
-bombercat stop -d 2
+bombercat relay stop -d 1
+bombercat relay stop -d 2
 ```
 
 ---
@@ -145,11 +145,11 @@ and session:
 
 ```sh
 # B1 example: BomberCat is the reader
-bombercat config wifi    --ssid MyNet --pass 's3cret'
-bombercat config nfcgate --server <server-host>:5566 --session 42 --role reader
-bombercat run
-bombercat status          # peer present yes  once the phone joins the session
-bombercat monitor
+bombercat relay config wifi    --ssid MyNet --pass 's3cret'
+bombercat relay config nfcgate --server <server-host>:5566 --session 42 --role reader
+bombercat relay run
+bombercat relay status          # peer present yes  once the phone joins the session
+bombercat relay monitor
 ```
 
 In the NFCGate app, point it at the same `nfcgate-server`, set the same session,
@@ -166,12 +166,12 @@ sending the first frame (see [protocol](protocol.md) and
 | Step | Single board | Two boards |
 |---|---|---|
 | Discover | `bombercat device list` | `bombercat device list` |
-| WiFi | `bombercat config wifi --ssid … --pass …` | add `-d 1`, `-d 2` |
-| nfcgate | `bombercat config nfcgate --server … --session … --role …` | opposite roles, same session |
-| Start | `bombercat run` | `bombercat run -d 1 && bombercat run -d 2` |
-| Watch | `bombercat status` / `bombercat monitor` | add `-d <ID>` |
+| WiFi | `bombercat relay config wifi --ssid … --pass …` | add `-d 1`, `-d 2` |
+| nfcgate | `bombercat relay config nfcgate --server … --session … --role …` | opposite roles, same session |
+| Start | `bombercat relay run` | `bombercat relay run -d 1 && bombercat relay run -d 2` |
+| Watch | `bombercat relay status` / `bombercat relay monitor` | add `-d <ID>` |
 | Capture | `bombercat capture start -ws` | capture each side |
-| Stop | `bombercat stop` | `bombercat stop -d 1 && bombercat stop -d 2` |
+| Stop | `bombercat relay stop` | `bombercat relay stop -d 1 && bombercat relay stop -d 2` |
 
 For a bench with no RF at all, use `bombercat testserver smoke` to exercise the
 relay path against the local server (see [reference](reference.md#testserver-smoke)).

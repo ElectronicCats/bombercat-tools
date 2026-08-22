@@ -50,22 +50,28 @@ the [`bombercat` alias](docs/reference.md#invocation) or
 ```sh
 # 1. Discover the board(s)
 bombercat device list                 # IDs + serial ports; ✓ = answered the handshake
-bombercat device info                 # firmware version + current config
+bombercat status                      # which firmware is flashed + what it can do
 
-# 2. Configure (persisted to flash unless --no-save)
-bombercat config wifi    --ssid MyNet --pass 's3cret'
-bombercat config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
-bombercat config show
+# 2. Configure the NFCGate relay (persisted to flash unless --no-save)
+bombercat relay config wifi    --ssid MyNet --pass 's3cret'
+bombercat relay config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
+bombercat relay config show
 
 # 3. Run & watch
-bombercat run                         # associate WiFi, connect server, start relay
-bombercat status                      # state / link / peer / relayed count
-bombercat monitor                     # live serial stream (relay logs + APDU hex)
-bombercat stop
+bombercat relay run                   # associate WiFi, connect server, start relay
+bombercat relay status                # state / link / peer / relayed count
+bombercat relay monitor               # live serial stream (relay logs + APDU hex)
+bombercat relay stop
 
 # 4. Capture the relayed APDUs to Wireshark
 bombercat capture start -ws           # live Wireshark on a FIFO (Ctrl-C to stop)
 ```
+
+> **Command layout changed.** The relay commands now live under `bombercat
+> relay …`, and `bombercat status` reports the **flashed firmware** instead of
+> the relay state (that moved to `bombercat relay status`). The old root
+> spellings — `config`, `run`, `stop`, `monitor` — still work for one release as
+> hidden aliases that print a deprecation notice and forward to `relay …`.
 
 A relay needs **two** peers on the same `--server` and `--session`: one
 `--role reader` (reads a physical card), the other `--role card` (emulates one to
@@ -77,7 +83,7 @@ one by its ID with `-d/--device`. See the
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `config`, `run`/`stop`/`status`/`monitor`, `identify`, `capture`, `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
@@ -131,7 +137,7 @@ POSIX-only APIs, so support thins out elsewhere:
 
 | Feature | Linux | macOS | Windows |
 |---|---|---|---|
-| `device`, `config`, `run`/`stop`/`status`/`monitor` | tested | should work, untested | should work, untested |
+| `device`, `status`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`) | tested | should work, untested | should work, untested |
 | `capture start -o file.pcap` | tested | should work, untested | should work, untested |
 | `capture start -ws` (live Wireshark) | tested | FIFO path, untested | needs `pywin32`, untested |
 | `completion install` | bash/zsh/fish | bash/zsh/fish | not offered |
@@ -457,13 +463,13 @@ arriving in one segment vs two) and also reports the relay round-trip.
 
 ```bash
 # per board, over USB:
-bombercat config wifi    --ssid "MyNet" --pass "s3cret"
-bombercat config nfcgate --server VPS_IP:5566 --session 42 --role reader   # 'card' on the other
-bombercat config show
+bombercat relay config wifi    --ssid "MyNet" --pass "s3cret"
+bombercat relay config nfcgate --server VPS_IP:5566 --session 42 --role reader   # 'card' on the other
+bombercat relay config show
 ```
 
 Both boards share the **same `--server` and `--session`** (1–255); only `--role`
-differs (`reader` + `card`). Then `bombercat run` / `status` / `monitor` on each,
+differs (`reader` + `card`). Then `bombercat relay run` / `relay status` / `relay monitor` on each,
 exactly as in the [end-to-end guide](docs/usage.md). Smoke-test the server with
 `bombercat testserver smoke VPS_IP 5566` (relays correctly?) alongside the
 `verify` above (fast?).
@@ -513,7 +519,7 @@ so local and VPS stay on the same code.
 
 | Symptom | Likely cause / check |
 |---|---|
-| `bombercat run` never reaches `relaying` | Port not reachable (`nc -vz VPS_IP 5566`, section D); board's WiFi can't route to the server; `--session` differs between boards. Confirm what was persisted with `bombercat config show`. |
+| `bombercat relay run` never reaches `relaying` | Port not reachable (`nc -vz VPS_IP 5566`, section D); board's WiFi can't route to the server; `--session` differs between boards. Confirm what was persisted with `bombercat relay config show`. |
 | Server is up but nothing relays | The two boards must share one session and take **opposite** roles (`reader` + `card`). |
 | protobuf traceback on the server | protobuf 4+ is installed; pin `3.20.3` (*"Descriptors cannot be created directly"*). |
 | **Works, but ~13 s per transaction** | The classic missing-Phase-E signature. Run `bombercat testserver verify VPS_IP 5566`; if it says `PATCH MISSING`, the running code is unpatched — with Docker, **rebuild** (section G), a restart won't do it. |

@@ -187,10 +187,12 @@ Concretely, the non-Linux gaps are:
 - **Live capture needs Wireshark installed locally**, in one of the usual
   install paths or on `PATH`. A flatpak/snap install that exports no `wireshark`
   wrapper is not detected. There is no remote capture (no SSH, no extcap).
-- **The pipe name is fixed** (`/tmp/fbombercat`, `\\.\pipe\fbombercat`) with no
-  flag to change it, so there can be **only one live capture per host**.
-  Capturing both boards live at once collides on that FIFO — capture one side
-  with `-o file.pcap` and the other with `-ws`, or do them one after the other.
+- **The Windows named pipe name is fixed** (`\\.\pipe\fbombercat`) with no flag
+  to change it, so on Windows there can be **only one live capture per host**;
+  capturing both boards live at once collides on it — capture one side with
+  `-o file.pcap` and the other with `-ws`, or do them one after the other. On
+  Unix the FIFO now lives in a private, per-invocation temp directory, so
+  concurrent live captures no longer collide there.
 - **Classic pcap only.** The writer emits classic pcap with `DLT_ISO_14443`; no
   pcapng, no per-packet comments
   ([capture.md](docs/capture.md#classic-pcap-vs-pcapng)).

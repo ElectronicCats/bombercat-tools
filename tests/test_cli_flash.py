@@ -304,6 +304,42 @@ def test_an_asset_without_a_digest_is_accepted(cache):
 
     assert c.refresh() == "v1.2.0"
     assert len(c.images()) == 3
+    assert set(c.unverified_assets) == set(DEFAULT_IMAGES)
+
+
+def test_an_asset_with_a_digest_is_not_flagged_unverified(cache):
+    c, _ = cache(digest=True)
+
+    c.refresh()
+
+    assert c.unverified_assets == []
+
+
+# ── AUDIT_ERROR_HANDLING.md H1: no-digest assets warn instead of silently
+# skipping integrity verification ──────────────────────────────────────────
+
+
+def test_list_warns_when_assets_download_without_a_digest(runner, cache, use_cache):
+    c, _ = cache(digest=False)
+    use_cache(c)
+
+    result = runner.invoke(flash, ["--list"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "WITHOUT checksum verification" in out
+    assert "NFCGate.uf2" in out
+
+
+def test_list_does_not_warn_when_assets_have_a_digest(runner, cache, use_cache):
+    c, _ = cache(digest=True)
+    use_cache(c)
+
+    result = runner.invoke(flash, ["--list"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "checksum verification" not in out
 
 
 # ── Security: hostile release payloads (AUDIT_ERROR_HANDLING.md C1/C2) ──────

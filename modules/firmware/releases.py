@@ -16,8 +16,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import date
@@ -40,6 +42,50 @@ API_TIMEOUT = 10.0
 ASSET_TIMEOUT = 30.0
 
 USER_AGENT = "bombercat-cli"
+
+# tag_name / asset name come straight from the GitHub API response; a hostile
+# value like "../../.config" must never reach a Path join that builds a cache
+# location (docs/AUDIT_ERROR_HANDLING.md C1).
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# Only these hosts ever see the GITHUB_TOKEN, and only these hosts are
+# trusted to serve an asset download — a hostile release cannot point
+# `browser_download_url` at an arbitrary server and collect the token
+# (docs/AUDIT_ERROR_HANDLING.md C2).
+API_HOST = "api.github.com"
+ASSET_HOSTS = {"github.com", "objects.githubusercontent.com"}
+
+
+def _validate_path_component(value: str, what: str) -> None:
+    if not value or value in (".", "..") or not _SAFE_NAME_RE.match(value):
+        raise FirmwareError(f"unsafe {what} from GitHub release: {value!r}")
+
+
+def _validate_asset_url(url: str) -> None:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in ASSET_HOSTS:
+        raise FirmwareError(f"refusing to download asset from untrusted URL: {url}")
+
+
+class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
+    """Cross-host redirects must not carry the GitHub token along with them.
+
+    The default handler re-sends every header — Authorization included — to
+    wherever a 30x points, which would leak the token via an open redirect.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is not None:
+            old_host = urllib.parse.urlsplit(req.full_url).hostname
+            new_host = urllib.parse.urlsplit(newurl).hostname
+            if new_host != old_host:
+                new_req.headers.pop("Authorization", None)
+                new_req.unredirected_hdrs.pop("Authorization", None)
+        return new_req
+
+
+_opener = urllib.request.build_opener(_StripAuthOnRedirect)
 
 
 class FirmwareError(Exception):
@@ -72,21 +118,23 @@ class FirmwareImage:
         return self.path.stem
 
 
-def _headers() -> Dict[str, str]:
+def _headers(url: str) -> Dict[str, str]:
     # Unauthenticated API calls are capped at 60/h per IP; a token raises that
-    # to 5000 and costs us one env lookup (FLASH_PLAN §3.2).
+    # to 5000 and costs us one env lookup (FLASH_PLAN §3.2). Only ever sent to
+    # the GitHub API itself — never to an asset host (C2).
     headers = {"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}
-    token = os.environ.get("GITHUB_TOKEN")
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if urllib.parse.urlsplit(url).hostname == API_HOST:
+        token = os.environ.get("GITHUB_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
 def http_get(url: str, timeout: float = API_TIMEOUT) -> bytes:
     """GET `url`, translating every network failure into a FirmwareError."""
-    request = urllib.request.Request(url, headers=_headers())
+    request = urllib.request.Request(url, headers=_headers(url))
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with _opener.open(request, timeout=timeout) as response:
             return response.read()
     except urllib.error.HTTPError as e:
         if e.code == 404:
@@ -277,6 +325,7 @@ class ReleaseCache:
         tag = release.get("tag_name")
         if not tag:
             raise FirmwareError(self._no_release_message())
+        _validate_path_component(tag, "release tag")
 
         if tag == self.tag and not force:
             self._write_index(tag)
@@ -326,9 +375,11 @@ class ReleaseCache:
 
     def _download_asset(self, asset: Dict, staging: Path) -> None:
         name = asset["name"]
+        _validate_path_component(name, "asset name")
         url = asset.get("browser_download_url")
         if not url:
             raise FirmwareError(f"asset {name} has no download URL")
+        _validate_asset_url(url)
 
         target = staging / name
         target.write_bytes(self._fetch(url, ASSET_TIMEOUT))

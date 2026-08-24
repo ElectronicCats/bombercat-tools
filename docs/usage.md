@@ -168,6 +168,39 @@ sending the first frame (see [protocol](protocol.md) and
 
 ---
 
+## Detecting NFC tags with DetectTags
+
+A different workflow from the relay above — one board, no `nfcgate-server`,
+no second peer. Flash **DetectTags** and read tags directly with the
+PN7150 the BomberCat carries onboard:
+
+```sh
+bombercat status                # confirm DetectTags is flashed (or flash it)
+bombercat flash DetectTags -d 1 # if it isn't
+
+bombercat tags read             # wait for one tag, print its UID and exit
+bombercat tags watch            # stream detections until Ctrl-C
+bombercat tags scan -t 20       # sample for 20s, print an aggregated summary
+bombercat tags info             # firmware version + which event format it speaks
+```
+
+Full flag reference and sample output: [`tags`](reference.md#tags).
+
+Two things worth knowing going in:
+
+- **Every published `.uf2` today parses as legacy text**, not the newer
+  structured `:tag` events — same detections, just without the `extra`
+  fields the structured format can carry. `bombercat tags info` tells you
+  which mode a given board is in.
+- **NFC-B and NFC-F tags print no UID** in legacy mode — that's a firmware
+  limitation, not a CLI bug. `tags` reports it honestly as `unavailable
+  (NFC-B: firmware prints no ID)` rather than a blank or a made-up value.
+
+See [Troubleshooting](troubleshooting.md#no-tags-detected) if `watch`/`scan`
+looks quiet with a card actually on the reader.
+
+---
+
 ## Cheat sheet
 
 | Step | Single board | Two boards |

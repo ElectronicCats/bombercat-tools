@@ -36,6 +36,11 @@ control link — see [Capture / Wireshark](capture.md).
   - [`capture`](#capture)
     - [`capture start`](#capture-start)
     - [`capture stop`](#capture-stop)
+  - [`tags`](#tags)
+    - [`tags read`](#tags-read)
+    - [`tags watch`](#tags-watch)
+    - [`tags scan`](#tags-scan)
+    - [`tags info`](#tags-info)
   - [Dev tooling](#dev-tooling)
     - [`proto`](#proto)
       - [`proto gen`](#proto-gen)
@@ -76,8 +81,38 @@ Placed before the command (`bombercat -v device list`):
 
 | Option | Description |
 |---|---|
-| `-v`, `--verbose` | Raise the log level to INFO (shows the `rich` logger's info lines; off by default, which is WARNING). |
+| `-v`, `--verbose` | Raise the log level to INFO (shows the `rich` logger's info lines; off by default, which is WARNING). Repeatable (`-vv`). |
 | `-h`, `--help` | Show help and exit. |
+
+`-v` is also accepted **after** the command (`bombercat device list -v`) wherever a
+subcommand lists it in its own `Options:` — both positions mean the same thing,
+and the higher count wins if you somehow pass both. On the [`tags`](#tags)
+commands specifically, `-v` does more than raise the log level: it traces the
+raw `>`/`<` wire protocol to stderr (tx cyan, rx dim), and `-vv` adds an
+elapsed-time stamp and byte count ahead of each line:
+
+```sh
+bombercat tags read -v
+```
+
+```
+> ping
+< +OK bombercat
+```
+
+```sh
+bombercat tags read -vv
+```
+
+```
+> [   0.000s] (   4B) ping
+< [   0.017s] (  13B) +OK bombercat
+```
+
+Traced output always goes to **stderr**, so `--json | jq` keeps working with
+`-v` on — stdout carries only the JSON. `set pass …` lines are redacted at
+any level, since that's the WiFi/relay secret in plain text. Other commands
+don't wire a tracer yet, so `-v` there is log-level only.
 
 Every run prints the ASCII header panel with the CLI version and a random tagline
 before the command output. (The header is suppressed while generating shell
@@ -264,7 +299,7 @@ REPL at all and are best-effort only (USB presence + optional boot banner).
 | Firmware | Control REPL | Host capabilities |
 |---|---|---|
 | **NFCGate** | ✅ handshake | relay, config, monitor, identify, capture |
-| DetectTags | ✅ handshake | monitor, identify |
+| DetectTags | ✅ handshake | monitor, identify, tags ([`tags read`/`watch`/`scan`/`info`](#tags)) |
 | magspoof | ✅ handshake | monitor, identify |
 | MagspoofCVSAttack | ✅ handshake | monitor, identify |
 | MagSpoofMqtt | ✅ handshake | monitor, identify |
@@ -669,6 +704,195 @@ bombercat capture stop -d 1
 ```
 ✓ capture disarmed on /dev/ttyACM1
 ```
+
+---
+
+<a id="tags"></a>
+## `tags`
+
+> NFC tag detection over the **DetectTags** firmware's PN7150 reader.
+
+The `tags` commands live under `bombercat tags …`. They need a board flashed
+with **DetectTags** (confirm with [`bombercat status`](#status)) and, like
+`relay`, verify the control handshake before doing anything — a board that
+doesn't answer gets the same clean `-ERR`-style message the relay commands
+give, naming `tags` specifically:
+
+```
+✗ /dev/ttyACM0 did not answer the handshake. `tags` needs the DetectTags
+  firmware — check what's flashed with:  bombercat status
+```
+
+All four subcommands take the [device selectors](#device-selection) plus
+their own `-v`/`--verbose` (see [Global options](#global-options) for what
+`-v` does here specifically — it traces the wire protocol, not just the log
+level).
+
+**Structured vs. legacy events.** Every published `.uf2` today predates the
+firmware's `:tag <ts_ms> <tech> <protocol> <uid_hex|-> [k=v …]` event line, so
+`tags` parses the older human-readable `displayCardInfo()` text instead —
+same information, slightly less of it (no UID at all for NFC-B/NFC-F, no
+`extra` fields). The parser detects which one a board speaks on the fly and
+switches permanently to structured mode the moment it sees a `:tag` line.
+[`tags info`](#tags-info) tells you which mode a board is in.
+
+<a id="tags-read"></a>
+### `tags read`
+
+> Wait for one tag and print its UID.
+
+| Option | Description |
+|---|---|
+| `-t`, `--timeout SEC` | Seconds to wait for a tag (default `15`). |
+| `--json` | Emit one JSON object on stdout instead of the field table. |
+
+```sh
+bombercat tags read
+```
+
+```
+ℹ Waiting for a tag on /dev/ttyACM0 — Ctrl-C to abort
+
+  Tag detected
+  uid           04:1A:2B:3C
+  technology    NFC-A
+  protocol      T2T
+  SAK           08
+```
+
+`--json` prints a single clean object on stdout (nothing else touches
+stdout, so it's pipeable) with every field, `extra` merged in flat:
+
+```sh
+bombercat tags read --json
+```
+
+```json
+{"uid": "041A2B3C", "tech": "NFC-A", "protocol": "T2T", "ts_ms": 1234, "SAK": "08"}
+```
+
+No tag within the timeout is exit code `1`:
+
+```
+✗ no tag detected in 15s
+```
+
+On a firmware in legacy mode with **NFC-B** or **NFC-F** presented, `uid` has
+no value to print — the field table shows why instead of a blank:
+
+```
+  uid           unavailable (NFC-B: firmware prints no ID)
+```
+
+(`--json`'s `"uid"` is `null` in that case, not a placeholder string.)
+
+<a id="tags-watch"></a>
+### `tags watch`
+
+> Stream tag detections continuously. Ctrl-C to stop and print a summary.
+
+| Option | Description |
+|---|---|
+| `--dedupe` | Collapse repeat detections of the same UID into a `seen again (xN)` line instead of reprinting the row. |
+| `--quiet-noise` / `--no-quiet-noise` | Hide firmware boot/idle chatter — `Restarting…`, `Waiting for a Card…`, `Card removed!` (default: hidden). |
+| `--json` | Emit one JSON object per line instead of the formatted line. |
+
+```sh
+bombercat tags watch --dedupe
+```
+
+```
+ℹ Watching /dev/ttyACM0 — Ctrl-C to stop
+[12:26:48] NFC-A   T2T        04:1A:2B:3C
+  ↳ 04:1A:2B:3C seen again (x2)
+[12:26:48] NFC-B   ISODEP     unavailable (NFC-B: firmware prints no ID)
+
+ℹ 3 detections, 2 unique UIDs, 41s
+```
+
+Without `--dedupe`, a repeat detection just prints another line. With
+`-v`/`--verbose`, the boot/idle noise always shows regardless of
+`--quiet-noise` — that flag only controls the *default* (non-verbose) view.
+`--json` emits one object per detection and skips the noise lines and the
+closing summary, so the stream stays valid NDJSON.
+
+<a id="tags-scan"></a>
+### `tags scan`
+
+> Sample tag detections for a while and print an aggregated summary.
+
+Repeat detections of the same UID collapse into one row with a count and a
+first/last time seen (elapsed seconds since the scan started), instead of
+scrolling past like `watch` does.
+
+| Option | Description |
+|---|---|
+| `-t`, `--timeout SEC` | Seconds to sample for (default `30`). |
+| `--json FILE` | Also write the aggregate as a JSON array to `FILE`. |
+| `--csv FILE` | Also write the aggregate as CSV to `FILE` (base columns first, then any `extra` keys). |
+
+```sh
+bombercat tags scan -t 10
+```
+
+```
+ℹ Scanning /dev/ttyACM0 for 10s — Ctrl-C to stop early
+
+ℹ Scan @ /dev/ttyACM0 — 10s, 3 detections, 2 unique tags
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━┓
+┃ UID                                ┃ Tech  ┃ Protocol ┃ Count ┃ First ┃ Last ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━┩
+│ 04:1A:2B:3C                        │ NFC-A │ T2T      │     2 │  0.0s │ 4.1s │
+│ unavailable (NFC-B: firmware       │ NFC-B │ ISODEP   │     1 │  6.7s │ 6.7s │
+│ prints no ID)                      │       │          │       │       │      │
+└────────────────────────────────────┴───────┴──────────┴───────┴───────┴──────┘
+```
+
+A transient progress bar (elapsed / timeout, live detection count) shows
+while sampling and clears before the summary prints. An empty sample prints
+`no tags detected` instead of an empty table; `--json`/`--csv` still get
+written (an empty array / header-only file) so scripted runs don't have to
+special-case a quiet scan. Ctrl-C ends the sample early and summarizes
+whatever was seen so far — same as `watch`.
+
+<a id="tags-info"></a>
+### `tags info`
+
+> Report what this DetectTags image can do — mainly, which event mode it
+> speaks.
+
+```sh
+bombercat tags info
+```
+
+Structured firmware (has the `:tag` event line):
+
+```
+       DetectTags @ /dev/ttyACM0
+┌─────────┬────────────────────────────┐
+│ version │ 1.0.2                      │
+│ events  │ structured (':tag' events) │
+│ state   │ idle                       │
+└─────────┴────────────────────────────┘
+```
+
+A published (pre-FW-1) image, still on legacy text:
+
+```
+                        DetectTags @ /dev/ttyACM0
+┌─────────┬─────────────────────────────────────────────────────────────┐
+│ version │ 0.9.0                                                       │
+│ events  │ legacy text  (no ':tag' events — reflash for exact parsing) │
+│ state   │ idle                                                        │
+└─────────┴─────────────────────────────────────────────────────────────┘
+```
+
+`info` listens for up to 2s after the handshake to catch a `:tag` line if one
+happens to arrive; it does not itself trigger a scan, so a board that's had
+nothing presented to it since boot reports `legacy text` even on FW-1
+firmware until something is actually tapped. Every `.uf2` published today
+predates FW-1 and will therefore always report legacy mode — see
+[Firmwares](#firmwares).
 
 ---
 

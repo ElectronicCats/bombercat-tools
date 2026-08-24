@@ -13,6 +13,8 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [`run` times out](#run-times-out)
 - [`peer present` stays `no`](#peer-stays-no)
 - [Capture: Wireshark doesn't open / no frames](#capture-issues)
+- [`tags`: no tags detected](#no-tags-detected)
+- [`tags`: UID shows "unavailable" for NFC-B/NFC-F](#tags-uid-unavailable)
 - [`testserver` errors](#testserver-issues)
 
 ---
@@ -225,6 +227,48 @@ board (or check the app's session/role for Path B).
   to open the FIFO; with `-o` also given, capture falls back to the file.
 - A **classic pcap** written by the CLI vs a **pcapng** saved from Wireshark is
   expected — see [Capture / Wireshark](capture.md#classic-pcap-vs-pcapng).
+
+<a id="no-tags-detected"></a>
+## `tags`: no tags detected
+
+`bombercat tags watch`/`scan` looks idle with a card actually on the reader:
+
+- **It might not be idle — just quiet.** `watch` hides firmware boot/idle
+  chatter (`Restarting…`, `Waiting for a Card…`, `Card removed!`) by default.
+  Pass `--no-quiet-noise` (or `-v`, which always shows it) to see the raw
+  loop — if that's flooding by but no `:tag`/`Remote … activated` line ever
+  shows up, the PN7150 isn't seeing the card, not the CLI dropping it.
+- **Confirm the link itself with `-v`.** It traces every `>`/`<` line the
+  device sends over serial to stderr (`-vv` adds a timestamp), so you can see
+  whether the board is talking at all, independent of how `tags` parses it.
+- **Check it's actually DetectTags.** `bombercat status` — a board on a
+  different firmware won't emit tag lines no matter how long you wait; `tags`
+  itself catches this earlier at the handshake, not here.
+- **`tags read` has a 15s default timeout** (`-t`/`--timeout` to raise it) —
+  a slow tap can just run out the clock; retry or use `watch`, which has no
+  deadline.
+- Card positioning/antenna range issues are a firmware/hardware matter, not
+  something the CLI can diagnose — try `bombercat tags info` first to at
+  least confirm the board answers and check its `events` mode
+  ([reference](reference.md#tags-info)).
+
+<a id="tags-uid-unavailable"></a>
+## `tags`: UID shows "unavailable" for NFC-B/NFC-F
+
+```
+uid           unavailable (NFC-B: firmware prints no ID)
+```
+
+Not a bug — every published DetectTags `.uf2` parses the older, human-readable
+`displayCardInfo()` text (see [Firmwares](reference.md#firmwares)), and for
+**NFC-B** and **NFC-F** that text never includes a UID field at all — there is
+nothing for the CLI to read. `tags` reports this honestly rather than
+inventing a value or leaving the field blank. NFC-A, MIFARE and ISO15693 all
+print their UID and are unaffected. The only fix is on the firmware side: a
+future structured `:tag` event (`fw-1` in
+[docs/CLI_IMPROVEMENTS_DetectTags.md](CLI_IMPROVEMENTS_DetectTags.md)) would
+carry it if the PN7150 stack exposes it — no CLI change unlocks this on
+today's images.
 
 <a id="testserver-issues"></a>
 ## `testserver` errors

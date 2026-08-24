@@ -92,6 +92,18 @@ def test_repl_firmware_has_the_full_capability_set():
         assert nfcgate.can(cap)
 
 
+def test_detecttags_claims_the_tags_capability():
+    detecttags = fw.by_id("detecttags")
+    assert detecttags.can(fw.CAP_TAGS)
+    assert detecttags.has_repl
+
+
+def test_only_detecttags_claims_the_tags_capability():
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_TAGS):
+            assert f.id == "detecttags"
+
+
 def test_enrichment_fills_descriptions_when_available():
     descriptions = fw.load_descriptions()
     if not descriptions:

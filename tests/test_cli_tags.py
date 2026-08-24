@@ -6,13 +6,14 @@
 # command's real logic against a scripted `stream()`.
 # docs/CLI_IMPROVEMENTS_DetectTags.md §3.1-3.2, §7 (Phase 2).
 
+import csv
 import json
 
 import pytest
 
-from conftest import FakeLink, flat
+from conftest import FakeLink, flat, ok
 from modules.tags import cli as tagscli
-from modules.tags.cli import read_cmd, tags, watch_cmd
+from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
 
 STRUCTURED_LINE = ":tag 1234 NFC-A T2T 041A2B3C"
 
@@ -180,8 +181,131 @@ def test_watch_json_emits_newline_delimited_objects(runner, use_link):
     assert payload["uid"] == "041A2B3C"
 
 
+# ── scan ─────────────────────────────────────────────────────────────────────
+
+
+def test_scan_aggregates_repeats_and_prints_summary(runner, use_link):
+    def _lines():
+        yield STRUCTURED_LINE
+        yield STRUCTURED_LINE
+        yield ":tag 2000 NFC-A MIFARE A3912200"
+
+    use_link(tagscli, FakeLink(stream_lines=_lines()))
+    result = runner.invoke(scan_cmd, ["-t", "0.05"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "3 detections, 2 unique tags" in out
+    assert "04:1A:2B:3C" in out and "A3:91:22:00" in out
+
+
+def test_scan_reports_no_tags_detected(runner, use_link):
+    use_link(tagscli, FakeLink(stream_lines=[]))
+    result = runner.invoke(scan_cmd, ["-t", "0.01"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "0 detections, 0 unique tags" in out
+    assert "no tags detected" in out
+
+
+def test_scan_writes_json_and_csv_exports(runner, use_link, tmp_path):
+    json_path = tmp_path / "scan.json"
+    csv_path = tmp_path / "scan.csv"
+
+    def _lines():
+        yield STRUCTURED_LINE
+        yield STRUCTURED_LINE
+
+    use_link(tagscli, FakeLink(stream_lines=_lines()))
+    result = runner.invoke(
+        scan_cmd, ["-t", "0.05", "--json", str(json_path), "--csv", str(csv_path)]
+    )
+
+    assert result.exit_code == 0
+
+    payload = json.loads(json_path.read_text())
+    assert payload == [
+        {
+            "uid": "041A2B3C",
+            "tech": "NFC-A",
+            "protocol": "T2T",
+            "count": 2,
+            "first_s": payload[0]["first_s"],
+            "last_s": payload[0]["last_s"],
+        }
+    ]
+
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["uid"] == "041A2B3C"
+    assert rows[0]["count"] == "2"
+
+
+def test_scan_reports_a_board_that_will_not_handshake(runner, use_link):
+    link = use_link(tagscli, FakeLink(ping_ok=False))
+    result = runner.invoke(scan_cmd, ["-t", "0.01"])
+
+    assert result.exit_code == 1
+    assert "did not answer the handshake" in flat(result.stdout)
+    assert link.closed
+
+
+# ── info ─────────────────────────────────────────────────────────────────────
+
+
+def test_info_reports_structured_mode(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"info": ok(fw="1.2.0", state="idle")},
+            stream_lines=[STRUCTURED_LINE],
+        ),
+    )
+    result = runner.invoke(info_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "1.2.0" in out
+    assert "structured" in out
+    assert "idle" in out
+
+
+def test_info_falls_back_to_legacy_mode_with_no_tag_events(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(responses={"info": ok(fw="1.0.0", state="idle")}, stream_lines=[]),
+    )
+    result = runner.invoke(info_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "1.0.0" in out
+    assert "legacy text" in out
+    assert "reflash for exact parsing" in out
+
+
+def test_info_reports_a_device_error_from_the_info_command(runner, use_link):
+    from conftest import err
+
+    use_link(tagscli, FakeLink(responses={"info": err("unknown command")}))
+    result = runner.invoke(info_cmd, [])
+
+    assert result.exit_code == 1
+    assert "info failed" in flat(result.stdout)
+
+
+def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
+    link = use_link(tagscli, FakeLink(ping_ok=False))
+    result = runner.invoke(info_cmd, [])
+
+    assert result.exit_code == 1
+    assert "did not answer the handshake" in flat(result.stdout)
+    assert link.closed
+
+
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 
-def test_tags_group_exposes_both_subcommands():
-    assert set(tags.commands) == {"read", "watch"}
+def test_tags_group_exposes_all_subcommands():
+    assert set(tags.commands) == {"read", "watch", "scan", "info"}

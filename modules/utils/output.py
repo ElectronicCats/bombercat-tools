@@ -5,6 +5,8 @@ output.py - Shared Rich console and output helpers for all modules
 from __future__ import annotations
 
 import re
+import time
+from typing import Callable, Optional
 
 from rich.console import Console, Group
 from rich.padding import Padding
@@ -24,6 +26,37 @@ STYLES = {
 }
 
 console = Console()
+console_err = Console(stderr=True)
+
+_REDACT_RE = re.compile(r"^(set\s+pass\b)\s+\S+(.*)$", re.IGNORECASE)
+
+
+def make_tracer(
+    level: int, t0: Optional[float] = None
+) -> Optional[Callable[[str, str], None]]:
+    """Build a `DeviceLink` trace callback for `-v`/`-vv`, or `None` at level 0.
+
+    Level 1 prints `> `/`< ` lines (tx cyan, rx dim) to stderr. Level 2 adds an
+    elapsed-time stamp and byte count ahead of the line. `set pass ...` lines are
+    redacted regardless of level, since they carry the device's Wi-Fi/relay
+    secret in plain text.
+    """
+    if level <= 0:
+        return None
+    start = t0 if t0 is not None else time.monotonic()
+
+    def trace(direction: str, text: str) -> None:
+        text = _REDACT_RE.sub(r"\1 (redacted)\2", text)
+        arrow = ">" if direction == "tx" else "<"
+        style = "cyan" if direction == "tx" else "dim"
+        prefix = f"{arrow} "
+        if level >= 2:
+            elapsed = time.monotonic() - start
+            nbytes = len(text.encode("ascii", "replace"))
+            prefix = f"{arrow} [{elapsed:8.3f}s] ({nbytes:>3}B) "
+        console_err.print(f"[{style}]{prefix}{text}[/{style}]")
+
+    return trace
 
 
 def print_success(message: str) -> None:

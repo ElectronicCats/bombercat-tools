@@ -31,7 +31,22 @@ DEVICE_OPTION = click.option(
     help="Device ID from `bombercat device list` (for multiple BomberCats).",
 )
 
+VERBOSE_OPTION = click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Trace the wire protocol to stderr (-v, or -vv for timestamps/bytes).",
+)
+
 
 def target_options(func):
     """Apply both selectors to a command (`-p/--port` and `-d/--device`)."""
     return PORT_OPTION(DEVICE_OPTION(func))
+
+
+def device_options(func):
+    """`target_options` plus a local `-v/--verbose` for commands that trace the
+    wire protocol (see `output.make_tracer`). Combine with the root `-v` via
+    each command's own verbosity merge, since Click keeps group- and
+    command-level options with the same name independent."""
+    return VERBOSE_OPTION(target_options(func))

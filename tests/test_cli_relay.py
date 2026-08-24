@@ -327,6 +327,7 @@ def test_stop_reports_a_refusal(runner, use_link):
     use_link(nfc, FakeLink({"stop": err("not running")}))
     result = runner.invoke(stop_cmd, [])
 
+    assert result.exit_code == 1
     assert "stop failed: not running" in flat(result.output)
 
 

@@ -184,8 +184,12 @@ def _parse_descriptions(payload: bytes) -> Dict[str, str]:
         data = json.loads(payload)
     except (ValueError, TypeError):
         return {}
+    if not isinstance(data, dict):
+        # Reachable in practice: this reads user-editable, remote-persisted
+        # cache files, not just malicious JSON (docs/AUDIT_ERROR_HANDLING.md M2).
+        return {}
     out: Dict[str, str] = {}
-    for entries in (data or {}).values():
+    for entries in data.values():
         for entry in entries or []:
             filename = (entry or {}).get("filename")
             if filename:

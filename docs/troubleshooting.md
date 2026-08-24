@@ -259,16 +259,22 @@ board (or check the app's session/role for Path B).
 uid           unavailable (NFC-B: firmware prints no ID)
 ```
 
-Not a bug — every published DetectTags `.uf2` parses the older, human-readable
-`displayCardInfo()` text (see [Firmwares](reference.md#firmwares)), and for
-**NFC-B** and **NFC-F** that text never includes a UID field at all — there is
-nothing for the CLI to read. `tags` reports this honestly rather than
-inventing a value or leaving the field blank. NFC-A, MIFARE and ISO15693 all
-print their UID and are unaffected. The only fix is on the firmware side: a
-future structured `:tag` event (`fw-1` in
-[docs/CLI_IMPROVEMENTS_DetectTags.md](CLI_IMPROVEMENTS_DetectTags.md)) would
-carry it if the PN7150 stack exposes it — no CLI change unlocks this on
-today's images.
+Not a bug — every *published* DetectTags `.uf2` parses the older,
+human-readable `displayCardInfo()` text (see
+[Firmwares](reference.md#firmwares)), and on that build **NFC-B** and
+**NFC-F** never printed a UID field at all — there was nothing for the CLI to
+read. `tags` reports this honestly rather than inventing a value or leaving
+the field blank. NFC-A, MIFARE and ISO15693 all print their UID and are
+unaffected.
+
+The fix is on the firmware side, and it now exists in
+`DetectTags.ino` source: NFC-B's UID is the PUPI (bytes 1-4 of the ATQB
+response) and NFC-F's is the IDm (bytes 1-8 of the SENSF_RES response) —
+both already captured by the PN7150 library but never extracted before. A
+board built from the updated sketch reports the real UID (plus `attrib=`/
+`bitrate=` extras) instead of `unavailable`. It isn't in a published release
+yet, so boards running today's `.uf2` still show this message until
+reflashed.
 
 <a id="testserver-issues"></a>
 ## `testserver` errors

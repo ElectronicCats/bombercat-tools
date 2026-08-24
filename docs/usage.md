@@ -192,9 +192,13 @@ Two things worth knowing going in:
   structured `:tag` events — same detections, just without the `extra`
   fields the structured format can carry. `bombercat tags info` tells you
   which mode a given board is in.
-- **NFC-B and NFC-F tags print no UID** in legacy mode — that's a firmware
-  limitation, not a CLI bug. `tags` reports it honestly as `unavailable
-  (NFC-B: firmware prints no ID)` rather than a blank or a made-up value.
+- **NFC-B and NFC-F tags print no UID on today's published `.uf2`** — that's
+  a firmware limitation, not a CLI bug. `tags` reports it honestly as
+  `unavailable (NFC-B: firmware prints no ID)` rather than a blank or a
+  made-up value. A `DetectTags.ino` update that extracts the real UID for
+  both (PUPI for NFC-B, IDm for NFC-F) exists in the firmware source but
+  isn't in a published release yet — boards built from that source report
+  the real UID (plus `attrib`/`bitrate` extras) instead.
 
 See [Troubleshooting](troubleshooting.md#no-tags-detected) if `watch`/`scan`
 looks quiet with a card actually on the reader.

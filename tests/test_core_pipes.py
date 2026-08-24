@@ -52,17 +52,58 @@ def test_creating_the_pipe_makes_a_fifo(fifo_path):
     assert stat.S_ISFIFO(os.stat(fifo_path).st_mode)
 
 
-def test_creating_over_an_existing_fifo_is_not_an_error(fifo_path):
+def test_creating_over_an_existing_fifo_we_own_is_not_an_error(fifo_path):
     UnixPipe(fifo_path)
-    UnixPipe(fifo_path)  # a leftover FIFO is reused, not fatal
+    UnixPipe(fifo_path)  # a leftover FIFO we own is reused, not fatal
     assert stat.S_ISFIFO(os.stat(fifo_path).st_mode)
+
+
+def test_default_path_is_private_and_unpredictable():
+    """No fixed /tmp/fbombercat: each instance gets its own mode-0700 dir, so
+    another local user can neither pre-create nor guess the path (C3)."""
+    pipe = UnixPipe()
+    try:
+        assert pipe.pipe_path != pipes.DEFAULT_UNIX_PATH
+        parent = os.path.dirname(pipe.pipe_path)
+        assert stat.S_IMODE(os.stat(parent).st_mode) == 0o700
+        assert stat.S_ISFIFO(os.stat(pipe.pipe_path).st_mode)
+    finally:
+        pipe.remove()
+
+
+def test_removing_the_default_pipe_cleans_up_its_private_dir():
+    pipe = UnixPipe()
+    private_dir = pipe._private_dir
+    pipe.remove()
+    assert not os.path.exists(private_dir)
+
+
+def test_creating_over_a_symlink_refuses_to_reuse_it(tmp_path, fifo_path):
+    target = tmp_path / "elsewhere"
+    target.write_text("attacker-controlled")
+    os.symlink(target, fifo_path)
+
+    with pytest.raises(SystemExit):
+        UnixPipe(fifo_path)
+    assert target.read_text() == "attacker-controlled"  # never opened/written
+
+
+def test_creating_over_a_fifo_owned_by_another_user_refuses_to_reuse_it(
+    monkeypatch, fifo_path
+):
+    UnixPipe(fifo_path)  # a FIFO that "belongs" to someone else on disk
+    real_getuid = os.getuid
+    monkeypatch.setattr(pipes.os, "getuid", lambda: real_getuid() + 1)
+
+    with pytest.raises(SystemExit):
+        UnixPipe(fifo_path)
 
 
 def test_a_pipe_that_cannot_be_created_stops_the_capture(monkeypatch, fifo_path):
     monkeypatch.setattr(
         pipes.os,
         "mkfifo",
-        lambda p: (_ for _ in ()).throw(OSError("read-only file system")),
+        lambda p, *a, **k: (_ for _ in ()).throw(OSError("read-only file system")),
     )
     with pytest.raises(SystemExit):
         UnixPipe(fifo_path)

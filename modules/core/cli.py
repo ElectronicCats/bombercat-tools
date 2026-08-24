@@ -132,12 +132,19 @@ def print_header(module=None):
 
 
 @click.group("bombercat", context_settings={"help_option_names": ["-h", "--help"]})
-@click.option("-v", "--verbose", is_flag=True, help="Show Verbose mode")
-def cli(verbose):
+@click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Trace the wire protocol to stderr (-v, or -vv for timestamps/bytes).",
+)
+@click.pass_context
+def cli(ctx, verbose):
     """BomberCat: All in one bombercat tools environment."""
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
     if verbose:
         logger.level = logging.INFO
-    pass
 
 
 @click.command("identify", context_settings={"help_option_names": ["-h", "--help"]})

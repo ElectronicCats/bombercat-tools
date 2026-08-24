@@ -8,7 +8,7 @@
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterator, List, Optional
+from typing import Callable, Dict, Iterator, List, Optional
 
 import serial
 
@@ -52,11 +52,22 @@ class DeviceLink:
         port: str,
         baudrate: int = DEFAULT_BAUDRATE,
         timeout: float = DEFAULT_TIMEOUT,
+        trace: Optional[Callable[[str, str], None]] = None,
     ):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self._trace = trace
         self._ser: Optional[serial.Serial] = None
+
+    # -- tracing ---------------------------------------------------------------
+    def _tx(self, text: str) -> None:
+        if self._trace is not None:
+            self._trace("tx", text)
+
+    def _rx(self, text: str) -> None:
+        if self._trace is not None:
+            self._trace("rx", text)
 
     # -- lifecycle -----------------------------------------------------------
     def open(self) -> "DeviceLink":
@@ -85,10 +96,12 @@ class DeviceLink:
             raise DeviceError("link not open")
         deadline = time.monotonic() + (read_timeout or self.timeout * 4)
 
+        sent = line.strip()
         try:
             self._ser.reset_input_buffer()  # strict req/response: drop stale noise
-            self._ser.write((line.strip() + "\n").encode("ascii", "replace"))
+            self._ser.write((sent + "\n").encode("ascii", "replace"))
             self._ser.flush()
+            self._tx(sent)
         except serial.SerialTimeoutException:
             # write_timeout tripped: the device isn't draining its USB-OUT
             # endpoint (wedged firmware / wrong sketch). See usb_connection.py.
@@ -110,6 +123,7 @@ class DeviceLink:
             text = raw.decode("ascii", "replace").strip("\r\n")
             if not text:
                 continue
+            self._rx(text)
             marker = text[0]
             if marker == ":":
                 key, _, value = text[1:].partition(" ")
@@ -176,6 +190,7 @@ class DeviceLink:
                 continue
             text = raw.decode("ascii", "replace").rstrip("\r\n")
             if text:
+                self._rx(text)
                 lines.append(text)
         return lines
 

@@ -271,11 +271,10 @@ def stop_cmd(port, device_id):
     """Stop the relay."""
     with _device_session(port, device_id) as (target, link):
         r = link.stop()
-    (
-        print_success(f"relay stopped on {target}")
-        if r.ok
-        else print_error(f"stop failed: {r.message}")
-    )
+    if not r.ok:
+        print_error(f"stop failed: {r.message}")
+        raise SystemExit(1)
+    print_success(f"relay stopped on {target}")
 
 
 @click.command("status", context_settings={"help_option_names": ["-h", "--help"]})

@@ -194,9 +194,13 @@ class DeviceLink:
                 lines.append(text)
         return lines
 
-    def stream(self) -> Iterator[str]:
-        """Yield decoded serial lines forever (for `monitor`). Read-only; does
-        not send anything, so it does not disturb a running relay."""
+    def stream(self, yield_empty: bool = False) -> Iterator[str]:
+        """Yield decoded serial lines forever (for `monitor`/`tags watch`).
+        Read-only; does not send anything, so it does not disturb a running
+        relay. With ``yield_empty=True``, also yields `""` on every readline
+        timeout tick instead of silently retrying — callers that need to
+        honor their own deadline against a device that may stay silent (e.g.
+        `tags read` waiting for a card) can check it between empty yields."""
         if self._ser is None:
             raise DeviceError("link not open")
         while True:
@@ -206,8 +210,12 @@ class DeviceLink:
                 # Device unplugged (or otherwise gone) while monitoring.
                 raise DeviceError(f"serial link lost: {e}")
             if not raw:
+                if yield_empty:
+                    yield ""
                 continue
-            yield raw.decode("ascii", "replace").rstrip("\r\n")
+            text = raw.decode("ascii", "replace").rstrip("\r\n")
+            self._rx(text)
+            yield text
 
 
 # ── Discovery helpers ─────────────────────────────────────────────────────────

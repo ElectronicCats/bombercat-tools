@@ -38,6 +38,7 @@ from ..nfcgate.cli import (
 from ..capture.cli import capture as _capture
 from ..firmware.cli import flash as _flash
 from ..proto.cli import proto as _proto
+from ..tags.cli import tags as _tags
 from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
 
@@ -574,6 +575,7 @@ def main_cli() -> None:
     cli.add_command(_relay)
     cli.add_command(_capture)
     cli.add_command(_flash)
+    cli.add_command(_tags)
 
     # Deprecated compatibility aliases (hidden): old root spellings still work
     # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).

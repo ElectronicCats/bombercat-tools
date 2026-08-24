@@ -14,7 +14,7 @@ import threading
 import pytest
 
 from modules.core import pipes
-from modules.core.pipes import UnixPipe, Wireshark, find_wireshark_path
+from modules.core.pipes import PipelineError, UnixPipe, Wireshark, find_wireshark_path
 
 pytestmark = pytest.mark.skipif(
     os.name == "nt", reason="POSIX FIFOs; the Windows pipe needs pywin32"
@@ -83,7 +83,7 @@ def test_creating_over_a_symlink_refuses_to_reuse_it(tmp_path, fifo_path):
     target.write_text("attacker-controlled")
     os.symlink(target, fifo_path)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError):
         UnixPipe(fifo_path)
     assert target.read_text() == "attacker-controlled"  # never opened/written
 
@@ -95,7 +95,7 @@ def test_creating_over_a_fifo_owned_by_another_user_refuses_to_reuse_it(
     real_getuid = os.getuid
     monkeypatch.setattr(pipes.os, "getuid", lambda: real_getuid() + 1)
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError):
         UnixPipe(fifo_path)
 
 
@@ -105,7 +105,7 @@ def test_a_pipe_that_cannot_be_created_stops_the_capture(monkeypatch, fifo_path)
         "mkfifo",
         lambda p, *a, **k: (_ for _ in ()).throw(OSError("read-only file system")),
     )
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError):
         UnixPipe(fifo_path)
 
 

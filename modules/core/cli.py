@@ -595,4 +595,29 @@ def main_cli() -> None:
     if platform.system() in ["Linux", "Darwin"]:
         cli.add_command(completion)
 
-    cli(prog_name="bombercat")
+    try:
+        rv = cli(prog_name="bombercat", standalone_mode=False)
+    except click.exceptions.Abort:
+        # Ctrl-C / EOF, including during an interactive prompt.
+        raise SystemExit(130)
+    except KeyboardInterrupt:
+        print_error("interrupted")
+        raise SystemExit(130)
+    except click.ClickException as e:
+        e.show()
+        raise SystemExit(e.exit_code)
+    except DeviceError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+    except Exception as e:
+        if os.environ.get("BOMBERCAT_DEBUG"):
+            raise
+        print_error(
+            f"{type(e).__name__}: {e} (set BOMBERCAT_DEBUG=1 for a full traceback)"
+        )
+        raise SystemExit(1)
+    else:
+        # standalone_mode=False returns instead of exiting; exit explicitly so
+        # the process's exit code always matches what Click resolved (0 on
+        # success, or ctx.exit()'s code for --help/--version).
+        raise SystemExit(rv or 0)

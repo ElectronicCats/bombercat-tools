@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -40,6 +41,18 @@ DESCRIPTIONS_FILE = "descriptions.json"  # {"bombercat": [{filename, description
 # (FLASH_PLAN §2.3.3). An asset is ~400 KB, hence the longer budget.
 API_TIMEOUT = 10.0
 ASSET_TIMEOUT = 30.0
+
+# A hostile or misbehaving server (C2: the token-stripped host can still be
+# anything reachable over https on github.com/objects.githubusercontent.com)
+# must not be able to OOM the process with a giant or slow-drip response
+# (docs/AUDIT_ERROR_HANDLING.md M1). No real release asset is anywhere close
+# to this.
+MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+DOWNLOAD_CHUNK = 1 << 16
+# `timeout` only bounds a single socket read; a slow-drip server that trickles
+# one chunk per read just under that limit would otherwise hold the
+# connection open indefinitely. Bound the whole transfer too.
+DOWNLOAD_DEADLINE_MULTIPLIER = 6
 
 USER_AGENT = "bombercat-cli"
 
@@ -131,11 +144,36 @@ def _headers(url: str) -> Dict[str, str]:
 
 
 def http_get(url: str, timeout: float = API_TIMEOUT) -> bytes:
-    """GET `url`, translating every network failure into a FirmwareError."""
+    """GET `url`, translating every network failure into a FirmwareError.
+
+    Reads the body in bounded chunks against a hard size cap and an overall
+    deadline, instead of one unbounded `response.read()` — the asset URL
+    comes straight from release JSON (C2), so a hostile or slow-drip server
+    must not be able to grow this without bound or hold the connection open
+    forever (docs/AUDIT_ERROR_HANDLING.md M1).
+    """
     request = urllib.request.Request(url, headers=_headers(url))
     try:
         with _opener.open(request, timeout=timeout) as response:
-            return response.read()
+            deadline = time.monotonic() + timeout * DOWNLOAD_DEADLINE_MULTIPLIER
+            chunks: List[bytes] = []
+            total = 0
+            while True:
+                if time.monotonic() > deadline:
+                    raise FirmwareError(
+                        f"download from {url} took too long and was aborted"
+                    )
+                chunk = response.read(DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_DOWNLOAD_BYTES:
+                    raise FirmwareError(
+                        f"response from {url} exceeded the "
+                        f"{MAX_DOWNLOAD_BYTES // (1 << 20)} MiB download limit"
+                    )
+                chunks.append(chunk)
+            return b"".join(chunks)
     except urllib.error.HTTPError as e:
         if e.code == 404:
             raise ReleaseNotFound(f"not found on GitHub: {url}") from e
@@ -157,8 +195,13 @@ def parse_descriptions(payload: bytes) -> Dict[str, str]:
         data = json.loads(payload)
     except (ValueError, TypeError):
         return {}
+    if not isinstance(data, dict):
+        # The cache lives under ~/.bombercat/firmware — user-editable,
+        # remote-persisted data — so a top-level list/int/etc. is reachable in
+        # practice, not just malicious JSON (docs/AUDIT_ERROR_HANDLING.md M2).
+        return {}
     out: Dict[str, str] = {}
-    for entries in (data or {}).values():
+    for entries in data.values():
         for entry in entries or []:
             filename = (entry or {}).get("filename")
             if filename:

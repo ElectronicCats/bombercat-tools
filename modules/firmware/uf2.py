@@ -49,9 +49,14 @@ class BootloaderTimeout(FirmwareError):
 def validate_uf2(path: Path) -> None:
     """Raise unless `path` is a UF2 image this board's bootloader will take.
 
-    Cheap insurance: the bootloader silently ignores blocks whose family does
-    not match, so a wrong-chip image would "flash" successfully and leave a
-    board that never comes back.
+    Walks every block rather than just the first (docs/AUDIT_ERROR_HANDLING.md
+    M6): a local `flash ./mine.uf2` gets no other check, so a file that is
+    truncated-but-block-aligned or corrupted past the first 512 bytes must not
+    pass. Checks, per block: UF2 magic, a numBlocks that matches the file's
+    actual block count, in-order blockNo, and — cheap insurance, since the
+    bootloader silently ignores blocks whose family does not match, so a
+    wrong-chip image would otherwise "flash" successfully and leave a board
+    that never comes back — a consistent RP2040 family id.
     """
     try:
         size = path.stat().st_size
@@ -64,24 +69,55 @@ def validate_uf2(path: Path) -> None:
             f"of the {BLOCK_SIZE}-byte UF2 block."
         )
 
+    total_blocks = size // BLOCK_SIZE
+    expected_family: Optional[int] = None
     with path.open("rb") as fh:
-        block = fh.read(BLOCK_SIZE)
+        for index in range(total_blocks):
+            block = fh.read(BLOCK_SIZE)
+            (
+                start0,
+                start1,
+                flags,
+                _target_addr,
+                _payload_size,
+                block_no,
+                num_blocks,
+                family,
+            ) = struct.unpack("<8I", block[:32])
+            (end,) = struct.unpack("<I", block[-4:])
 
-    start0, start1, flags = struct.unpack("<3I", block[:12])
-    (family,) = struct.unpack("<I", block[28:32])
-    (end,) = struct.unpack("<I", block[-4:])
-
-    if (start0, start1, end) != (MAGIC_START0, MAGIC_START1, MAGIC_END):
-        raise FirmwareError(
-            f"{path.name} is not a UF2 image (its first block has no UF2 magic)."
-        )
-
-    if flags & FLAG_FAMILY_ID_PRESENT and family != RP2040_FAMILY_ID:
-        raise FirmwareError(
-            f"{path.name} is built for chip family 0x{family:08X}, not the "
-            f"RP2040 (0x{RP2040_FAMILY_ID:08X}) the BomberCat uses. The "
-            "bootloader would ignore every block."
-        )
+            if (start0, start1, end) != (MAGIC_START0, MAGIC_START1, MAGIC_END):
+                raise FirmwareError(
+                    f"{path.name} is not a UF2 image (block {index} has no "
+                    "UF2 magic)."
+                )
+            if num_blocks != total_blocks:
+                raise FirmwareError(
+                    f"{path.name} is corrupt: block {index} claims "
+                    f"{num_blocks} total blocks, but the file has "
+                    f"{total_blocks}."
+                )
+            if block_no != index:
+                raise FirmwareError(
+                    f"{path.name} is corrupt: block {index} is out of order "
+                    f"(it claims to be block {block_no})."
+                )
+            if flags & FLAG_FAMILY_ID_PRESENT:
+                if expected_family is None:
+                    expected_family = family
+                    if family != RP2040_FAMILY_ID:
+                        raise FirmwareError(
+                            f"{path.name} is built for chip family "
+                            f"0x{family:08X}, not the RP2040 "
+                            f"(0x{RP2040_FAMILY_ID:08X}) the BomberCat uses. "
+                            "The bootloader would ignore every block."
+                        )
+                elif family != expected_family:
+                    raise FirmwareError(
+                        f"{path.name} is corrupt: block {index} declares "
+                        f"chip family 0x{family:08X}, different from block "
+                        f"0's 0x{expected_family:08X}."
+                    )
 
 
 # ── Finding the bootloader drive ─────────────────────────────────────────────
@@ -133,11 +169,15 @@ def _candidates() -> List[Path]:
 
 
 def find_uf2_drive() -> Optional[Path]:
-    """The mounted UF2 bootloader drive, or None if the board is not in BOOTSEL.
+    """The drive actually named RPI-RP2, or None if it is not mounted.
 
-    A drive actually named RPI-RP2 wins over any other mounted UF2 board (a
-    Pico, a CatSniffer) so that a second board on the bench cannot quietly
-    become the flash target.
+    Family-id validation in `validate_uf2` does not save a Pico or a
+    CatSniffer sitting in its own UF2 bootloader on the same bench — they
+    share the RP2040 family id. Picking any other mounted UF2 drive as a
+    fallback would risk writing the wrong board's firmware to it, so an
+    unlabelled/mislabelled drive is treated the same as "board not in
+    BOOTSEL" (docs/AUDIT_ERROR_HANDLING.md M5): the caller's existing
+    "waiting for the RPI-RP2 drive" timeout / help panel covers it.
     """
     found: List[Path] = []
     for candidate in _candidates():
@@ -147,9 +187,7 @@ def find_uf2_drive() -> Optional[Path]:
         except OSError:
             # An unreadable or disconnected mount point: not our drive.
             continue
-    if not found:
-        return None
-    return next((p for p in found if p.name.upper() == DRIVE_LABEL), found[0])
+    return next((p for p in found if p.name.upper() == DRIVE_LABEL), None)
 
 
 def wait_for_uf2_drive(timeout: float = DRIVE_TIMEOUT) -> Path:

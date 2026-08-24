@@ -84,14 +84,33 @@ def wait_for_port_gone(port: str, timeout: float = PORT_GONE_TIMEOUT) -> bool:
 
 
 def wait_for_new_port(
-    known: Set[str], timeout: float = PORT_BACK_TIMEOUT
+    known: Set[str],
+    timeout: float = PORT_BACK_TIMEOUT,
+    say: Optional[Callable[[str], None]] = None,
 ) -> Optional[str]:
-    """Wait for a serial port that was not in `known` — the board, reflashed."""
+    """Wait for a serial port that was not in `known` — the board, reflashed.
+
+    New ports are preferred by BomberCat USB VID/PID (`matches_bombercat`) so
+    that an unrelated USB-CDC device plugged in during the flash window (a
+    phone, a second board) is not mistaken for the board coming back
+    (docs/AUDIT_ERROR_HANDLING.md M3). Only falls back to any new port, with a
+    warning, when nothing new matches — better than reporting "board did not
+    come back" when something did show up.
+    """
+    notify = say or (lambda message: None)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        new = _ports() - known
+        new = [p for p in list_ports_info(include_all=True) if p.device not in known]
         if new:
-            return sorted(new)[0]
+            matched = sorted(p.device for p in new if p.matches_bombercat)
+            if matched:
+                return matched[0]
+            unmatched = sorted(p.device for p in new)
+            notify(
+                "a new serial port appeared but its USB id does not match a "
+                f"known BomberCat — assuming it's the board anyway: {unmatched[0]}"
+            )
+            return unmatched[0]
         time.sleep(POLL_INTERVAL)
     return None
 
@@ -103,6 +122,11 @@ def copy_uf2(image: Path, drive: Path) -> None:
     before the kernel has finished the write — so an OSError *after* every byte
     was handed over is the flash succeeding, not failing (FLASH_PLAN §3.4).
     Only a short write is a real error.
+
+    `written` is tracked from `write()`'s own return value rather than assumed
+    to equal the chunk size — a file-like object that hands back fewer bytes
+    than asked without raising must not be counted as a full write
+    (docs/AUDIT_ERROR_HANDLING.md M4).
     """
     data = image.read_bytes()
     target = drive / image.name
@@ -111,8 +135,15 @@ def copy_uf2(image: Path, drive: Path) -> None:
         with target.open("wb") as fh:
             for offset in range(0, len(data), COPY_CHUNK):
                 chunk = data[offset : offset + COPY_CHUNK]
-                fh.write(chunk)
-                written += len(chunk)
+                n = fh.write(chunk)
+                if n is None:  # some file-like objects don't return a count
+                    n = len(chunk)
+                written += n
+                if n < len(chunk):
+                    raise FirmwareError(
+                        f"copying {image.name} to {drive} failed: short write "
+                        f"({n} of {len(chunk)} bytes) at offset {offset}"
+                    )
             fh.flush()
             os.fsync(fh.fileno())
     except OSError as e:
@@ -173,6 +204,6 @@ def flash(
     copy_uf2(image, drive)
 
     say("waiting for the board to come back")
-    back = wait_for_new_port(known, port_timeout)
+    back = wait_for_new_port(known, port_timeout, say)
 
     return FlashOutcome(image=image, drive=drive, touched=touched, port=back)

@@ -17,6 +17,7 @@ from .bombercat import DeviceError, DeviceLink, resolve_port
 from .firmwares import (
     BANNER,
     HANDSHAKE,
+    INFERRED,
     NONE,
     USB,
     CAP_MONITOR,
@@ -173,12 +174,15 @@ def identify_cmd(port, device_id):
 #
 # `bombercat status` now reports the *flashed firmware* (name/version/
 # capabilities), not the relay state — that moved to `bombercat relay status`.
-# Detection is handshake-optional so it works for the eight firmwares that have
-# no control REPL, reporting each with the confidence it deserves.
+# Detection is handshake-optional so it also works for the firmwares with no
+# control REPL (the legacy relay pair, the ESP32 passthrough) and for boards
+# still running an image built before the REPL existed, reporting each with the
+# confidence it deserves.
 # See docs/GENERALIZE_CLI_PLAN.md §2.3.
 
 _CONFIDENCE_LABEL = {
     HANDSHAKE: "handshake (certain)",
+    INFERRED: "handshake, name inferred (likely)",
     BANNER: "boot banner (likely)",
     USB: "USB id only (firmware unknown)",
     NONE: "not detected",
@@ -251,11 +255,24 @@ def firmware_status_cmd(no_sniff, port, device_id):
     if fw.description:
         print_dim(fw.description)
 
+    if detection.confidence == INFERRED:
+        print_info(
+            "The board answers the control REPL but does not report a firmware "
+            "name, so this is the only firmware it can be — an image built "
+            "before `fw_name` existed. Reflash from a current release to make "
+            "the answer certain."
+        )
+
     if detection.confidence == USB:
         print_info(
             "A BomberCat is present but its firmware could not be identified "
             "from the host (no control REPL, no known boot banner)."
         )
+        if detection.version:
+            print_dim(
+                f"It reports version {detection.version} over the REPL but "
+                "names a firmware this CLI does not know."
+            )
 
     print_empty_line()
     print_info("Next:")

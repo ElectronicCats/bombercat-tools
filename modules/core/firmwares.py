@@ -58,7 +58,10 @@ _ENTRIES = (
         capabilities=frozenset(
             {CAP_RELAY, CAP_CONFIG, CAP_MONITOR, CAP_IDENTIFY, CAP_CAPTURE}
         ),
-        banners=("+OK bombercat",),
+        # No boot banner on purpose: "+OK bombercat" is the *reply* to `ping`,
+        # not something the sketch prints at boot, and listing it here would let
+        # it shadow a genuine banner match (see _match_banner).
+        banners=(),
     ),
     Firmware(
         id="detecttags",
@@ -74,7 +77,7 @@ _ENTRIES = (
         uf2="magspoof.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
-        banners=("Default tracks:", "Track 1:"),
+        banners=("Default tracks:",),  # printed by setupTracks() at boot
     ),
     Firmware(
         id="magspoofcvsattack",
@@ -82,7 +85,7 @@ _ENTRIES = (
         uf2="MagspoofCVSAttack.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
-        banners=("data.csv", "Track"),
+        banners=("MagSpoof Attack!!",),
     ),
     Firmware(
         id="magspoofmqtt",
@@ -90,7 +93,7 @@ _ENTRIES = (
         uf2="MagSpoofMqtt.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
-        banners=("Connecting to", "MQTT"),
+        banners=("Ready MQTT MagSpoof",),
     ),
     Firmware(
         id="nfcgate_wifiwebserver",
@@ -100,23 +103,26 @@ _ENTRIES = (
         capabilities=frozenset(
             {CAP_IDENTIFY}
         ),  # driven from a browser, nothing on serial
-        banners=("AP", "WebServer"),
+        # Its boot output is magspoof's, verbatim (both call the same
+        # setupTracks()), so no banner can tell them apart. It does not need
+        # one: it answers the REPL and names itself.
+        banners=(),
     ),
     Firmware(
         id="host_relay_nfc",
         display="host_Relay_NFC",
         uf2="host_Relay_NFC.uf2",
-        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
-        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
-        banners=("Reset", "PN7150"),
+        has_repl=False,  # legacy sketch: no SerialControl/BomberCatControl
+        capabilities=frozenset({CAP_MONITOR}),
+        banners=("Host Relay NFC",),  # end of setup(), next to its CLI greeting
     ),
     Firmware(
         id="client_relay_nfc",
         display="client_Relay_NFC",
         uf2="client_Relay_NFC.uf2",
-        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
-        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
-        banners=("Activating MagSpoof",),
+        has_repl=False,  # legacy sketch: no SerialControl/BomberCatControl
+        capabilities=frozenset({CAP_MONITOR}),
+        banners=("Client Relay NFC",),  # only when its `debug` flag is on
     ),
     Firmware(
         id="esp32passthrough",
@@ -224,7 +230,13 @@ def by_uf2(uf2_name: str) -> Optional[Firmware]:
 
 
 def repl_firmwares() -> Tuple[Firmware, ...]:
-    """Firmwares that answer the control handshake (today: just NFCGate)."""
+    """Firmwares that answer the control handshake.
+
+    NFCGate (full SerialControl) plus the sketches that embed the small
+    BomberCatControl REPL. The legacy relay pair and the ESP32 passthrough have
+    no REPL at all, so they can only be recognised by banner — which is why
+    `has_repl` must stay honest here.
+    """
     return tuple(fw for fw in _ENTRIES if fw.has_repl)
 
 
@@ -237,9 +249,11 @@ def all_firmwares(enrich: bool = True) -> Tuple[Firmware, ...]:
 
 
 # ── Firmware detection ────────────────────────────────────────────────────────
-# The identity of a firmware is NOT fully auto-detectable from the host: only
-# NFCGate answers the control handshake. For everything else we degrade with
-# honesty — "a BomberCat is present, firmware not identifiable" — rather than
+# A firmware that speaks the REPL names itself (`info` -> `:fw_name`), so it is
+# identified with certainty. For everything else — the legacy relay pair, the
+# passthrough, and any board still running an image built before the REPL
+# existed — we fall back to the boot banner, and failing that we degrade with
+# honesty ("a BomberCat is present, firmware not identifiable") rather than
 # guess. detect_firmware returns a confidence level so callers can say exactly
 # how sure they are. See docs/GENERALIZE_CLI_PLAN.md §2.2.
 
@@ -255,10 +269,17 @@ from .usb_connection import (  # noqa: E402
 )
 
 # Confidence levels, most to least certain.
-HANDSHAKE = "handshake"  # answered the control REPL — certain
+HANDSHAKE = "handshake"  # answered the control REPL and named itself — certain
+INFERRED = "inferred"  # answered the REPL but did not name itself — see below
 BANNER = "banner"  # matched a boot banner — likely
 USB = "usb"  # present by USB id, firmware unknown
 NONE = "none"  # nothing there
+
+# The one firmware whose builds could answer the REPL before `info` learned to
+# report `fw_name`. The other five gained their REPL in the very same firmware
+# refactor that added the field, so a board that answers `ping` yet reports no
+# name is an older NFCGate. Sound, but an inference — hence INFERRED.
+_PRE_FW_NAME_REPL = "nfcgate"
 
 
 @dataclass
@@ -273,20 +294,25 @@ class DetectionResult:
 
     @property
     def identified(self) -> bool:
-        return self.confidence in (HANDSHAKE, BANNER)
+        """Did we end up with a name? (Not necessarily a certain one.)"""
+        return self.confidence in (HANDSHAKE, INFERRED, BANNER)
 
 
 def _match_banner(lines) -> Optional[Firmware]:
-    """First firmware whose banner substring appears in the sniffed output.
+    """The firmware whose banner appears in the sniffed output, if exactly one.
 
-    NFCGate is skipped here — it is identified by handshake, not banner, and its
-    '+OK bombercat' would otherwise shadow a genuine banner match.
+    Every entry is eligible, `has_repl` or not: we only get here because `ping`
+    went unanswered, and a board running a build made before its firmware grew
+    the REPL is precisely the case this level exists for. (Filtering on
+    `has_repl` made this function unreachable the day six firmwares gained one.)
+
+    Two firmwares matching the same output is not a tie to break by registry
+    order — it is a lack of evidence, and the caller degrades to "present, not
+    identified" instead of naming one at random.
     """
     blob = "\n".join(lines)
-    for fw in _ENTRIES:
-        if not fw.has_repl and any(b and b in blob for b in fw.banners):
-            return fw
-    return None
+    matches = [fw for fw in _ENTRIES if any(b and b in blob for b in fw.banners)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def detect_firmware(
@@ -297,10 +323,12 @@ def detect_firmware(
 ) -> DetectionResult:
     """Identify what firmware a board is running, by levels of confidence.
 
-    1. Handshake (certain): the control REPL answers `ping` -> map to a REPL
-       firmware (today NFCGate) and read its version via `info`. When the
-       firmware reports `fw_name` we trust it; otherwise we fall back to the
-       single REPL firmware (see GENERALIZE_CLI_PLAN §2.5).
+    1. Handshake (certain): the control REPL answers `ping`, and `info` says
+       which firmware it is (`fw_name`) and at what version.
+    1b. Inferred: the REPL answers but reports no `fw_name` — an image built
+       before the field existed, which narrows it to NFCGate. Named, but said
+       to be an inference. A board that reports a name we do not know is not
+       inferred at all: it is something else entirely (GENERALIZE_CLI_PLAN §2.5).
     2. Banner (likely, opt-out via ``sniff=False``): no REPL, but a boot-output
        substring matches a registry banner.
     3. USB (present, unknown): a BomberCat USB id is here but nothing identified
@@ -316,23 +344,39 @@ def detect_firmware(
         return _enriched(fw, descriptions)
 
     link = None
+    version = None
     try:
         link = DeviceLink(port, baudrate).open()
         if link.ping():
             info = link.info()
             version = info.data.get("fw") if info.ok else None
             named = info.data.get("fw_name") if info.ok else None
+            # The board is the authority on its own identity; the registry is
+            # consulted only to learn what that name is able to do.
             fw = by_id(named) if named and named in REGISTRY else None
-            if fw is None or not fw.has_repl:
-                repls = repl_firmwares()
-                fw = repls[0] if repls else UNKNOWN
-            return DetectionResult(
-                firmware=enriched(fw),
-                confidence=HANDSHAKE,
-                port=port,
-                version=version,
-                usb_present=True,
-            )
+            if fw is not None:
+                return DetectionResult(
+                    firmware=enriched(fw),
+                    confidence=HANDSHAKE,
+                    port=port,
+                    version=version,
+                    usb_present=True,
+                )
+            if not named:
+                # Silent about its identity -> a pre-`fw_name` build. Reporting
+                # it as NFCGate is right for every image published so far, but
+                # this must never be dressed up as HANDSHAKE certainty now that
+                # six firmwares answer the same handshake.
+                return DetectionResult(
+                    firmware=enriched(by_id(_PRE_FW_NAME_REPL)),
+                    confidence=INFERRED,
+                    port=port,
+                    version=version,
+                    usb_present=True,
+                )
+            # It named itself something the registry has never heard of: a
+            # newer or custom firmware. Inferring anything here would be wrong.
+            usb_present = True
         if sniff:
             match = _match_banner(link.read_lines())
             if match is not None:
@@ -340,6 +384,7 @@ def detect_firmware(
                     firmware=enriched(match),
                     confidence=BANNER,
                     port=port,
+                    version=version,
                     usb_present=usb_present,
                 )
     except (DeviceError, OSError):
@@ -354,10 +399,14 @@ def detect_firmware(
 
     if usb_present:
         return DetectionResult(
-            firmware=UNKNOWN, confidence=USB, port=port, usb_present=True
+            firmware=UNKNOWN,
+            confidence=USB,
+            port=port,
+            version=version,  # set when the REPL named a firmware we do not know
+            usb_present=True,
         )
     return DetectionResult(
-        firmware=UNKNOWN, confidence=NONE, port=port, usb_present=False
+        firmware=UNKNOWN, confidence=NONE, port=port, version=version, usb_present=False
     )
 
 

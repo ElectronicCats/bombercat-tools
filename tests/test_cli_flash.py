@@ -14,12 +14,14 @@ import json
 import struct
 from pathlib import Path
 
+import click
 import pytest
 
 from conftest import flat, make_device, make_port
+from modules.core.firmwares import all_firmwares
 from modules.firmware import cli as fw
 from modules.firmware import flasher, uf2
-from modules.firmware.cli import flash, human_size
+from modules.firmware.cli import complete_firmware, flash, human_size
 from modules.firmware.releases import FirmwareError, ReleaseCache, ReleaseNotFound
 from modules.firmware.uf2 import BootloaderTimeout
 
@@ -962,3 +964,117 @@ def test_a_board_that_does_not_re_enumerate_is_flagged(
     assert result.exit_code == 0
     assert "did not re-enumerate" in out
     assert "bombercat device list" in out
+
+
+# ── Tab completion (FLASH_PLAN Fase D) ───────────────────────────────────────
+# `complete_firmware` runs on every <TAB>, so the contract these tests pin down
+# is as much about what it must NOT do — no network, no exception — as about
+# the names it offers.
+
+
+def _values(items):
+    return [item.value for item in items]
+
+
+def _typed(items):
+    return [(item.value, item.type) for item in items]
+
+
+def test_completion_offers_the_names_in_the_cached_release(cache, use_cache):
+    c, github = cache()
+    c.refresh()
+    use_cache(c)
+    before = len(github.calls)
+
+    items = complete_firmware(None, None, "")
+
+    assert _values(items) == ["DetectTags", "MagspoofCVSAttack", "NFCGate"]
+    assert items[0].help == "DetectTags.uf2 does things."
+    assert github.calls[before:] == [], "completion must never touch the network"
+
+
+def test_completion_matches_a_substring_case_insensitively(cache, use_cache):
+    c, _ = cache()
+    c.refresh()
+    use_cache(c)
+
+    # The same resolution `find()` does (§3.5), so what completes is flashable.
+    assert _values(complete_firmware(None, None, "magspoofc")) == ["MagspoofCVSAttack"]
+    assert _values(complete_firmware(None, None, "NFC")) == ["NFCGate"]
+
+
+def test_completion_falls_back_to_the_registry_when_the_cache_is_empty(
+    cache, use_cache
+):
+    c, github = cache()
+    use_cache(c)
+
+    values = _values(complete_firmware(None, None, ""))
+
+    # Nothing downloaded yet is the normal state of a fresh install; the nine
+    # names are still known statically.
+    assert values == [f.display for f in all_firmwares()]
+    assert "NFCGate" in values
+    assert github.calls == [], "completion must never touch the network"
+
+
+def test_completion_hands_paths_back_to_the_shell(cache, use_cache):
+    c, _ = cache()
+    c.refresh()
+    use_cache(c)
+
+    for typed in ("./build/", "/tmp/nfc", "~/images/"):
+        assert _typed(complete_firmware(None, None, typed)) == [(typed, "file")]
+
+
+def test_completion_offers_files_when_nothing_matches(cache, use_cache):
+    c, _ = cache()
+    c.refresh()
+    use_cache(c)
+
+    # `bombercat flash mine.uf2` with the image in the current directory.
+    assert _typed(complete_firmware(None, None, "mine.uf")) == [("mine.uf", "file")]
+
+
+def test_completion_help_is_a_single_clipped_line(cache, use_cache):
+    c, github = cache()
+    _describe(github, {"NFCGate.uf2": "Relay endpoint.\n\n" + "verbose " * 40})
+    c.refresh()
+    use_cache(c)
+
+    (item,) = complete_firmware(None, None, "nfcgate")
+
+    # click joins the completion fields with newlines; a paragraph would
+    # corrupt the response the shell parses.
+    assert "\n" not in item.help
+    assert len(item.help) <= fw.COMPLETION_HELP_WIDTH
+    assert item.help.startswith("Relay endpoint.") and item.help.endswith("\u2026")
+
+
+def test_completion_of_an_image_without_a_description_has_no_help(cache, use_cache):
+    c, github = cache()
+    _describe(github, {})
+    c.refresh()
+    use_cache(c)
+
+    assert complete_firmware(None, None, "nfcgate")[0].help is None
+
+
+def test_a_broken_cache_does_not_break_completion(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("no home directory")
+
+    monkeypatch.setattr(fw, "ReleaseCache", boom)
+
+    assert complete_firmware(None, None, "nfc") == []
+
+
+def test_the_firmware_argument_is_wired_to_the_completer(cache, use_cache):
+    c, _ = cache()
+    c.refresh()
+    use_cache(c)
+    argument = next(p for p in flash.params if p.name == "firmware")
+
+    items = argument.shell_complete(click.Context(flash), "nfc")
+
+    assert _values(items) == ["NFCGate"]

@@ -211,11 +211,16 @@ Takes the [device selectors](#device-selection), plus `--no-sniff`. Unlike the
 relay commands, `status` does **not** require the NFCGate REPL — it identifies a
 board by levels of confidence so it works for any of the firmwares below:
 
-1. **handshake (certain)** — the board answers the control REPL. Today only
-   NFCGate does; its version comes from `info`.
-2. **boot banner (likely)** — no REPL, but a known boot-output string matched.
-   Best-effort and reset-sensitive; disable with `--no-sniff`.
-3. **USB id only (firmware unknown)** — a BomberCat is present by USB VID/PID but
+1. **handshake (certain)** — the board answers the control REPL *and* names
+   itself: `info` reports `fw_name` and the version. Six of the nine images do.
+2. **handshake, name inferred (likely)** — the REPL answers but sends no
+   `fw_name`, which only happens on an image built before that field existed.
+   Back then NFCGate was the only firmware with a REPL, so that is the name —
+   reported as an inference, never as certainty. Reflash to make it certain.
+3. **boot banner (likely)** — the REPL stayed silent, but a known boot-output
+   string matched. Best-effort and reset-sensitive; disable with `--no-sniff`.
+   Output matching *two* firmwares names neither of them.
+4. **USB id only (firmware unknown)** — a BomberCat is present by USB VID/PID but
    nothing identified it. Reported honestly, not guessed.
 
 | Option | Description |
@@ -251,21 +256,27 @@ on the port.
 
 `status` recognises the images published by
 [bombercat-firmware](https://github.com/ElectronicCats/bombercat-firmware) (the
-same set [`flash`](#flash) can write). Only **NFCGate** speaks the control REPL,
-so it is the only one identified with certainty from the host; the rest are
-best-effort (USB presence + optional boot banner).
+same set [`flash`](#flash) can write). **NFCGate** carries the full control REPL
+(`SerialControl`); five more embed the small `BomberCatControl` REPL, enough to
+answer `ping`/`info`/`identify` and name themselves. The remaining three have no
+REPL at all and are best-effort only (USB presence + optional boot banner).
 
 | Firmware | Control REPL | Host capabilities |
 |---|---|---|
 | **NFCGate** | ✅ handshake | relay, config, monitor, identify, capture |
-| DetectTags | ❌ | monitor (read-only) |
-| magspoof | ❌ | monitor |
-| MagspoofCVSAttack | ❌ | monitor |
-| MagSpoofMqtt | ❌ | monitor |
-| WiFiWebServer | ❌ | (browser UI; nothing on serial) |
-| host_Relay_NFC | ❌ | monitor |
-| client_Relay_NFC | ❌ | monitor |
+| DetectTags | ✅ handshake | monitor, identify |
+| magspoof | ✅ handshake | monitor, identify |
+| MagspoofCVSAttack | ✅ handshake | monitor, identify |
+| MagSpoofMqtt | ✅ handshake | monitor, identify |
+| WiFiWebServer | ✅ handshake | identify (browser UI; nothing else on serial) |
+| host_Relay_NFC | ❌ banner only | monitor |
+| client_Relay_NFC | ❌ banner only | monitor |
 | ESP32SerialPassthroughFlash | ❌ | passthrough |
+
+> The REPL arrived with the firmware refactor that also added `fw_name`. Every
+> `.uf2` published **before** it — which includes the images `flash` downloads
+> today — answers only in NFCGate's case, so most boards in the wild land on
+> level 2 or 3 above until they are reflashed from a newer release.
 
 ---
 

@@ -26,10 +26,46 @@ def test_registry_covers_every_uf2_in_descriptions_and_vice_versa():
 
 
 def test_exactly_the_repl_firmwares_are_flagged():
-    """Today NFCGate is the only board that answers the control handshake."""
+    """Which sketches answer the control handshake, checked against firmware.
+
+    NFCGate carries the full SerialControl; five more embed the small
+    BomberCatControl. The legacy relay pair and the ESP32 passthrough include
+    neither, so they must stay flagged REPL-less — `_match_banner` and
+    `detect_firmware` both lean on this being true.
+    """
     repl = {f.id for f in fw.repl_firmwares()}
-    assert repl == {"nfcgate"}
+    assert repl == {
+        "nfcgate",
+        "detecttags",
+        "magspoof",
+        "magspoofcvsattack",
+        "magspoofmqtt",
+        "nfcgate_wifiwebserver",
+    }
     assert all(f.has_repl for f in fw.repl_firmwares())
+
+
+def test_only_repl_firmwares_claim_the_identify_capability():
+    """`identify` is a REPL command; a board without one cannot blink on demand."""
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_IDENTIFY):
+            assert f.has_repl, f"{f.id} claims identify without a REPL"
+
+
+def test_no_banner_is_claimed_by_two_firmwares():
+    """A banner shared by two entries can never identify either of them.
+
+    _match_banner refuses ambiguous output, so a duplicate here does not cause a
+    wrong answer — it silently costs both firmwares their only means of being
+    recognised. Worth catching as drift instead.
+    """
+    seen = {}
+    for f in fw.all_firmwares(enrich=False):
+        for banner in f.banners:
+            assert (
+                banner not in seen
+            ), f"{f.id} and {seen[banner]} both claim the banner {banner!r}"
+            seen[banner] = f.id
 
 
 def test_ids_and_uf2_names_are_unique():

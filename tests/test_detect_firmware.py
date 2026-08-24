@@ -27,12 +27,12 @@ def fake_link(monkeypatch):
 
 
 def test_handshake_identifies_nfcgate_with_its_version(fake_link):
-    fake_link(FakeLink({"info": ok(fw="0.9.7")}, ping_ok=True))
+    fake_link(FakeLink({"info": ok(fw="0.9.8", fw_name="nfcgate")}, ping_ok=True))
     r = fw.detect_firmware("/dev/ttyACM0")
 
     assert r.confidence == fw.HANDSHAKE
     assert r.firmware.id == "nfcgate"
-    assert r.version == "0.9.7"
+    assert r.version == "0.9.8"
     assert r.usb_present and r.identified
 
 
@@ -45,15 +45,56 @@ def test_handshake_trusts_an_explicit_fw_name(fake_link):
     assert r.version == "1.0.0"
 
 
-def test_handshake_ignores_an_unknown_fw_name_and_falls_back(fake_link):
-    fake_link(FakeLink({"info": ok(fw="9", fw_name="martian")}, ping_ok=True))
+def test_handshake_names_a_firmware_other_than_nfcgate(fake_link):
+    """Six sketches answer the REPL now; each one names itself (§2.5)."""
+    fake_link(FakeLink({"info": ok(fw="0.9.8", fw_name="detecttags")}, ping_ok=True))
     r = fw.detect_firmware("/dev/ttyACM0")
 
     assert r.confidence == fw.HANDSHAKE
-    assert r.firmware.id == "nfcgate"  # only REPL firmware -> the fallback
+    assert r.firmware.id == "detecttags"
+    assert r.version == "0.9.8"
 
 
-def test_banner_match_identifies_a_repl_less_firmware(fake_link):
+def test_an_unnamed_repl_board_is_inferred_not_asserted(fake_link):
+    """A pre-`fw_name` build — every NFCGate up to 0.9.7, i.e. what is flashed
+    on the boards in the wild today.
+
+    It still gets a name: NFCGate is the only firmware whose builds could
+    answer the REPL before the field existed. What it must NOT get is
+    handshake-level certainty, now that six firmwares answer the same ping.
+    """
+    fake_link(FakeLink({"info": ok(fw="0.9.7")}, ping_ok=True))
+    r = fw.detect_firmware("/dev/ttyACM0")
+
+    assert r.firmware.id == "nfcgate"
+    assert r.confidence == fw.INFERRED
+    assert r.confidence != fw.HANDSHAKE
+    assert r.identified  # named, just not certain
+    assert r.version == "0.9.7"
+
+
+def test_a_firmware_that_names_itself_something_unknown_is_not_inferred(fake_link):
+    """Naming an unknown firmware is not the same as naming none.
+
+    A board that says "martian" is a newer or custom image, not an old
+    NFCGate, so the pre-`fw_name` inference must not fire for it.
+    """
+    fake_link(FakeLink({"info": ok(fw="9", fw_name="martian")}, ping_ok=True))
+    r = fw.detect_firmware("/dev/ttyACM0")
+
+    assert r.firmware is fw.UNKNOWN
+    assert r.confidence == fw.USB
+    assert not r.identified
+    assert r.version == "9"  # what little we did learn survives
+
+
+def test_banner_identifies_a_board_whose_repl_stays_silent(fake_link):
+    """A board running an image built before its firmware grew the REPL.
+
+    Every published .uf2 today is such an image, so this level must consider
+    firmwares that `has_repl` marks as REPL-capable — filtering them out made
+    the whole banner level unreachable.
+    """
     fake_link(
         FakeLink(
             ping_ok=False,
@@ -65,6 +106,34 @@ def test_banner_match_identifies_a_repl_less_firmware(fake_link):
     assert r.confidence == fw.BANNER
     assert r.firmware.id == "detecttags"
     assert r.identified
+
+
+def test_banner_identifies_the_repl_less_relay_pair(fake_link):
+    """The legacy relay sketches have no REPL at all: banner or nothing."""
+    fake_link(
+        FakeLink(
+            ping_ok=False,
+            stream_lines=["BomberCat, yes Sir!", "Host Relay NFC", "Type help"],
+        )
+    )
+    r = fw.detect_firmware("/dev/ttyACM0")
+
+    assert r.firmware.id == "host_relay_nfc"
+    assert r.confidence == fw.BANNER
+
+
+def test_an_ambiguous_banner_names_nobody(fake_link):
+    """Two firmwares matching is missing evidence, not a tie to break."""
+    fake_link(
+        FakeLink(
+            ping_ok=False,
+            stream_lines=["Host Relay NFC", "Client Relay NFC"],
+        )
+    )
+    r = fw.detect_firmware("/dev/ttyACM0")
+
+    assert r.firmware is fw.UNKNOWN
+    assert r.confidence == fw.USB
 
 
 def test_sniff_can_be_disabled(fake_link):

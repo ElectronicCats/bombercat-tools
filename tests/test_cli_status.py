@@ -52,6 +52,20 @@ def test_status_reports_nfcgate_by_handshake(runner, detect):
     assert "bombercat relay run" in out
 
 
+def test_status_marks_an_inferred_name_as_not_certain(runner, detect):
+    """A pre-`fw_name` board: named, but the table must not claim certainty."""
+    detect(_result("nfcgate", fw.INFERRED, version="0.9.7"))
+    result = runner.invoke(firmware_status_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "NFCGate" in out and "0.9.7" in out
+    assert "inferred" in out
+    assert "handshake (certain)" not in out
+    assert "does not report a firmware name" in out
+    assert "bombercat relay run" in out  # still a usable NFCGate board
+
+
 def test_status_reports_a_banner_detected_firmware(runner, detect):
     detect(_result("detecttags", fw.BANNER))
     result = runner.invoke(firmware_status_cmd, [])

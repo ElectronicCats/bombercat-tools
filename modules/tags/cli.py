@@ -7,19 +7,34 @@
 # docs/CLI_IMPROVEMENTS_DetectTags.md §3.1-3.2.
 # Distributed as-is; no warranty is given.
 
+import csv
 import json
 import re
 import time
 from contextlib import contextmanager
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import click
 import serial
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.table import Table
 
 from ..core.bombercat import DeviceError, DeviceLink, resolve_port
 from ..utils.cli_options import device_options
-from ..utils.output import console, make_tracer, print_error, print_info, print_warning
+from ..utils.output import (
+    console,
+    make_tracer,
+    print_dim,
+    print_error,
+    print_info,
+    print_warning,
+)
+from .aggregator import TagAggregator
 from .parser import Tag, TagParser
+
+# How long `tags info` listens for a ':tag' event before concluding the
+# firmware doesn't emit them (docs/CLI_IMPROVEMENTS_DetectTags.md §3.4/§3.5).
+_INFO_PROBE_SECONDS = 2.0
 
 # Firmware chatter the CLI's own (non -v) output hides by default: boot/idle
 # noise printed on every loop iteration, not a detection.
@@ -220,3 +235,170 @@ def watch_cmd(ctx, dedupe, quiet_noise, as_json, verbose, port, device_id):
         print_info(
             f"{detections} detections, {len(counts)} unique UIDs, {duration:.0f}s"
         )
+
+
+# ── scan ─────────────────────────────────────────────────────────────────────
+
+
+def _write_json(path: str, rows: List[Dict[str, object]]) -> None:
+    with open(path, "w") as f:
+        json.dump(rows, f, indent=2)
+        f.write("\n")
+
+
+def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
+    fieldnames = ["uid", "tech", "protocol", "count", "first_s", "last_s"]
+    for row in rows:
+        for key in row:
+            if key not in fieldnames:
+                fieldnames.append(key)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+@tags.command("scan", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "-t",
+    "--timeout",
+    default=30.0,
+    show_default=True,
+    help="Seconds to sample for.",
+)
+@click.option(
+    "--json",
+    "json_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write the aggregate as a JSON array to FILE.",
+)
+@click.option(
+    "--csv",
+    "csv_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write the aggregate as CSV to FILE.",
+)
+@device_options
+@click.pass_context
+def scan_cmd(ctx, timeout, json_file, csv_file, verbose, port, device_id):
+    """Sample tag detections for a while and print an aggregated summary.
+
+    Repeat detections of the same UID collapse into one row with a count and
+    a first/last time seen. Ctrl-C ends the sample early.
+    """
+    level = _verbosity(ctx, verbose)
+    aggregator = TagAggregator()
+    with _tags_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        print_info(f"Scanning {target} for {timeout:g}s — Ctrl-C to stop early")
+        parser = TagParser()
+        start = time.monotonic()
+        deadline = start + timeout
+        progress = Progress(
+            SpinnerColumn(style="cyan"),
+            TextColumn("[cyan]scanning[/cyan]"),
+            BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
+            TextColumn("[dim]{task.fields[detections]} detections[/dim]"),
+            console=console,
+            transient=True,
+        )
+        try:
+            with progress:
+                task = progress.add_task("", total=timeout, detections=0)
+                for line in link.stream(yield_empty=True):
+                    if line:
+                        tag = parser.feed(line)
+                        if tag is not None:
+                            aggregator.add(tag)
+                    now = time.monotonic()
+                    progress.update(
+                        task,
+                        completed=min(now - start, timeout),
+                        detections=aggregator.total_detections,
+                    )
+                    if now > deadline:
+                        break
+        except KeyboardInterrupt:
+            pass
+
+    console.print("")
+    print_info(
+        f"Scan @ {target} — {timeout:g}s, {aggregator.total_detections} detections, "
+        f"{len(aggregator)} unique tags"
+    )
+
+    rows = aggregator.to_dict()
+    if rows:
+        table = Table(header_style="cyan bold")
+        table.add_column("UID")
+        table.add_column("Tech")
+        table.add_column("Protocol")
+        table.add_column("Count", justify="right")
+        table.add_column("First", justify="right")
+        table.add_column("Last", justify="right")
+        for row in rows:
+            pretty = Tag(uid=row["uid"], tech=row["tech"]).pretty_uid
+            table.add_row(
+                pretty,
+                row["tech"] or "[dim]—[/dim]",
+                row["protocol"] or "[dim]—[/dim]",
+                str(row["count"]),
+                f"{row['first_s']:.1f}s",
+                f"{row['last_s']:.1f}s",
+            )
+        console.print(table)
+    else:
+        print_dim("no tags detected")
+
+    if json_file:
+        _write_json(json_file, rows)
+        print_info(f"wrote {json_file}")
+    if csv_file:
+        _write_csv(csv_file, rows)
+        print_info(f"wrote {csv_file}")
+
+
+# ── info ─────────────────────────────────────────────────────────────────────
+
+
+@tags.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@device_options
+@click.pass_context
+def info_cmd(ctx, verbose, port, device_id):
+    """Report what this DetectTags image can do.
+
+    Shows the firmware version and state, and — the useful part — whether it
+    emits structured ':tag' events or the CLI has fallen back to parsing
+    legacy text (docs/CLI_IMPROVEMENTS_DetectTags.md §3.4).
+    """
+    level = _verbosity(ctx, verbose)
+    with _tags_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.info()
+        if not r.ok:
+            print_error(f"info failed: {r.message}")
+            raise SystemExit(1)
+
+        parser = TagParser()
+        deadline = time.monotonic() + _INFO_PROBE_SECONDS
+        for line in link.stream(yield_empty=True):
+            if line:
+                parser.feed(line)
+            if parser.structured or time.monotonic() > deadline:
+                break
+
+    table = Table(
+        title=f"DetectTags @ {target}", header_style="cyan bold", show_header=False
+    )
+    table.add_column("field", style="cyan")
+    table.add_column("value")
+    table.add_row("version", r.data.get("fw") or "[dim]—[/dim]")
+    if parser.structured:
+        events = "structured (':tag' events)"
+    else:
+        events = "legacy text  (no ':tag' events — reflash for exact parsing)"
+    table.add_row("events", events)
+    table.add_row("state", r.data.get("state") or "[dim]—[/dim]")
+    console.print(table)

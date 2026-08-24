@@ -22,7 +22,12 @@ from modules.core.firmwares import all_firmwares
 from modules.firmware import cli as fw
 from modules.firmware import flasher, uf2
 from modules.firmware.cli import complete_firmware, flash, human_size
-from modules.firmware.releases import FirmwareError, ReleaseCache, ReleaseNotFound
+from modules.firmware.releases import (
+    FirmwareError,
+    ReleaseCache,
+    ReleaseNotFound,
+    _headers,
+)
 from modules.firmware.uf2 import BootloaderTimeout
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -59,7 +64,7 @@ class FakeGitHub:
         self.blobs = {}
         assets = []
         for name, blob in self.images.items():
-            url = f"https://example.invalid/{tag}/{name}"
+            url = f"https://objects.githubusercontent.com/{tag}/{name}"
             self.blobs[url] = blob
             asset = {"name": name, "browser_download_url": url, "size": len(blob)}
             if digest:
@@ -76,7 +81,7 @@ class FakeGitHub:
                     ]
                 }
             ).encode()
-            url = f"https://example.invalid/{tag}/descriptions.json"
+            url = f"https://objects.githubusercontent.com/{tag}/descriptions.json"
             self.blobs[url] = payload
             assets.append(
                 {
@@ -131,7 +136,7 @@ def use_cache(monkeypatch):
 
 def _describe(github, descriptions):
     """Rewrite the descriptions.json a FakeGitHub serves (and its digest)."""
-    url = f"https://example.invalid/{github.tag}/descriptions.json"
+    url = f"https://objects.githubusercontent.com/{github.tag}/descriptions.json"
     payload = json.dumps(
         {
             "bombercat": [
@@ -299,6 +304,49 @@ def test_an_asset_without_a_digest_is_accepted(cache):
 
     assert c.refresh() == "v1.2.0"
     assert len(c.images()) == 3
+
+
+# ── Security: hostile release payloads (AUDIT_ERROR_HANDLING.md C1/C2) ──────
+
+
+def test_a_path_traversal_tag_name_is_rejected(cache, tmp_path):
+    c, github = cache()
+    github.release["tag_name"] = "../../evil"
+
+    with pytest.raises(FirmwareError, match="unsafe release tag"):
+        c.refresh()
+
+    assert not (tmp_path.parent / "evil").exists()
+    assert list(tmp_path.glob("*.partial")) == []
+
+
+def test_a_path_traversal_asset_name_is_rejected(cache, tmp_path):
+    c, github = cache()
+    github.release["assets"][0]["name"] = "../../evil.uf2"
+
+    with pytest.raises(FirmwareError, match="unsafe asset name"):
+        c.refresh()
+
+    assert not (tmp_path.parent / "evil.uf2").exists()
+    assert list(tmp_path.glob("*.partial")) == []
+
+
+def test_an_asset_from_an_untrusted_host_is_rejected(cache):
+    c, github = cache()
+    github.release["assets"][0]["browser_download_url"] = "https://evil.example/x.uf2"
+
+    with pytest.raises(FirmwareError, match="untrusted URL"):
+        c.refresh()
+
+
+def test_the_github_token_is_only_sent_to_the_github_api(monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "s3cr3t")
+
+    assert "Authorization" in _headers("https://api.github.com/repos/x/releases/latest")
+    assert "Authorization" not in _headers(
+        "https://objects.githubusercontent.com/x/x.uf2"
+    )
+    assert "Authorization" not in _headers("https://evil.example/x.uf2")
 
 
 # ── Name resolution (FLASH_PLAN §3.5) ────────────────────────────────────────

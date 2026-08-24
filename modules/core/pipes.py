@@ -23,19 +23,25 @@ DEFAULT_PIPELINE_NAME = "fbombercat"
 DEFAULT_UNIX_PATH = f"/tmp/{DEFAULT_PIPELINE_NAME}"
 DEFAULT_WINDOWS_PATH = f"\\\\.\\pipe\\{DEFAULT_PIPELINE_NAME}"
 
+
+class PipelineError(Exception):
+    """Raised by this module's pipe transports on setup/IO failure. Library
+    code only raises typed errors; the CLI layer decides presentation and
+    exit codes (see docs/AUDIT_ERROR_HANDLING.md H5)."""
+
+
 # Windows named pipes need pywin32. Import it lazily so the module still loads
 # (and the Unix path keeps working) on a box without it; only a Windows user who
 # actually reaches WindowsPipe hits the error.
+_WIN32_AVAILABLE = False
 if platform.system().lower() == "windows":
     try:
         import win32pipe, win32file, pywintypes
 
         logger.info("[*] Windows library import done!")
-    except:
-        logger.error(
-            "[bold red][X] Error[/bold red]: win32pipe, win32file, pywintypes modules not found. [yellow]Please install [bold]pywin32[/bold] package.[/yellow]"
-        )
-        exit(1)
+        _WIN32_AVAILABLE = True
+    except ImportError:
+        logger.debug("pywin32 not installed; WindowsPipe unavailable until it is.")
 
 
 def show_generic_error(title: str = "", e: object = "") -> None:
@@ -111,9 +117,7 @@ class UnixPipe:
         except FileExistsError:
             pass
         except OSError as e:
-            show_generic_error("Creating Pipeline", e)
-            exit(1)
-            return
+            raise PipelineError(f"creating pipeline {self.pipe_path}: {e}") from e
 
         # Something is already at pipe_path. Reusing it blindly is how a
         # local attacker gets us to stream a capture into a file/symlink
@@ -121,25 +125,17 @@ class UnixPipe:
         try:
             st = os.lstat(self.pipe_path)
         except OSError as e:
-            show_generic_error("Creating Pipeline", e)
-            exit(1)
-            return
+            raise PipelineError(f"creating pipeline {self.pipe_path}: {e}") from e
         if not stat.S_ISFIFO(st.st_mode):
-            show_generic_error(
-                "Creating Pipeline",
+            raise PipelineError(
                 f"{self.pipe_path} already exists and is not a FIFO "
-                "(refusing to reuse it — possible symlink attack)",
+                "(refusing to reuse it — possible symlink attack)"
             )
-            exit(1)
-            return
         if st.st_uid != os.getuid():
-            show_generic_error(
-                "Creating Pipeline",
+            raise PipelineError(
                 f"{self.pipe_path} already exists and is owned by another "
-                f"user (uid {st.st_uid})",
+                f"user (uid {st.st_uid})"
             )
-            exit(1)
-            return
         logger.info(f"[-] Pipeline already exists, reusing: {self.pipe_path}")
 
     def open(self, mode="ab") -> None:
@@ -151,9 +147,8 @@ class UnixPipe:
             self.pipe_writer = open(self.pipe_path, mode, buffering=0)
             self.ready_event.set()
             logger.info(f"[*] Pipeline Open ({mode}): {self.pipe_path}")
-        except Exception as e:
-            show_generic_error("Opening Pipeline", e)
-            exit(1)
+        except OSError as e:
+            raise PipelineError(f"opening pipeline {self.pipe_path}: {e}") from e
 
     def read(self, size=1024) -> bytes:
         try:
@@ -207,6 +202,11 @@ class WindowsPipe:
     """A Windows named pipe Wireshark can read live (mirror of UnixPipe)."""
 
     def __init__(self, path=DEFAULT_WINDOWS_PATH) -> None:
+        if not _WIN32_AVAILABLE:
+            raise PipelineError(
+                "pywin32 is required for Windows named pipes — install it "
+                "with: pip install pywin32"
+            )
         self.pipe_path = path
         self.pipe_writer = None
         self.ready_event = threading.Event()
@@ -227,8 +227,7 @@ class WindowsPipe:
         except FileExistsError:
             logger.info("[-] Pipeline already exists.")
         except pywintypes.error as e:
-            logger.error(f"[X] {e}")
-            exit(1)
+            raise PipelineError(f"creating pipeline {self.pipe_path}: {e}") from e
 
     def open(self) -> None:
         logger.info(f"[*] Waiting for a client on {self.pipe_path}.")

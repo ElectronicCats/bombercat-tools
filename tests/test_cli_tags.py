@@ -80,6 +80,7 @@ def test_read_reports_a_board_that_will_not_handshake(runner, use_link):
 def test_read_verbose_traces_to_stderr_and_keeps_stdout_clean_for_json(
     runner, use_link
 ):
+    runner.mix_stderr = False
     use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
     result = runner.invoke(read_cmd, ["--json", "-v"])
 
@@ -98,6 +99,7 @@ def test_root_verbose_before_the_verb_also_traces_tags_read(
 
     from modules.core import cli as root_cli
 
+    runner.mix_stderr = False
     use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
     monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
     with pytest.raises(SystemExit):

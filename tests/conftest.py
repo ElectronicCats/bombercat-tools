@@ -106,6 +106,7 @@ class FakeLink:
         ping_ok: bool = True,
         stream_lines: Iterable[str] = (),
         port: str = "/dev/fake0",
+        trace=None,
     ):
         self.port = port
         self.responses = dict(responses or {})
@@ -116,6 +117,9 @@ class FakeLink:
         self.sent: List[str] = []
         self.opened = False
         self.closed = False
+        # Mirrors DeviceLink's tx/rx hook so tests can drive a real
+        # `make_tracer` through the fake, the way `tags read/watch` do.
+        self._trace = trace
 
     # -- lifecycle -----------------------------------------------------------
     def open(self) -> "FakeLink":
@@ -135,6 +139,8 @@ class FakeLink:
     def command(self, line: str, read_timeout: Optional[float] = None) -> Response:
         line = line.strip()
         self.sent.append(line)
+        if self._trace is not None:
+            self._trace("tx", line)
         for key in (line, line.split(" ")[0]):
             if key in self.responses:
                 return self._resolve(self.responses[key])
@@ -175,8 +181,11 @@ class FakeLink:
         """Passive banner sniff stand-in: hand back the scripted stream lines."""
         return list(self.stream_lines)
 
-    def stream(self) -> Iterator[str]:
-        yield from self.stream_lines
+    def stream(self, yield_empty: bool = False) -> Iterator[str]:
+        for line in self.stream_lines:
+            if line and self._trace is not None:
+                self._trace("rx", line)
+            yield line
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -203,10 +212,15 @@ def use_link(monkeypatch):
     """
 
     def _use(module, fake: FakeLink, target: str = "/dev/fake0"):
+        def _device_link_factory(*a, trace=None, **k):
+            if trace is not None:
+                fake._trace = trace
+            return fake
+
         monkeypatch.setattr(
             module, "resolve_port", lambda *a, **k: target, raising=False
         )
-        monkeypatch.setattr(module, "DeviceLink", lambda *a, **k: fake, raising=False)
+        monkeypatch.setattr(module, "DeviceLink", _device_link_factory, raising=False)
         return fake
 
     return _use

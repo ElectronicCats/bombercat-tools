@@ -97,21 +97,41 @@ def test_legacy_named_protocol_iso15693():
     assert tag == Tag(uid="E0040150", tech="NFC-V", protocol="ISO15693")
 
 
-# ── legacy text mode: NFC-B / NFC-F never print a UID ────────────────────────
+# ── legacy text mode: NFC-B / NFC-F ───────────────────────────────────────────
 
 
 @pytest.mark.parametrize("tech", ["NFC-B", "NFC-F"])
-def test_legacy_nfcb_nfcf_close_with_no_uid(tech):
+def test_legacy_nfcb_nfcf_without_pupi_idm_line_closes_on_remove_the_card(tech):
+    """Firmware predating PUPI/IDm extraction never prints an ID line for
+    B/F - "Remove the Card" (always printed after the prose block) is the
+    fallback close so the detection isn't lost."""
     parser = TagParser()
     parser.feed(" - POLL MODE: Remote activated tag type: 4")
+    parser.feed(f"\tTechnology: {tech}")
+    parser.feed("\tSENS RES = 0x50 0x00")
 
-    tag = parser.feed(f"\tTechnology: {tech}")
+    assert parser.feed("Remove the Card") == Tag(uid=None, tech=tech, protocol="ISODEP")
 
-    assert tag is not None
-    assert tag.uid is None
-    assert tag.tech == tech
-    assert "unavailable" in tag.pretty_uid
-    assert tech in tag.pretty_uid
+
+def test_legacy_nfcb_pupi_line_yields_tag_with_uid():
+    parser = TagParser()
+    parser.feed(" - POLL MODE: Remote activated tag type: 4")
+    parser.feed("\tTechnology: NFC-B")
+    parser.feed("\tSENS RES = 0x50 0x11 0x22 0x33 0x44")
+
+    tag = parser.feed("\tPUPI = 0x11 0x22 0x33 0x44")
+
+    assert tag == Tag(uid="11223344", tech="NFC-B", protocol="ISODEP")
+
+
+def test_legacy_nfcf_idm_line_yields_tag_with_uid():
+    parser = TagParser()
+    parser.feed(" - POLL MODE: Remote activated tag type: 3")
+    parser.feed("\tTechnology: NFC-F")
+
+    tag = parser.feed("\tIDm = 0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08")
+
+    assert tag == Tag(uid="0102030405060708", tech="NFC-F", protocol="T3T")
 
 
 # ── null / hex parsing ───────────────────────────────────────────────────────

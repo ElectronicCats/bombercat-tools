@@ -10,6 +10,8 @@
 import os
 import platform
 import shutil
+import stat
+import tempfile
 import threading
 import subprocess
 import logging
@@ -86,7 +88,16 @@ class UnixPipe:
     (Wireshark) attaches, so it is normally called from a background thread and
     the caller waits on `ready_event`."""
 
-    def __init__(self, path=DEFAULT_UNIX_PATH) -> None:
+    def __init__(self, path=None) -> None:
+        # No explicit path: create a private, per-process directory
+        # (mkdtemp defaults to mode 0700, owned by us) instead of a fixed,
+        # predictable name under /tmp — another local user cannot pre-create
+        # or symlink a path they can't guess. An explicit path is still
+        # supported for callers/tests that need a known location.
+        self._private_dir = None
+        if path is None:
+            self._private_dir = tempfile.mkdtemp(prefix=f"{DEFAULT_PIPELINE_NAME}-")
+            path = os.path.join(self._private_dir, DEFAULT_PIPELINE_NAME)
         self.pipe_path = path
         self.pipe_writer = None
         self.ready_event = threading.Event()
@@ -94,13 +105,42 @@ class UnixPipe:
 
     def create(self):
         try:
-            os.mkfifo(self.pipe_path)
+            os.mkfifo(self.pipe_path, mode=0o600)
             logger.info(f"[*] Pipeline created: {self.pipe_path}")
+            return
         except FileExistsError:
-            logger.info("[-] Pipeline already exists.")
+            pass
         except OSError as e:
             show_generic_error("Creating Pipeline", e)
             exit(1)
+            return
+
+        # Something is already at pipe_path. Reusing it blindly is how a
+        # local attacker gets us to stream a capture into a file/symlink
+        # they planted, so only accept it if it is a FIFO we own.
+        try:
+            st = os.lstat(self.pipe_path)
+        except OSError as e:
+            show_generic_error("Creating Pipeline", e)
+            exit(1)
+            return
+        if not stat.S_ISFIFO(st.st_mode):
+            show_generic_error(
+                "Creating Pipeline",
+                f"{self.pipe_path} already exists and is not a FIFO "
+                "(refusing to reuse it — possible symlink attack)",
+            )
+            exit(1)
+            return
+        if st.st_uid != os.getuid():
+            show_generic_error(
+                "Creating Pipeline",
+                f"{self.pipe_path} already exists and is owned by another "
+                f"user (uid {st.st_uid})",
+            )
+            exit(1)
+            return
+        logger.info(f"[-] Pipeline already exists, reusing: {self.pipe_path}")
 
     def open(self, mode="ab") -> None:
         logger.info(f"[*] Check if exist: {self.pipe_path}")
@@ -140,6 +180,11 @@ class UnixPipe:
                 self.pipe_writer = None
             if os.path.exists(self.pipe_path):
                 os.remove(self.pipe_path)
+            if self._private_dir is not None:
+                try:
+                    os.rmdir(self._private_dir)
+                except OSError:
+                    pass
             logger.info(f"[*] Pipeline removed: {self.pipe_path}")
         except Exception as e:
             show_generic_error("Removing Pipeline", e)

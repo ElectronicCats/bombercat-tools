@@ -196,7 +196,9 @@ def capture_start(output, wireshark, profile, port, device_id):
                 else:
                     sink.pipe = pipe
                     sink.pipe_header()
-                    print_success("Wireshark attached — streaming APDUs")
+                    print_success(
+                        f"Wireshark attached ({pipe.pipe_path}) — streaming APDUs"
+                    )
                     threading.Thread(
                         target=_watch_wireshark,
                         args=(ws_thread, sink, ws_stop),

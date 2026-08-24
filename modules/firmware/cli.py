@@ -14,9 +14,11 @@
 from pathlib import Path
 
 import click
+from click.shell_completion import CompletionItem
 from rich.table import Table
 from rich.text import Text
 
+from ..core.firmwares import all_firmwares
 from ..core.usb_connection import describe_devices, find_device, find_devices
 from ..utils.cli_options import target_options
 from ..utils.output import (
@@ -41,6 +43,65 @@ def human_size(size: int) -> str:
     if size < 1024 * 1024:
         return f"{size / 1024:.0f} KB"
     return f"{size / (1024 * 1024):.1f} MB"
+
+
+COMPLETION_HELP_WIDTH = 60  # zsh/fish show it next to the name; keep it short
+
+
+def _one_line(description: str, width: int = COMPLETION_HELP_WIDTH):
+    """A description squeezed into completion-menu shape, or None if empty.
+
+    Click renders the help of a completion item on one line and joins the
+    fields with newlines, so a paragraph (which is what descriptions.json
+    ships) would corrupt the response the shell parses.
+    """
+    text = " ".join((description or "").split())
+    if not text:
+        return None
+    return text if len(text) <= width else text[: width - 1] + "\u2026"
+
+
+def _completion_choices():
+    """`(name, description)` for every firmware we can offer, cheapest first.
+
+    This runs on every <TAB>, so it stays strictly on disk: the cached release
+    when there is one, and otherwise the static registry, which already knows
+    the nine image names before anyone has run `flash --refresh` (and before
+    there is any network to run it against).
+    """
+    images = ReleaseCache().images()
+    if images:
+        return [(image.stem, image.description) for image in images]
+    return [(fw.display, fw.description) for fw in all_firmwares()]
+
+
+def complete_firmware(ctx, param, incomplete):
+    """`shell_complete` for the FIRMWARE argument (FLASH_PLAN Fase D).
+
+    Names are matched by substring, the same way `ReleaseCache.find()` resolves
+    them (§3.5), so `magspoofc<TAB>` lands on MagspoofCVSAttack. When what is
+    typed looks like a path — or matches no firmware at all — completion is
+    handed back to the shell instead, so `flash ./build/<TAB>` lists files.
+    That item has to travel alone: click's bash script drops every plain value
+    the moment a `file` one arrives.
+    """
+    if incomplete.startswith("~") or "/" in incomplete:
+        return [CompletionItem(incomplete, type="file")]
+
+    try:
+        choices = _completion_choices()
+    except Exception:
+        # A half-written cache, an unreadable home… none of it is worth
+        # breaking the user's <TAB> over.
+        return []
+
+    wanted = incomplete.lower()
+    matches = [
+        CompletionItem(name, help=_one_line(description))
+        for name, description in choices
+        if wanted in name.lower()
+    ]
+    return matches or [CompletionItem(incomplete, type="file")]
 
 
 def _ensure_cache(cache: ReleaseCache, refresh: bool) -> None:
@@ -189,7 +250,7 @@ def _bootloader_help(image_name: str) -> None:
 
 
 @click.command("flash", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("firmware", required=False)
+@click.argument("firmware", required=False, shell_complete=complete_firmware)
 @click.option(
     "-l", "--list", "list_only", is_flag=True, help="List the available firmwares."
 )

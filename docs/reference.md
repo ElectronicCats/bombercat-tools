@@ -21,6 +21,7 @@ control link — see [Capture / Wireshark](capture.md).
   - [`flash`](#flash)
     - [`flash --list`](#flash---list)
     - [Naming the image](#naming-the-image)
+    - [Tab completion](#tab-completion)
     - [Flashing](#flashing)
     - [The release cache](#the-release-cache)
   - [`relay`](#relay)
@@ -338,6 +339,31 @@ each image is good for on the host side is in [Firmwares](#firmwares).
 3. **The name, case-insensitively** — `nfcgate`, `NFCGate`.
 4. **A unique substring** — `magspoofc` → `MagspoofCVSAttack.uf2`. Several
    matches is an error listing the candidates; it never guesses.
+
+### Tab completion
+
+With [`completion`](#completion) installed, `FIRMWARE` completes by name:
+
+```
+$ bombercat flash <TAB>
+DetectTags                   MagspoofCVSAttack            host_Relay_NFC
+ESP32SerialPassthroughFlash  NFCGate                      magspoof
+MagSpoofMqtt                 WiFiWebServer                client_Relay_NFC
+
+$ bombercat flash magspoof<TAB>
+MagSpoofMqtt  MagspoofCVSAttack  magspoof
+
+$ bombercat flash ./build/<TAB>      # paths fall back to file completion
+```
+
+Matching is by substring, the same rule the resolver above uses, so whatever
+completes is something `flash` can actually resolve. zsh and fish also show
+each image's description next to its name.
+
+The names come from the cached release; with an empty cache the nine known
+images are offered anyway, so completion works on a fresh install. It only ever
+reads the disk — pressing `<TAB>` never contacts GitHub and never fills the
+cache.
 
 ### Flashing
 
@@ -767,6 +793,9 @@ bombercat completion install --shell zsh
 It writes an absolute-path completion script (so completion works whether or not
 `bombercat` is on `PATH`, including `python bombercat.py <TAB>`), and for zsh adds
 an `fpath` entry to `~/.zshrc` if one isn't there already.
+
+Besides commands and options, this completes firmware names for
+[`flash`](#tab-completion).
 
 ---
 

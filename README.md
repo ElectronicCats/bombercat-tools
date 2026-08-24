@@ -52,18 +52,22 @@ the [`bombercat` alias](docs/reference.md#invocation) or
 bombercat device list                 # IDs + serial ports; ✓ = answered the handshake
 bombercat status                      # which firmware is flashed + what it can do
 
-# 2. Configure the NFCGate relay (persisted to flash unless --no-save)
+# 2. Put the relay firmware on it (skip if `status` already says NFCGate)
+bombercat flash --list                # the published images, with descriptions
+bombercat flash NFCGate               # download and write it over UF2
+
+# 3. Configure the NFCGate relay (persisted to flash unless --no-save)
 bombercat relay config wifi    --ssid MyNet --pass 's3cret'
 bombercat relay config nfcgate --server 192.168.1.5:5566 --session 42 --role reader
 bombercat relay config show
 
-# 3. Run & watch
+# 4. Run & watch
 bombercat relay run                   # associate WiFi, connect server, start relay
 bombercat relay status                # state / link / peer / relayed count
 bombercat relay monitor               # live serial stream (relay logs + APDU hex)
 bombercat relay stop
 
-# 4. Capture the relayed APDUs to Wireshark
+# 5. Capture the relayed APDUs to Wireshark
 bombercat capture start -ws           # live Wireshark on a FIFO (Ctrl-C to stop)
 ```
 
@@ -83,7 +87,7 @@ one by its ID with `-d/--device`. See the
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
@@ -161,7 +165,7 @@ Concretely, the non-Linux gaps are:
 - The Wireshark launcher knows install paths for Windows/Linux/Darwin only; any
   other OS gets *"We don't support this OS yet"*.
 - Serial access on Linux needs the `dialout` group, and the firmware flasher
-  ([scripts/flash_bombercat.sh](../scripts/flash_bombercat.sh)) auto-installs
+  ([`flash_bombercat.sh`](https://github.com/ElectronicCats/bombercat-firmware/blob/main/flash_bombercat.sh)) auto-installs
   its dependencies through `apt` — on non-Debian distros you install
   `arduino-cli` yourself.
 
@@ -205,9 +209,15 @@ Concretely, the non-Linux gaps are:
   `loglevel` need a recent build; against older firmware those commands fail
   with `-ERR unknown command`
   ([troubleshooting.md](docs/troubleshooting.md#old-firmware-without-identify--capture)).
-- **The CLI does not flash firmware.** That is
-  [scripts/flash_bombercat.sh](../scripts/flash_bombercat.sh)'s job (`bash` +
-  `arduino-cli`).
+- **`flash` writes published images, it does not build them.** `bombercat
+  flash` downloads the prebuilt `.uf2` files from the
+  [bombercat-firmware](https://github.com/ElectronicCats/bombercat-firmware)
+  releases and copies them to the board's UF2 bootloader — so it can only give
+  you what a release published. Compiling your own changes is still
+  [`flash_bombercat.sh`](https://github.com/ElectronicCats/bombercat-firmware/blob/main/flash_bombercat.sh)'s job in the
+  firmware repo (`bash` + `arduino-cli`). The bootloader drive must auto-mount; on a headless host
+  without `udisks` you mount it yourself
+  ([troubleshooting.md](docs/troubleshooting.md#no-rpi-rp2-drive)).
 
 ### Relay scope
 

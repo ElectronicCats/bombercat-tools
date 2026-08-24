@@ -204,6 +204,10 @@ class ReleaseCache:
         # Injected in the tests; "no network" and "bad checksum" become two
         # ordinary function calls instead of urllib surgery (FLASH_PLAN §5).
         self._fetch = fetch or http_get
+        # Asset names downloaded by the most recent refresh() that GitHub
+        # published with no `digest` field, so nothing could be verified
+        # (AUDIT_ERROR_HANDLING.md H1). The CLI layer reads this to warn.
+        self.unverified_assets: List[str] = []
 
     # ── what is on disk right now ────────────────────────────────────────────
 
@@ -350,6 +354,7 @@ class ReleaseCache:
             shutil.rmtree(staging)
         staging.mkdir(parents=True)
 
+        self.unverified_assets = []
         try:
             for asset in assets:
                 self._download_asset(asset, staging)
@@ -387,7 +392,9 @@ class ReleaseCache:
         digest = asset.get("digest") or ""
         if not digest.startswith("sha256:"):
             # Releases published before GitHub added `digest` have no checksum
-            # to compare against; catnip carries on too.
+            # to compare against; catnip carries on too, but the caller needs
+            # to know so it can warn instead of silently trusting the binary.
+            self.unverified_assets.append(name)
             return
         expected = digest.split(":", 1)[1].strip().lower()
         actual = _sha256(target)

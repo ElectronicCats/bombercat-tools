@@ -119,6 +119,12 @@ def _ensure_cache(cache: ReleaseCache, refresh: bool) -> None:
         if cache.tag is None:
             raise
         print_warning(f"could not check GitHub ({e}) — showing the cached release.")
+        return
+    if cache.unverified_assets:
+        names = ", ".join(cache.unverified_assets)
+        print_warning(
+            f"downloaded WITHOUT checksum verification (no digest published): {names}"
+        )
 
 
 def _show_list(cache: ReleaseCache, full: bool) -> None:

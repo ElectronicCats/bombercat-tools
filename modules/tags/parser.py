@@ -15,10 +15,16 @@ from typing import Dict, Optional
 _TAG_EVENT = re.compile(r"^:tag\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)$")
 
 # Legacy text: "\tNFC ID = 0x04 0x1a 0x2b"  /  "\tTechnology: NFC-A"
+# PUPI (NFC-B) and IDm (NFC-F) are the UID-equivalent fields firmware with the
+# PUPI/IDm extraction (see DetectTags.ino) prints for those two technologies.
 _LEGACY_TECH = re.compile(r"^\s*Technology:\s*(\S+)")
-_LEGACY_ID = re.compile(r"^\s*(?:NFC ID|ID)\s*=\s*(.+)$")
+_LEGACY_ID = re.compile(r"^\s*(?:NFC ID|ID|PUPI|IDm)\s*=\s*(.+)$")
 _LEGACY_PROTO_NUM = re.compile(r"Remote activated tag type:\s*(\d+)")
 _LEGACY_PROTO_NAMED = re.compile(r"Remote (\w+) card activated")
+# Printed unconditionally after every detection's prose block (loop(), not
+# displayCardInfo()) - the reliable "this detection is over" signal for
+# firmware builds that never print a PUPI/IDm line at all (pre-extraction).
+_LEGACY_CLOSE = re.compile(r"^\s*Remove the Card")
 
 # Protocol.h values from Electronic_Cats_PN7150 (MIFARE is 0x80, not
 # contiguous with the rest; ISO15693 never arrives via this path because the
@@ -37,7 +43,8 @@ _PROTOCOL_BY_NUM = {
 @dataclass
 class Tag:
     """One detection. `uid` is None when the firmware prints no UID at all
-    (NFC-B / NFC-F in legacy mode) — never invent a value."""
+    (NFC-B / NFC-F on firmware that predates PUPI/IDm extraction) — never
+    invent a value."""
 
     uid: Optional[str] = None
     tech: Optional[str] = None
@@ -98,13 +105,16 @@ class TagParser:
         m = _LEGACY_TECH.match(line)
         if m:
             self._pending.tech = m.group(1)
-            if self._pending.tech in ("NFC-B", "NFC-F"):
-                done, self._pending = self._pending, Tag()
-                return done
             return None
         m = _LEGACY_ID.match(line)
         if m and self._pending.tech:
             self._pending.uid = _hex_compact(m.group(1))
+            done, self._pending = self._pending, Tag()
+            return done
+        if _LEGACY_CLOSE.match(line) and self._pending.tech in ("NFC-B", "NFC-F"):
+            # No PUPI/IDm line ever came (firmware predates the extraction) -
+            # close with uid=None rather than hang waiting for a line that
+            # will never arrive.
             done, self._pending = self._pending, Tag()
             return done
         return None

@@ -28,6 +28,7 @@ CAP_MONITOR = "monitor"  # readable serial output worth streaming
 CAP_IDENTIFY = "identify"  # can blink its LED on command
 CAP_CAPTURE = "capture"  # APDU capture to pcap
 CAP_PASSTHROUGH = "passthrough"  # transparent serial bridge (no REPL)
+CAP_TAGS = "tags"  # NFC tag detection (`bombercat tags read/watch`)
 
 
 @dataclass(frozen=True)
@@ -68,7 +69,7 @@ _ENTRIES = (
         display="DetectTags",
         uf2="DetectTags.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
-        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_TAGS}),
         banners=("Detect NFC tags with PN7150", "Detect NFC tags"),
     ),
     Firmware(

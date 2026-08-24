@@ -23,6 +23,7 @@ from .firmwares import (
     CAP_MONITOR,
     CAP_PASSTHROUGH,
     CAP_RELAY,
+    CAP_TAGS,
     detect_firmware,
     resolve_status_port,
 )
@@ -216,6 +217,9 @@ def _next_steps(detection):
         steps.append(
             "passthrough firmware: bridge the ESP32 with an external serial tool"
         )
+    elif fw.can(CAP_TAGS):
+        steps.append("bombercat tags read       — detect a single NFC tag")
+        steps.append("bombercat tags watch      — stream tag detections")
     elif fw.can(CAP_MONITOR):
         steps.append("watch its serial output with a terminal (screen/minicom), or")
         steps.append("bombercat flash NFCGate   — switch to the relay firmware")

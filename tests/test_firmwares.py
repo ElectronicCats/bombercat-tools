@@ -104,6 +104,15 @@ def test_only_detecttags_claims_the_tags_capability():
             assert f.id == "detecttags"
 
 
+def test_a_non_object_descriptions_payload_is_ignored_instead_of_crashing():
+    """descriptions.json is user-editable, remote-persisted cache data — a
+    malformed top-level shape must degrade to "no descriptions", not raise
+    AttributeError from `.values()` on a list/int (docs/AUDIT_ERROR_HANDLING.md
+    M2)."""
+    assert fw._parse_descriptions(b"[1, 2, 3]") == {}
+    assert fw._parse_descriptions(b"42") == {}
+
+
 def test_enrichment_fills_descriptions_when_available():
     descriptions = fw.load_descriptions()
     if not descriptions:

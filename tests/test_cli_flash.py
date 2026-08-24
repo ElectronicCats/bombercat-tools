@@ -20,13 +20,14 @@ import pytest
 from conftest import flat, make_device, make_port
 from modules.core.firmwares import all_firmwares
 from modules.firmware import cli as fw
-from modules.firmware import flasher, uf2
+from modules.firmware import flasher, releases as releases_mod, uf2
 from modules.firmware.cli import complete_firmware, flash, human_size
 from modules.firmware.releases import (
     FirmwareError,
     ReleaseCache,
     ReleaseNotFound,
     _headers,
+    parse_descriptions,
 )
 from modules.firmware.uf2 import BootloaderTimeout
 
@@ -385,6 +386,80 @@ def test_the_github_token_is_only_sent_to_the_github_api(monkeypatch):
     assert "Authorization" not in _headers("https://evil.example/x.uf2")
 
 
+# ── http_get: bounded reads (M1) ─────────────────────────────────────────────
+
+
+class _FakeHTTPResponse:
+    """Just enough of urllib's response object for http_get to read from."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self._pos = 0
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = len(self._body) - self._pos
+        chunk = self._body[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_http_get_reads_the_whole_body_in_bounded_chunks(monkeypatch):
+    body = b"x" * 200_000
+    monkeypatch.setattr(
+        releases_mod._opener, "open", lambda request, timeout: _FakeHTTPResponse(body)
+    )
+    assert releases_mod.http_get("https://api.github.com/x") == body
+
+
+def test_http_get_rejects_a_response_over_the_size_cap(monkeypatch):
+    monkeypatch.setattr(releases_mod, "MAX_DOWNLOAD_BYTES", 10)
+    monkeypatch.setattr(
+        releases_mod._opener,
+        "open",
+        lambda request, timeout: _FakeHTTPResponse(b"x" * 1000),
+    )
+
+    with pytest.raises(FirmwareError, match="download limit"):
+        releases_mod.http_get("https://api.github.com/x")
+
+
+def test_http_get_aborts_a_stalled_download(monkeypatch):
+    # A server that keeps trickling bytes without ever finishing must not hold
+    # the process open forever just because each individual read is fast.
+    clock = {"t": 0.0}
+    monkeypatch.setattr(releases_mod.time, "monotonic", lambda: clock["t"])
+
+    class _StalledResponse(_FakeHTTPResponse):
+        def read(self, n=-1):
+            clock["t"] += 1000.0
+            return b"x"
+
+    monkeypatch.setattr(
+        releases_mod._opener,
+        "open",
+        lambda request, timeout: _StalledResponse(b""),
+    )
+
+    with pytest.raises(FirmwareError, match="took too long"):
+        releases_mod.http_get("https://api.github.com/x", timeout=1.0)
+
+
+# ── parse_descriptions: malformed cache data (M2) ────────────────────────────
+
+
+def test_a_non_object_descriptions_payload_is_ignored_instead_of_crashing():
+    assert parse_descriptions(b"[1, 2, 3]") == {}
+    assert parse_descriptions(b"42") == {}
+    assert parse_descriptions(b'"just a string"') == {}
+
+
 # ── Name resolution (FLASH_PLAN §3.5) ────────────────────────────────────────
 
 
@@ -664,6 +739,44 @@ def test_an_image_that_declares_no_family_is_accepted(tmp_path):
     uf2.validate_uf2(make_uf2(tmp_path / "old.uf2", family=0xDEADBEEF, flags=0))
 
 
+# ── validate_uf2 walks every block, not just the first (M6) ─────────────────
+
+
+def test_a_corrupted_middle_block_is_rejected(tmp_path):
+    image = make_uf2(tmp_path / "NFCGate.uf2", blocks=4)
+    raw = bytearray(image.read_bytes())
+    # Stomp block 2's magic while leaving block 0 (and the file size) intact.
+    raw[2 * uf2.BLOCK_SIZE : 2 * uf2.BLOCK_SIZE + 4] = b"\x00\x00\x00\x00"
+    image.write_bytes(bytes(raw))
+
+    with pytest.raises(FirmwareError, match="block 2 has no UF2 magic"):
+        uf2.validate_uf2(image)
+
+
+def test_a_truncated_but_block_aligned_image_is_rejected(tmp_path):
+    # Chop the last block off a well-formed 4-block image: still a multiple of
+    # 512 bytes, but block 0 still claims 4 total blocks.
+    image = make_uf2(tmp_path / "NFCGate.uf2", blocks=4)
+    image.write_bytes(image.read_bytes()[: 3 * uf2.BLOCK_SIZE])
+
+    with pytest.raises(FirmwareError, match="claims 4 total blocks"):
+        uf2.validate_uf2(image)
+
+
+def test_out_of_order_blocks_are_rejected(tmp_path):
+    image = make_uf2(tmp_path / "NFCGate.uf2", blocks=2)
+    raw = bytearray(image.read_bytes())
+    # Swap the two blocks wholesale, so block 0 on disk claims blockNo=1.
+    raw[: uf2.BLOCK_SIZE], raw[uf2.BLOCK_SIZE :] = (
+        bytes(raw[uf2.BLOCK_SIZE :]),
+        bytes(raw[: uf2.BLOCK_SIZE]),
+    )
+    image.write_bytes(bytes(raw))
+
+    with pytest.raises(FirmwareError, match="out of order"):
+        uf2.validate_uf2(image)
+
+
 # ── Finding the bootloader drive (§3.3) ──────────────────────────────────────
 
 
@@ -690,6 +803,15 @@ def test_no_drive_when_nothing_is_in_bootloader(tmp_path, mounts):
     boring = tmp_path / "boot-efi"
     boring.mkdir()
     mounts(boring)
+
+    assert uf2.find_uf2_drive() is None
+
+
+def test_an_unlabelled_uf2_drive_is_not_picked_as_a_fallback(tmp_path, mounts):
+    # No RPI-RP2 anywhere, only a differently-named UF2 board (M5): must not
+    # silently become the flash target — same as no board being in BOOTSEL.
+    other = make_drive(tmp_path, name="CATSNIFFER")
+    mounts(other)
 
     assert uf2.find_uf2_drive() is None
 
@@ -801,6 +923,86 @@ def test_a_copy_that_stops_short_is_a_real_failure(tmp_path, monkeypatch):
         flasher.copy_uf2(image, drive)
 
     assert "failed after" in str(excinfo.value)
+
+
+def test_a_silent_short_write_is_a_real_failure(tmp_path, monkeypatch):
+    # M4: a write() that returns fewer bytes than asked *without raising* must
+    # not be counted as if the whole chunk went through.
+    image = make_uf2(tmp_path / "NFCGate.uf2", blocks=4)
+    drive = make_drive(tmp_path)
+    monkeypatch.setattr(flasher, "COPY_CHUNK", 512)
+    real_open = Path.open
+
+    class ShortWriteFile:
+        def __init__(self, fh):
+            self.fh = fh
+
+        def write(self, data):
+            self.fh.write(data[:1])  # silently swallow the rest
+            return 1
+
+        def flush(self):
+            self.fh.flush()
+
+        def fileno(self):
+            return self.fh.fileno()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.fh.close()
+            return False
+
+    def _open(self, *a, **kw):
+        handle = real_open(self, *a, **kw)
+        return ShortWriteFile(handle) if self.parent == drive else handle
+
+    monkeypatch.setattr(Path, "open", _open)
+
+    with pytest.raises(FirmwareError, match="short write"):
+        flasher.copy_uf2(image, drive)
+
+
+# ── The board coming back: prefer a BomberCat USB id (M3) ───────────────────
+
+
+def test_a_bystander_usb_device_is_not_mistaken_for_the_board(monkeypatch):
+    # An unrelated USB-CDC device (a phone, a second board) can appear during
+    # the flash window; a real BomberCat port among several new ones must win.
+    monkeypatch.setattr(flasher.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        flasher,
+        "list_ports_info",
+        lambda include_all=False: [
+            make_port(device="/dev/ttyACM0"),  # was already known
+            make_port(device="/dev/ttyUSB9", vid=0x05AC, pid=0x12A8),  # bystander
+            make_port(device="/dev/ttyACM1"),  # the board, back from the flash
+        ],
+    )
+
+    back = flasher.wait_for_new_port({"/dev/ttyACM0"}, timeout=1.0)
+
+    assert back == "/dev/ttyACM1"
+
+
+def test_falls_back_to_an_unmatched_port_with_a_warning(monkeypatch):
+    # Nothing new matches a known BomberCat id: still report it (better than
+    # timing out) but say so.
+    monkeypatch.setattr(flasher.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        flasher,
+        "list_ports_info",
+        lambda include_all=False: [
+            make_port(device="/dev/ttyUSB9", vid=0x05AC, pid=0x12A8),
+        ],
+    )
+    warnings = []
+
+    back = flasher.wait_for_new_port(set(), timeout=1.0, say=warnings.append)
+
+    assert back == "/dev/ttyUSB9"
+    assert any("does not match" in w for w in warnings)
 
 
 # ── The sequence (§3.4) ──────────────────────────────────────────────────────

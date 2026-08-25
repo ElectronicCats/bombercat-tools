@@ -106,6 +106,38 @@ def test_sink_without_sinks_is_harmless():
     _CaptureSink().frame(b"frame")  # no file, no pipe: nothing to do
 
 
+def test_emit_is_safe_when_pipe_is_cleared_concurrently():
+    """M31 regression: `_watch_wireshark` runs in a background thread and does
+    `sink.pipe = None` once Wireshark quits. The old `_emit` re-read
+    `self.pipe` between its None-check and the write call
+    (`if self.pipe is not None: self.pipe.write_packet(data)`), so a clear
+    landing in that window raised AttributeError on `None.write_packet`.
+    Snapshotting into a local variable closes the window; stress it with a
+    concurrent toggler so a regression is likely to surface."""
+    sink = _CaptureSink(pipe=_FakePipe())
+    errors = []
+    stop = threading.Event()
+
+    def toggle():
+        while not stop.is_set():
+            sink.pipe = None
+            sink.pipe = _FakePipe()
+
+    toggler = threading.Thread(target=toggle, daemon=True)
+    toggler.start()
+    try:
+        for _ in range(5000):
+            try:
+                sink.frame(b"x")
+            except Exception as e:  # pragma: no cover - only on regression
+                errors.append(e)
+    finally:
+        stop.set()
+        toggler.join(timeout=1)
+
+    assert errors == []
+
+
 # ── _pump: serial events -> pcap frames ──────────────────────────────────────
 
 
@@ -309,6 +341,43 @@ def test_start_gives_up_when_wireshark_never_attaches(
 
     assert result.exit_code == 1
     assert "did not attach to the pipe in time" in flat(result.output)
+    assert pipe.removed
+
+
+def test_start_reports_the_real_reason_when_wireshark_fails_to_spawn(
+    runner, fake_session, monkeypatch
+):
+    """M32: if Wireshark.run() fails to launch (binary vanished, no display),
+    the FIFO's reader never attaches. Before the fix, `start` blamed the
+    fixed 30s pipe timeout instead of the actual spawn failure — here the
+    fake thread sets `spawn_error` immediately, so the CLI should report it
+    right away rather than waiting out `_WIRESHARK_PIPE_TIMEOUT`."""
+    pipe = _FakePipe()
+    pipe.ready_event.clear()
+
+    monkeypatch.setattr(cap, "find_wireshark_path", lambda: "/usr/bin/wireshark")
+    monkeypatch.setattr(cap, "_new_pipe", lambda: pipe)
+    monkeypatch.setattr(
+        cap,
+        "Wireshark",
+        lambda *a, **k: type(
+            "W",
+            (),
+            {
+                "start": lambda self: None,
+                "has_exited": lambda self: False,
+                "spawn_error": "no such file or directory",
+            },
+        )(),
+    )
+    # A large timeout that the fix must not actually wait out.
+    monkeypatch.setattr(cap, "_WIRESHARK_PIPE_TIMEOUT", 30)
+
+    fake_session(cap, FakeLink())
+    result = runner.invoke(capture, ["start", "-ws"])
+
+    assert result.exit_code == 1
+    assert "failed to start Wireshark: no such file or directory" in flat(result.output)
     assert pipe.removed
 
 

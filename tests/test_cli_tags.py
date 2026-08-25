@@ -322,6 +322,39 @@ def test_scan_reports_a_write_failure_instead_of_crashing(
     assert "could not write" in flat(result.output)
 
 
+def test_scan_csv_export_neutralizes_formula_injection_in_device_fields(
+    runner, use_link, tmp_path
+):
+    """M29: tech/protocol/extra are device-controlled free text (parser.py
+    imposes no charset beyond \\S+). A value starting with =/+/-/@ is a live
+    formula-injection payload for Excel/LibreOffice, so the CSV writer must
+    neutralize it; the JSON export (never opened as a spreadsheet) must stay
+    untouched, and the shared `rows` list must not be mutated in the process.
+    """
+    json_path = tmp_path / "scan.json"
+    csv_path = tmp_path / "scan.csv"
+    line = ":tag 1234 =CMD -PROTO 041A2B3C note=+INJECT"
+
+    use_link(tagscli, FakeLink(stream_lines=[line]))
+    result = runner.invoke(
+        scan_cmd, ["-t", "0.05", "--json", str(json_path), "--csv", str(csv_path)]
+    )
+
+    assert result.exit_code == 0
+
+    payload = json.loads(json_path.read_text())
+    assert payload[0]["tech"] == "=CMD"
+    assert payload[0]["protocol"] == "-PROTO"
+    assert payload[0]["note"] == "+INJECT"
+
+    with open(csv_path, newline="") as f:
+        rows = list(csv.DictReader(f))
+    assert rows[0]["tech"] == "'=CMD"
+    assert rows[0]["protocol"] == "'-PROTO"
+    assert rows[0]["note"] == "'+INJECT"
+    assert rows[0]["uid"] == "041A2B3C"  # hex UID, never touched
+
+
 def test_scan_reports_a_board_that_will_not_handshake(runner, use_link):
     link = use_link(tagscli, FakeLink(ping_ok=False))
     result = runner.invoke(scan_cmd, ["-t", "0.01"])

@@ -39,6 +39,16 @@ def test_structured_event_parses_trailing_key_value_extras():
     assert tag.extra == {"sens": "4400", "sel": "00"}
 
 
+def test_structured_event_skips_a_keyless_extra_token():
+    """A malformed `=value` token (no key) must not become an empty-string
+    column in extra - it would surface as an unnamed CSV/JSON column (L12)."""
+    parser = TagParser()
+
+    tag = parser.feed(":tag 10 NFC-A T2T 041A2B =oops sens=4400")
+
+    assert tag.extra == {"sens": "4400"}
+
+
 def test_structured_event_uid_is_uppercased():
     parser = TagParser()
 
@@ -132,6 +142,34 @@ def test_legacy_nfcf_idm_line_yields_tag_with_uid():
     tag = parser.feed("\tIDm = 0x01 0x02 0x03 0x04 0x05 0x06 0x07 0x08")
 
     assert tag == Tag(uid="0102030405060708", tech="NFC-F", protocol="T3T")
+
+
+# ── legacy text mode: reordered lines (L13) ──────────────────────────────────
+
+
+def test_legacy_id_line_before_technology_is_buffered_not_lost():
+    """Firmware/serial buffering can print the ID line before Technology.
+    The detection must still complete instead of being silently dropped."""
+    parser = TagParser()
+    parser.feed(" - POLL MODE: Remote activated tag type: 2")
+
+    assert parser.feed("\tNFC ID = 0x04 0x1a 0x2b 0x3c") is None
+
+    tag = parser.feed("\tTechnology: NFC-A")
+
+    assert tag == Tag(uid="041A2B3C", tech="NFC-A", protocol="T2T")
+
+
+def test_legacy_id_line_before_technology_does_not_leak_into_next_detection():
+    """A new detection's protocol line must reset the buffered-ID flag so an
+    unfinished prior detection can't attach its UID to the next one."""
+    parser = TagParser()
+    parser.feed(" - POLL MODE: Remote activated tag type: 2")
+    parser.feed("\tNFC ID = 0x04 0x1a 0x2b 0x3c")  # buffered, no Technology yet
+
+    parser.feed(" - POLL MODE: Remote activated tag type: 3")  # next detection starts
+
+    assert parser.feed("\tTechnology: NFC-F") is None  # not finalized by stale UID
 
 
 # ── null / hex parsing ───────────────────────────────────────────────────────

@@ -1232,6 +1232,34 @@ def test_a_board_that_will_not_enter_bootloader_gets_instructions(
     assert "bombercat flash NFCGate" in out
 
 
+def test_an_unanticipated_write_error_is_one_line_and_hides_the_traceback(
+    runner, cache, use_cache, bench
+):
+    c, _ = cache()
+    use_cache(c)
+    bench(devices=[make_device(1, "/dev/ttyACM0")], error=OSError("disk full"))
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "OSError: disk full" in out
+    assert "BOMBERCAT_DEBUG=1" in out
+
+
+def test_an_unanticipated_write_error_re_raises_under_bombercat_debug(
+    runner, cache, use_cache, bench, monkeypatch
+):
+    c, _ = cache()
+    use_cache(c)
+    bench(devices=[make_device(1, "/dev/ttyACM0")], error=OSError("disk full"))
+    monkeypatch.setenv("BOMBERCAT_DEBUG", "1")
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+
+    assert isinstance(result.exception, OSError)
+
+
 def test_a_board_that_does_not_re_enumerate_is_flagged(
     runner, cache, use_cache, bench, tmp_path
 ):

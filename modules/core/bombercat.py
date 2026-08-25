@@ -23,6 +23,13 @@ from .usb_connection import (
     open_serial,
 )
 
+# Cap on one readline() call so a wedged/noisy firmware emitting continuous
+# non-newline bytes can't grow memory without bound; the line protocol never
+# legitimately needs anywhere near this much (see M14 in the error-handling
+# audit). A read that hits the cap without finding "\n" returns a partial,
+# unterminated chunk — the loop keeps going with the next readline() call.
+_MAX_LINE_BYTES = 4096
+
 
 @dataclass
 class Response:
@@ -115,7 +122,7 @@ class DeviceLink:
         data: Dict[str, str] = {}
         while time.monotonic() < deadline:
             try:
-                raw = self._ser.readline()
+                raw = self._ser.readline(_MAX_LINE_BYTES)
             except serial.SerialException as e:
                 raise DeviceError(f"serial error reading reply to {line!r}: {e}")
             if not raw:
@@ -183,7 +190,7 @@ class DeviceLink:
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             try:
-                raw = self._ser.readline()
+                raw = self._ser.readline(_MAX_LINE_BYTES)
             except serial.SerialException:
                 break  # link lost mid-sniff: return whatever we already have
             if not raw:
@@ -205,7 +212,7 @@ class DeviceLink:
             raise DeviceError("link not open")
         while True:
             try:
-                raw = self._ser.readline()
+                raw = self._ser.readline(_MAX_LINE_BYTES)
             except serial.SerialException as e:
                 # Device unplugged (or otherwise gone) while monitoring.
                 raise DeviceError(f"serial link lost: {e}")

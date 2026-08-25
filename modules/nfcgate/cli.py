@@ -21,6 +21,7 @@ from ..utils.output import (
     print_info,
     print_success,
     print_warning,
+    safe_print,
 )
 
 
@@ -195,6 +196,11 @@ def config_show(port, device_id):
 #   WiFi associate (20 s) + NFC bring-up + TCP connect (8 s) + SYN + margin.
 _RUN_BRINGUP_TIMEOUT = 45.0
 _RUN_POLL_INTERVAL = 0.5  # seconds between `status` polls
+# A `status` poll can legitimately time out while a bring-up phase (NFC init,
+# TCP connect) briefly occupies the firmware. But a board that was unplugged
+# fails every poll the same way — cap how many *consecutive* failures we
+# tolerate before giving up, instead of burning the whole budget on a dead link.
+_RUN_MAX_CONSECUTIVE_FAILURES = 6
 
 
 @click.command("run", context_settings={"help_option_names": ["-h", "--help"]})
@@ -221,16 +227,28 @@ def run_cmd(port, device_id):
         print_info("relay accepted 'run'; bringing up…")
         deadline = time.monotonic() + _RUN_BRINGUP_TIMEOUT
         last_detail = None
+        consecutive_failures = 0
         while time.monotonic() < deadline:
             try:
                 s = link.status()
-            except DeviceError:
+            except DeviceError as e:
+                if "link lost" in str(e).lower():
+                    print_error(f"lost contact with {target}: {e}")
+                    print_info("is it still plugged in?")
+                    raise SystemExit(1)
                 # A single bring-up phase (NFC init, TCP connect) can briefly
                 # occupy the firmware and let a status poll time out. That's
-                # expected — keep polling until our own deadline.
+                # expected — keep polling, but not forever: a board that was
+                # unplugged fails every poll the same way.
+                consecutive_failures += 1
+                if consecutive_failures >= _RUN_MAX_CONSECUTIVE_FAILURES:
+                    print_error(f"{target} stopped responding to status polls: {e}")
+                    print_info("is it still plugged in?")
+                    raise SystemExit(1)
                 time.sleep(_RUN_POLL_INTERVAL)
                 continue
 
+            consecutive_failures = 0
             state = s.data.get("state", "")
             detail = s.data.get("detail", "")
             if detail and detail != last_detail:
@@ -310,29 +328,35 @@ def monitor_cmd(port, device_id):
         # Debug so the per-APDU hex dumps this view highlights are actually
         # emitted. Restore Warn on exit so we don't leave the hot path chatty.
         try:
-            link.command("loglevel 4")
-        except Exception:
-            pass  # older firmware without `loglevel`: stream whatever it prints
+            r = link.command("loglevel 4")
+            if not r.ok and "unknown command" not in r.message.lower():
+                print_warning(f"could not raise log level: {r.message}")
+        except DeviceError as e:
+            # Older firmware without `loglevel` never replies at all — stream
+            # whatever it prints anyway; only warn on a real link problem.
+            print_warning(f"could not raise log level: {e}")
         try:
             for line in link.stream():
                 if not line:
                     continue
                 low = line.lower()
                 if "cmd:" in low or "resp:" in low:  # RelayEngine APDU hex dumps
-                    console.print(f"[cyan]{line}[/cyan]")
+                    safe_print(f"[cyan]{line}[/cyan]")
                 elif line.startswith("-ERR") or "error" in low or "fail" in low:
-                    console.print(f"[red]{line}[/red]")
+                    safe_print(f"[red]{line}[/red]")
                 elif line.startswith((":", "+OK")):
-                    console.print(f"[dim]{line}[/dim]")
+                    safe_print(f"[dim]{line}[/dim]")
                 else:
-                    console.print(line)
+                    safe_print(line)
         except KeyboardInterrupt:
             console.print("\n[dim]stopped[/dim]")
         finally:
             try:
-                link.command("loglevel 2")  # back to silent (Warn)
-            except Exception:
-                pass
+                r = link.command("loglevel 2")  # back to silent (Warn)
+                if not r.ok and "unknown command" not in r.message.lower():
+                    print_warning(f"could not restore log level: {r.message}")
+            except DeviceError as e:
+                print_warning(f"could not restore log level: {e}")
 
 
 # ── relay group ───────────────────────────────────────────────────────────────

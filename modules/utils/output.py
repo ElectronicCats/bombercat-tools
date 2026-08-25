@@ -9,6 +9,7 @@ import time
 from typing import Callable, Optional
 
 from rich.console import Console, Group
+from rich.errors import MarkupError
 from rich.padding import Padding
 from rich.panel import Panel
 from rich.style import Style
@@ -59,24 +60,40 @@ def make_tracer(
     return trace
 
 
+def safe_print(text: str, **kwargs) -> None:
+    """`console.print`, but never crash on malformed Rich markup.
+
+    Several call sites interpolate externally-derived text (device serial
+    lines, exception messages, remote-API strings) into markup templates. A
+    stray closing tag in that text (e.g. a device log line containing
+    something like ``[/x]``) makes Rich's markup parser raise `MarkupError`
+    and would otherwise kill a live stream (`monitor`, `capture`) outright.
+    Fall back to printing the same text with markup disabled instead.
+    """
+    try:
+        console.print(text, **kwargs)
+    except MarkupError:
+        console.print(text, markup=False, **kwargs)
+
+
 def print_success(message: str) -> None:
-    console.print(f"[green]✓[/green] {message}", style=STYLES["success"])
+    safe_print(f"[green]✓[/green] {message}", style=STYLES["success"])
 
 
 def print_warning(message: str) -> None:
-    console.print(f"[yellow]⚠[/yellow] {message}", style=STYLES["warning"])
+    safe_print(f"[yellow]⚠[/yellow] {message}", style=STYLES["warning"])
 
 
 def print_error(message: str) -> None:
-    console.print(f"[red]✗[/red] {message}", style=STYLES["error"])
+    safe_print(f"[red]✗[/red] {message}", style=STYLES["error"])
 
 
 def print_info(message: str) -> None:
-    console.print(f"[blue]ℹ[/blue] {message}", style=STYLES["info"])
+    safe_print(f"[blue]ℹ[/blue] {message}", style=STYLES["info"])
 
 
 def print_dim(message: str) -> None:
-    console.print(f"  {message}", style=STYLES["dim"])
+    safe_print(f"  {message}", style=STYLES["dim"])
 
 
 def print_step(step: int, total: int, message: str) -> None:

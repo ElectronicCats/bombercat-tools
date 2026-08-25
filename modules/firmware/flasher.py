@@ -156,13 +156,6 @@ def copy_uf2(image: Path, drive: Path) -> None:
         # board restarting into the firmware we just gave it.
         return
 
-    sync = getattr(os, "sync", None)  # not on Windows
-    if sync is not None:
-        try:
-            sync()
-        except OSError:
-            pass
-
 
 def flash(
     image: Path,

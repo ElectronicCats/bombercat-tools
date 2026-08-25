@@ -17,6 +17,7 @@ things here, *before* shelling out, so the CLI explains each one in its own UI.
 from __future__ import annotations
 
 import errno
+import logging
 import os
 import platform
 import shutil
@@ -37,6 +38,8 @@ from ..utils.output import (
 import click
 
 TITLE = "Cannot start the test server"
+
+logger = logging.getLogger("rich")
 
 
 def short_path(path: Path) -> str:
@@ -149,7 +152,8 @@ def _docker_group_state() -> str:
         return "active"
     try:
         user = getpass.getuser()
-    except Exception:
+    except Exception as e:
+        logger.debug("getpass.getuser() failed: %s", e)
         return "unknown"
     return "pending-login" if user in group.gr_mem else "absent"
 

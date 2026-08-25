@@ -155,8 +155,31 @@ def _macos_candidates() -> List[Path]:
     return [Path(p) for p in glob.glob("/Volumes/*")]
 
 
+DRIVE_REMOTE = 4  # winapi.h DRIVE_REMOTE — a mapped network drive
+
+
 def _windows_candidates() -> List[Path]:
-    return [Path(f"{letter}:/") for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"]
+    """Drive letters actually in use, minus mapped network drives.
+
+    `GetDriveTypeW` answers from local OS state without touching the drive;
+    a subsequent `is_file()` probe against an unreachable mapped network
+    share, by contrast, can hang for the OS's full network timeout per
+    letter (docs/AUDIT_ERROR_HANDLING.md L11). No pywin32 needed — these are
+    plain kernel32 calls via ctypes (stdlib).
+    """
+    import ctypes
+
+    kernel32 = ctypes.windll.kernel32
+    in_use = kernel32.GetLogicalDrives()
+    candidates = []
+    for i, letter in enumerate("CDEFGHIJKLMNOPQRSTUVWXYZ", start=2):
+        if not (in_use & (1 << i)):
+            continue
+        root = f"{letter}:\\"
+        if kernel32.GetDriveTypeW(root) == DRIVE_REMOTE:
+            continue
+        candidates.append(Path(f"{letter}:/"))
+    return candidates
 
 
 def _candidates() -> List[Path]:
@@ -202,16 +225,6 @@ def wait_for_uf2_drive(timeout: float = DRIVE_TIMEOUT) -> Path:
                 f"no {DRIVE_LABEL} drive appeared within {timeout:.0f} s."
             )
         time.sleep(POLL_INTERVAL)
-
-
-def wait_for_drive_gone(drive: Path, timeout: float = DRIVE_TIMEOUT) -> bool:
-    """Wait for `drive` to unmount — the board rebooting after a write."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not (drive / INFO_FILE).exists():
-            return True
-        time.sleep(POLL_INTERVAL)
-    return False
 
 
 def unmounted_rp2_device() -> Optional[str]:

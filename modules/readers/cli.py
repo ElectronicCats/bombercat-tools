@@ -8,9 +8,7 @@
 # docs/IMPLEMENTATION_PLAN_DetectReaders_CLI.md §3.2.
 # Distributed as-is; no warranty is given.
 
-import csv
 import json
-import os
 import re
 import time
 from collections import OrderedDict
@@ -18,12 +16,20 @@ from contextlib import contextmanager
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import click
-import serial
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-from ..core.bombercat import DeviceError, DeviceLink, resolve_port
+from ..core.bombercat import DeviceLink, resolve_port
 from ..utils.cli_options import device_options
+from ..utils.detection_cli import (
+    device_session,
+    print_field as _print_field,
+    refuse_overwrite as _refuse_overwrite,
+    verbosity as _verbosity,
+    write_csv as _write_csv_base,
+    write_export as _write_export,
+    write_json as _write_json,
+)
 from ..utils.output import (
     console,
     make_tracer,
@@ -52,14 +58,6 @@ def readers():
     """NFC reader/terminal detection commands (requires the DetectReaders firmware)."""
 
 
-def _verbosity(ctx: click.Context, local: int) -> int:
-    """Combine the root `-v` (before the verb) with a command's own `-v`
-    (after it) — either position means the same thing, so the higher count
-    wins rather than the two adding up."""
-    root = (ctx.obj or {}).get("verbose", 0)
-    return max(root, local)
-
-
 @contextmanager
 def _readers_session(
     port: Optional[str],
@@ -67,29 +65,13 @@ def _readers_session(
     trace=None,
 ) -> Iterator[Tuple[str, DeviceLink]]:
     """Open a verified link for the `readers` commands, yield ``(target, link)``,
-    and always close it. Mirrors tags._tags_session, with a DetectReaders-
-    flavored hint on a failed handshake."""
-    link: Optional[DeviceLink] = None
-    try:
-        target = resolve_port(port, device_id)
-        link = DeviceLink(target, trace=trace).open()
-        if not link.ping():
-            print_error(
-                f"{target} did not answer the handshake. "
-                "`readers` needs the DetectReaders firmware — check what's "
-                "flashed with:  bombercat status"
-            )
-            raise SystemExit(1)
-        yield target, link
-    except DeviceError as e:
-        print_error(str(e))
-        raise SystemExit(1)
-    except (serial.SerialException, OSError) as e:
-        print_error(f"{type(e).__name__}: {e}")
-        raise SystemExit(1)
-    finally:
-        if link is not None:
-            link.close()
+    and always close it. Thin, DetectReaders-flavored wrapper around
+    `detection_cli.device_session` — `resolve_port`/`DeviceLink` are passed
+    in explicitly so tests can still monkeypatch this module's copies."""
+    with device_session(
+        resolve_port, DeviceLink, "readers", "DetectReaders", port, device_id, trace
+    ) as pair:
+        yield pair
 
 
 def _reader_to_dict(reader: Reader) -> Dict[str, object]:
@@ -106,10 +88,6 @@ def _reader_to_dict(reader: Reader) -> Dict[str, object]:
     for key, value in reader.extra.items():
         d["x_" + key if key in _RESERVED_KEYS else key] = value
     return d
-
-
-def _print_field(label: str, value: str) -> None:
-    console.print(f"  [cyan]{label:<13}[/cyan] {value}")
 
 
 def _emit_reader(reader: Reader, as_json: bool) -> None:
@@ -259,62 +237,21 @@ def watch_cmd(ctx, dedupe, quiet_noise, as_json, verbose, port, device_id):
 # ── scan ─────────────────────────────────────────────────────────────────────
 
 
-def _write_json(path: str, rows: List[Dict[str, object]]) -> None:
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
-        f.write("\n")
-
-
-_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
-
-
-def _csv_safe(value: object) -> object:
-    """Neutralize CSV/formula injection (device-controlled fields like
-    `label`, `tech`, `protocol`, and `extra` are free text): a cell starting
-    with =/+/-/@ is interpreted as a formula by Excel/LibreOffice on open."""
-    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
-        return "'" + value
-    return value
+_CSV_FIELDS = [
+    "label",
+    "tech",
+    "protocol",
+    "intf",
+    "apdu",
+    "aid",
+    "count",
+    "first_s",
+    "last_s",
+]
 
 
 def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
-    fieldnames = [
-        "label",
-        "tech",
-        "protocol",
-        "intf",
-        "apdu",
-        "aid",
-        "count",
-        "first_s",
-        "last_s",
-    ]
-    for row in rows:
-        for key in row:
-            if key not in fieldnames:
-                fieldnames.append(key)
-    with open(path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({k: _csv_safe(v) for k, v in row.items()})
-
-
-def _refuse_overwrite(path: str, force: bool) -> None:
-    """These outputs are audit evidence (a scan export may reflect live
-    reader/APDU data) — refuse a silent overwrite unless --force."""
-    if not force and os.path.exists(path):
-        print_error(f"{path} already exists — pass --force to overwrite")
-        raise SystemExit(1)
-
-
-def _write_export(path: str, rows: List[Dict[str, object]], writer) -> None:
-    try:
-        writer(path, rows)
-    except OSError as e:
-        print_error(f"could not write {path}: {e}")
-        raise SystemExit(1)
-    print_info(f"wrote {path}")
+    _write_csv_base(path, rows, _CSV_FIELDS)
 
 
 @readers.command("scan", context_settings={"help_option_names": ["-h", "--help"]})

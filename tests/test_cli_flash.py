@@ -871,6 +871,59 @@ def test_waiting_for_a_drive_that_never_comes_raises(monkeypatch, mounts):
     assert "RPI-RP2" in str(excinfo.value)
 
 
+class _FakeKernel32:
+    """Stands in for ctypes.windll.kernel32 (L11): GetLogicalDrives()'s bit i
+    means letter chr(ord('A') + i) is in use; GetDriveTypeW reports what
+    `drive_types` says, DRIVE_REMOTE (4) by default for anything unlisted."""
+
+    def __init__(self, present, drive_types=None):
+        self.mask = 0
+        for letter in present:
+            self.mask |= 1 << (ord(letter) - ord("A"))
+        self.drive_types = drive_types or {}
+        self.queried = []
+
+    def GetLogicalDrives(self):
+        return self.mask
+
+    def GetDriveTypeW(self, root):
+        self.queried.append(root)
+        return self.drive_types.get(root[0], uf2.DRIVE_REMOTE)
+
+
+def test_windows_candidates_skips_network_drives(monkeypatch):
+    """A mapped network drive must never reach the is_file() probe that can
+    hang for the OS network timeout on an unreachable host (L11)."""
+    import ctypes
+
+    DRIVE_FIXED = 3
+    kernel32 = _FakeKernel32(
+        present="CDZ", drive_types={"C": DRIVE_FIXED, "D": DRIVE_FIXED, "Z": 4}
+    )
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"kernel32": kernel32})(), raising=False
+    )
+
+    candidates = uf2._windows_candidates()
+
+    assert [p.as_posix() for p in candidates] == ["C:", "D:"]
+    assert "Z:\\" in kernel32.queried, "a network drive's type is still checked"
+    assert "E:\\" not in kernel32.queried, "letters not in use are never queried"
+
+
+def test_windows_candidates_with_no_drives_present(monkeypatch):
+    import ctypes
+
+    monkeypatch.setattr(
+        ctypes,
+        "windll",
+        type("W", (), {"kernel32": _FakeKernel32(present="")})(),
+        raising=False,
+    )
+
+    assert uf2._windows_candidates() == []
+
+
 # ── Copying (§3.4) ───────────────────────────────────────────────────────────
 
 

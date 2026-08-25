@@ -8,6 +8,7 @@
 # needs Docker installed: the environment is scripted per test.
 
 import errno
+import logging
 import socket
 import subprocess
 import sys
@@ -254,6 +255,25 @@ def test_group_state_absent_for_a_non_member(monkeypatch):
         sys.modules, "getpass", types.SimpleNamespace(getuser=lambda: "darcko")
     )
     assert preflight._docker_group_state() == "absent"
+
+
+def test_group_state_unknown_when_getpass_fails_and_logs_at_debug(monkeypatch, caplog):
+    """L14: a swallowed getpass.getuser() failure (no /etc/passwd entry,
+    containerized environments) must still degrade to "unknown" but stay
+    diagnosable via a debug-level log line."""
+    monkeypatch.setitem(sys.modules, "grp", _grp_module(members=["darcko"]))
+    monkeypatch.setattr(preflight.os, "getgroups", lambda: [100])
+
+    def _raise():
+        raise OSError("no such user")
+
+    monkeypatch.setitem(sys.modules, "getpass", types.SimpleNamespace(getuser=_raise))
+
+    with caplog.at_level(logging.DEBUG, logger="rich"):
+        result = preflight._docker_group_state()
+
+    assert result == "unknown"
+    assert "getpass.getuser() failed" in caplog.text
 
 
 def test_group_state_unknown_without_a_docker_group(monkeypatch):

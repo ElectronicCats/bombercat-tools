@@ -51,6 +51,7 @@ class FakeSerial:
         self.pending: List[bytes] = []
         self.closed = False
         self.resets = 0
+        self.readline_sizes: List[int] = []
 
     # -- serial.Serial API used by DeviceLink --------------------------------
     def reset_input_buffer(self) -> None:
@@ -70,7 +71,8 @@ class FakeSerial:
     def flush(self) -> None:
         pass
 
-    def readline(self) -> bytes:
+    def readline(self, size: int = -1) -> bytes:
+        self.readline_sizes.append(size)
         if self.read_error is not None:
             raise self.read_error
         return self.pending.pop(0) if self.pending else b""

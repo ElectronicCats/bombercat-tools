@@ -149,6 +149,26 @@ def test_hex_compact(text, expected):
     assert _hex_compact(text) == expected
 
 
+def test_structured_event_rejects_a_non_hex_uid_and_keeps_it_as_raw():
+    """Garbage bytes must not become a 'valid-looking' UID (M12)."""
+    parser = TagParser()
+
+    tag = parser.feed(":tag 10 NFC-A T2T zzqq")
+
+    assert tag.uid is None
+    assert tag.extra["raw_uid"] == "ZZQQ"
+
+
+def test_legacy_id_line_rejects_garbage_hex_and_keeps_it_as_raw():
+    parser = TagParser()
+    parser.feed("\tTechnology: NFC-A")
+
+    tag = parser.feed("\tNFC ID = zz qq")
+
+    assert tag.uid is None
+    assert tag.extra["raw_uid"] == "ZZQQ"
+
+
 def test_legacy_id_line_of_null_yields_tag_with_no_uid():
     parser = TagParser()
     parser.feed("\tTechnology: NFC-A")

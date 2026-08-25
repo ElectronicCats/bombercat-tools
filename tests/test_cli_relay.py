@@ -300,6 +300,30 @@ def test_run_keeps_polling_through_a_transient_status_timeout(runner, use_link):
     assert "relay started" in flat(result.output)
 
 
+def test_run_aborts_immediately_on_a_lost_link(runner, use_link):
+    """A board that was unplugged fails every status poll the same way — abort
+    instead of burning the whole 45s bring-up budget on a dead link (M18)."""
+    use_link(nfc, FakeLink({"status": DeviceError("serial link lost: device gone")}))
+    result = runner.invoke(run_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "lost contact" in out
+    assert "plugged in" in out
+
+
+def test_run_gives_up_after_consecutive_status_failures(runner, use_link):
+    """Transient timeouts during bring-up are fine one at a time, but not
+    forever — cap consecutive failures instead of polling to the full budget
+    (M18)."""
+    use_link(nfc, FakeLink({"status": DeviceError("timed out")}))
+    result = runner.invoke(run_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "stopped responding to status polls" in out
+
+
 def test_run_gives_up_after_the_bringup_budget(runner, use_link, monkeypatch):
     monkeypatch.setattr(nfc, "_RUN_BRINGUP_TIMEOUT", 0.0)
     use_link(nfc, FakeLink({"status": ok(state="connecting")}))
@@ -380,6 +404,16 @@ def test_monitor_streams_and_restores_the_log_level(runner, use_link):
     assert "cmd: 00a404" in out and "plain log line" in out
 
 
+def test_monitor_survives_a_device_line_with_malformed_markup(runner, use_link):
+    """A device log line containing something that looks like a stray Rich
+    closing tag must not crash the live stream (M16)."""
+    use_link(nfc, FakeLink(stream_lines=["stray closing tag [/oops] in device log"]))
+    result = runner.invoke(monitor_cmd, [], catch_exceptions=False)
+
+    assert result.exit_code == 0
+    assert "stray closing tag" in flat(result.output)
+
+
 def test_monitor_exits_cleanly_on_ctrl_c(runner, use_link):
     def _lines():
         yield "RelayEngine: alive"
@@ -394,17 +428,39 @@ def test_monitor_exits_cleanly_on_ctrl_c(runner, use_link):
 
 
 def test_monitor_works_on_firmware_without_loglevel(runner, use_link):
+    """Old firmware replies -ERR unknown command; that's ignorable, not a
+    real problem (M17)."""
     use_link(
         nfc,
         FakeLink(
-            {"loglevel": DeviceError("unknown command")},
+            {"loglevel": err("unknown command")},
             stream_lines=["RelayEngine: alive"],
         ),
     )
     result = runner.invoke(monitor_cmd, [])
+    out = flat(result.output)
 
     assert result.exit_code == 0
-    assert "alive" in flat(result.output)
+    assert "alive" in out
+    assert "log level" not in out  # ignorable case stays silent
+
+
+def test_monitor_warns_on_a_real_loglevel_failure(runner, use_link):
+    """A genuine link problem while setting loglevel must not vanish
+    silently like the old bare `except Exception: pass` did (M17)."""
+    use_link(
+        nfc,
+        FakeLink(
+            {"loglevel": DeviceError("serial link lost")},
+            stream_lines=["RelayEngine: alive"],
+        ),
+    )
+    result = runner.invoke(monitor_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "could not raise log level" in out
+    assert "alive" in out
 
 
 # ── relay group wiring ───────────────────────────────────────────────────────

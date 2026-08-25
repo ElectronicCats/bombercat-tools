@@ -72,6 +72,26 @@ def test_to_dict_preserves_first_seen_order():
     assert uids == ["AAAA", "BBBB"]
 
 
+def test_extra_keys_colliding_with_computed_columns_are_renamed():
+    """A device sending `count=99`/`uid=DEADBEEF` in `extra` must not corrupt
+    the locally-computed columns of the same name (M13)."""
+    agg = TagAggregator()
+    agg.add(
+        Tag(
+            uid="041A2B3C",
+            tech="NFC-A",
+            protocol="T2T",
+            extra={"count": "99", "uid": "DEADBEEF"},
+        )
+    )
+
+    row = agg.to_dict()[0]
+    assert row["count"] == 1  # the real computed count, untouched
+    assert row["uid"] == "041A2B3C"
+    assert row["x_count"] == "99"
+    assert row["x_uid"] == "DEADBEEF"
+
+
 def test_empty_aggregator():
     agg = TagAggregator()
     assert len(agg) == 0

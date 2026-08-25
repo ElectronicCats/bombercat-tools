@@ -149,6 +149,28 @@ def test_pump_skips_malformed_hex_without_stopping(capsys):
     assert len(buf.getvalue()) > 0  # the good frame still made it
 
 
+def test_pump_reanchors_when_the_device_clock_goes_backwards(monkeypatch, capsys):
+    """A board reset / re-enumeration mid-capture makes ts_ms jump backwards;
+    the pump must re-anchor to wall-clock 'now' instead of feeding a negative
+    delta into the pcap record (M7)."""
+    times = iter([1_700_000_000.0, 1_700_000_010.0])
+    monkeypatch.setattr(cap.time, "time", lambda: next(times))
+    buf = BytesIO()
+    _pump(
+        FakeLink(stream_lines=[":apdu cmd 5000 00a4", ":apdu cmd 100 00a4"]),
+        _CaptureSink(fileobj=buf),
+    )
+
+    data = buf.getvalue()
+    first_len = struct.unpack("<L", data[8:12])[0]
+    sec1, _ = struct.unpack("<LL", data[:8])
+    sec2, _ = struct.unpack("<LL", data[16 + first_len : 16 + first_len + 8])
+
+    assert sec1 == 1_700_000_000
+    assert sec2 == 1_700_000_010  # re-anchored, not negative
+    assert "device clock reset" in flat(capsys.readouterr().out)
+
+
 def test_pump_ignores_empty_apdus():
     buf = BytesIO()
     _pump(FakeLink(stream_lines=[":apdu cmd 1000 "]), _CaptureSink(fileobj=buf))
@@ -316,6 +338,69 @@ def test_start_survives_a_dead_link_while_disarming(runner, fake_session, tmp_pa
 
     assert result.exit_code == 0
     assert link.closed
+    # M8: a failed disarm must not vanish silently — the board is left armed.
+    out = flat(result.output)
+    assert "could not disarm capture" in out
+    assert "bombercat capture stop" in out
+
+
+def test_start_cleans_up_the_pipe_even_when_closing_the_file_fails(
+    runner, fake_session, monkeypatch, tmp_path
+):
+    """M9: a failing fileobj.close() (disk full) must not skip pipe cleanup."""
+    pipe = _FakePipe()
+    out_path = str(tmp_path / "x.pcap")
+    real_open = open
+
+    class _BadFile(BytesIO):
+        def close(self):
+            raise OSError("disk full")
+
+    def _fake_open(path, mode="r", *a, **k):
+        if str(path) == out_path:
+            return _BadFile()
+        return real_open(path, mode, *a, **k)
+
+    monkeypatch.setattr("builtins.open", _fake_open)
+    monkeypatch.setattr(cap, "find_wireshark_path", lambda: "/usr/bin/wireshark")
+    monkeypatch.setattr(cap, "_new_pipe", lambda: pipe)
+    monkeypatch.setattr(
+        cap,
+        "Wireshark",
+        lambda *a, **k: type(
+            "W", (), {"start": lambda self: None, "has_exited": lambda self: False}
+        )(),
+    )
+
+    fake_session(cap, FakeLink(stream_lines=TRANSCRIPT))
+    result = runner.invoke(capture, ["start", "-ws", "-o", out_path])
+
+    assert result.exit_code == 0
+    assert pipe.removed
+    assert "could not close pcap file cleanly" in flat(result.output)
+
+
+def test_start_refuses_to_overwrite_an_existing_pcap_without_force(
+    runner, fake_session, tmp_path
+):
+    out = tmp_path / "existing.pcap"
+    out.write_bytes(b"already here")
+    fake_session(cap, FakeLink())
+    result = runner.invoke(capture, ["start", "-o", str(out)])
+
+    assert result.exit_code == 1
+    assert "already exists" in flat(result.output)
+    assert out.read_bytes() == b"already here"
+
+
+def test_start_force_overwrites_an_existing_pcap(runner, fake_session, tmp_path):
+    out = tmp_path / "existing.pcap"
+    out.write_bytes(b"already here")
+    fake_session(cap, FakeLink(stream_lines=TRANSCRIPT))
+    result = runner.invoke(capture, ["start", "-o", str(out), "--force"])
+
+    assert result.exit_code == 0
+    assert out.read_bytes() != b"already here"
 
 
 # ── capture stop ─────────────────────────────────────────────────────────────

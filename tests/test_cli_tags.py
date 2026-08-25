@@ -170,6 +170,42 @@ def test_watch_shows_noise_with_no_quiet_noise(runner, use_link):
     assert "Restarting..." in result.stdout
 
 
+def test_watch_caps_the_dedupe_table_with_a_warning(runner, use_link, monkeypatch):
+    """Firmware that prints no UID keys the dedupe table by tech:protocol:ts_ms,
+    which never repeats — cap growth instead of leaking memory forever (M15)."""
+    monkeypatch.setattr(tagscli, "_MAX_DEDUPE_KEYS", 2)
+
+    def _lines():
+        yield ":tag 1 NFC-A T2T 000001"
+        yield ":tag 2 NFC-A T2T 000002"
+        yield ":tag 3 NFC-A T2T 000003"
+        raise KeyboardInterrupt
+
+    use_link(tagscli, FakeLink(stream_lines=_lines()))
+    result = runner.invoke(watch_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "dedupe table capped at 2" in out
+
+
+def test_tag_dict_renames_extra_keys_that_collide_with_computed_columns(
+    runner, use_link
+):
+    """A device sending `count=`/`uid=` in extra must not corrupt the real
+    computed columns of the same name (M13)."""
+    use_link(
+        tagscli,
+        FakeLink(stream_lines=[":tag 10 NFC-A T2T 041A2B count=99 uid=DEADBEEF"]),
+    )
+    result = runner.invoke(read_cmd, ["--json"])
+    payload = json.loads(result.stdout)
+
+    assert payload["uid"] == "041A2B"
+    assert payload["x_count"] == "99"
+    assert payload["x_uid"] == "DEADBEEF"
+
+
 def test_watch_json_emits_newline_delimited_objects(runner, use_link):
     def _lines():
         yield STRUCTURED_LINE
@@ -242,6 +278,48 @@ def test_scan_writes_json_and_csv_exports(runner, use_link, tmp_path):
         rows = list(csv.DictReader(f))
     assert rows[0]["uid"] == "041A2B3C"
     assert rows[0]["count"] == "2"
+
+
+def test_scan_refuses_to_overwrite_an_existing_export_without_force(
+    runner, use_link, tmp_path
+):
+    json_path = tmp_path / "scan.json"
+    json_path.write_text("existing")
+    use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
+    result = runner.invoke(scan_cmd, ["-t", "0.01", "--json", str(json_path)])
+
+    assert result.exit_code == 1
+    assert "already exists" in flat(result.stdout)
+    assert json_path.read_text() == "existing"
+
+
+def test_scan_force_overwrites_an_existing_export(runner, use_link, tmp_path):
+    json_path = tmp_path / "scan.json"
+    json_path.write_text("existing")
+    use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
+    result = runner.invoke(
+        scan_cmd, ["-t", "0.01", "--json", str(json_path), "--force"]
+    )
+
+    assert result.exit_code == 0
+    assert json_path.read_text() != "existing"
+
+
+def test_scan_reports_a_write_failure_instead_of_crashing(
+    runner, use_link, tmp_path, monkeypatch
+):
+    use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
+    monkeypatch.setattr(
+        tagscli,
+        "_write_json",
+        lambda path, rows: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    result = runner.invoke(
+        scan_cmd, ["-t", "0.01", "--json", str(tmp_path / "scan.json")]
+    )
+
+    assert result.exit_code == 1
+    assert "could not write" in flat(result.stdout)
 
 
 def test_scan_reports_a_board_that_will_not_handshake(runner, use_link):

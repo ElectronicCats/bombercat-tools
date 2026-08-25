@@ -92,6 +92,13 @@ def test_record_carries_rounded_microseconds_into_the_seconds_field():
     assert (sec, usec) == (11, 0)
 
 
+def test_record_clamps_a_negative_timestamp_instead_of_raising():
+    """`<LLLL` is unsigned: a negative ts (device clock jump) used to raise
+    struct.error and kill the capture (M7)."""
+    sec, usec = struct.unpack("<LL", record(b"\x00", -5.5)[:8])
+    assert (sec, usec) == (0, 0)
+
+
 # ── PcapBuilder ──────────────────────────────────────────────────────────────
 
 

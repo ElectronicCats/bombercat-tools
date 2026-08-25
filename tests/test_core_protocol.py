@@ -62,6 +62,16 @@ def test_command_collects_data_lines_and_ignores_log_noise(linked):
     assert ser.written == ["info"]
 
 
+def test_readline_calls_are_size_capped_to_bound_memory(linked):
+    """A wedged/noisy firmware emitting continuous non-newline bytes must not
+    grow memory without bound (M14)."""
+    link, ser = linked({"ping": ["+OK bombercat"]})
+    link.command("ping")
+
+    assert ser.readline_sizes
+    assert all(size == core._MAX_LINE_BYTES for size in ser.readline_sizes)
+
+
 def test_command_keeps_spaces_in_values(linked):
     link, _ = linked({"info": [":ssid My Home Net", "+OK"]})
     assert link.command("info").data["ssid"] == "My Home Net"

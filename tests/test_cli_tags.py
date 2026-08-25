@@ -53,7 +53,7 @@ def test_read_times_out_with_no_tag(runner, use_link):
     result = runner.invoke(read_cmd, ["-t", "0.01"])
 
     assert result.exit_code == 1
-    assert "no tag detected" in flat(result.stdout)
+    assert "no tag detected" in flat(result.output)
 
 
 def test_read_json_emits_one_clean_object_on_stdout(runner, use_link):
@@ -73,7 +73,7 @@ def test_read_reports_a_board_that_will_not_handshake(runner, use_link):
     result = runner.invoke(read_cmd, [])
 
     assert result.exit_code == 1
-    assert "did not answer the handshake" in flat(result.stdout)
+    assert "did not answer the handshake" in flat(result.output)
     assert link.closed
 
 
@@ -183,7 +183,7 @@ def test_watch_caps_the_dedupe_table_with_a_warning(runner, use_link, monkeypatc
 
     use_link(tagscli, FakeLink(stream_lines=_lines()))
     result = runner.invoke(watch_cmd, [])
-    out = flat(result.stdout)
+    out = flat(result.output)
 
     assert result.exit_code == 0
     assert "dedupe table capped at 2" in out
@@ -289,7 +289,7 @@ def test_scan_refuses_to_overwrite_an_existing_export_without_force(
     result = runner.invoke(scan_cmd, ["-t", "0.01", "--json", str(json_path)])
 
     assert result.exit_code == 1
-    assert "already exists" in flat(result.stdout)
+    assert "already exists" in flat(result.output)
     assert json_path.read_text() == "existing"
 
 
@@ -319,7 +319,7 @@ def test_scan_reports_a_write_failure_instead_of_crashing(
     )
 
     assert result.exit_code == 1
-    assert "could not write" in flat(result.stdout)
+    assert "could not write" in flat(result.output)
 
 
 def test_scan_reports_a_board_that_will_not_handshake(runner, use_link):
@@ -327,7 +327,7 @@ def test_scan_reports_a_board_that_will_not_handshake(runner, use_link):
     result = runner.invoke(scan_cmd, ["-t", "0.01"])
 
     assert result.exit_code == 1
-    assert "did not answer the handshake" in flat(result.stdout)
+    assert "did not answer the handshake" in flat(result.output)
     assert link.closed
 
 
@@ -372,7 +372,7 @@ def test_info_reports_a_device_error_from_the_info_command(runner, use_link):
     result = runner.invoke(info_cmd, [])
 
     assert result.exit_code == 1
-    assert "info failed" in flat(result.stdout)
+    assert "info failed" in flat(result.output)
 
 
 def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
@@ -380,7 +380,7 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
     result = runner.invoke(info_cmd, [])
 
     assert result.exit_code == 1
-    assert "did not answer the handshake" in flat(result.stdout)
+    assert "did not answer the handshake" in flat(result.output)
     assert link.closed
 
 

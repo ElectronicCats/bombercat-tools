@@ -145,7 +145,7 @@ def test_pump_skips_malformed_hex_without_stopping(capsys):
         _CaptureSink(fileobj=buf),
     )
 
-    assert "skipping malformed APDU hex" in flat(capsys.readouterr().out)
+    assert "skipping malformed APDU hex" in flat(capsys.readouterr().err)
     assert len(buf.getvalue()) > 0  # the good frame still made it
 
 
@@ -168,7 +168,7 @@ def test_pump_reanchors_when_the_device_clock_goes_backwards(monkeypatch, capsys
 
     assert sec1 == 1_700_000_000
     assert sec2 == 1_700_000_010  # re-anchored, not negative
-    assert "device clock reset" in flat(capsys.readouterr().out)
+    assert "device clock reset" in flat(capsys.readouterr().err)
 
 
 def test_pump_ignores_empty_apdus():
@@ -187,7 +187,7 @@ def test_pump_falls_back_to_the_file_when_wireshark_closes_the_pipe(capsys):
     _pump(FakeLink(stream_lines=TRANSCRIPT), sink)
 
     assert sink.pipe is None
-    assert "continuing to the file only" in flat(capsys.readouterr().out)
+    assert "continuing to the file only" in flat(capsys.readouterr().err)
     assert len(buf.getvalue()) > 0
 
 
@@ -199,7 +199,7 @@ def test_pump_stops_when_the_pipe_breaks_and_there_is_no_file(capsys):
     sink = _CaptureSink(pipe=_BrokenPipe())
     _pump(FakeLink(stream_lines=TRANSCRIPT), sink)
 
-    assert "stopping capture" in flat(capsys.readouterr().out)
+    assert "stopping capture" in flat(capsys.readouterr().err)
 
 
 # ── capture start ────────────────────────────────────────────────────────────
@@ -455,7 +455,7 @@ def test_watcher_keeps_the_file_going_when_wireshark_quits(capsys):
     )
 
     assert sink.pipe is None
-    assert "continuing to the file only" in flat(capsys.readouterr().out)
+    assert "continuing to the file only" in flat(capsys.readouterr().err)
 
 
 def test_watcher_interrupts_a_capture_that_has_nowhere_left_to_write(
@@ -469,7 +469,7 @@ def test_watcher_interrupts_a_capture_that_has_nowhere_left_to_write(
     )
 
     assert interrupted == [True]
-    assert "stopping capture" in flat(capsys.readouterr().out)
+    assert "stopping capture" in flat(capsys.readouterr().err)
 
 
 def test_watcher_stops_when_the_capture_ends_first():

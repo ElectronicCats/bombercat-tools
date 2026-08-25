@@ -24,14 +24,23 @@ def loud():
 
 
 def render(fn, *args, width: int = 80, **kwargs) -> str:
-    """Run a print helper against a captured console and return the plain text."""
+    """Run a print helper against a captured console and return the plain text.
+
+    Patches both `out.console` and `out.console_err` to the same captured
+    console: `print_error`/`print_warning` write to the latter (M23), and
+    these tests only care about the rendered text, not which stream it went
+    to (that split is covered at the CLI level via CliRunner's merged
+    `result.output`).
+    """
     console = Console(width=width, force_terminal=False)
     original, out.console = out.console, console
+    original_err, out.console_err = out.console_err, console
     try:
         with console.capture() as cap:
             fn(*args, **kwargs)
     finally:
         out.console = original
+        out.console_err = original_err
     return cap.get()
 
 

@@ -114,7 +114,7 @@ def test_smoketest_python_explains_a_failed_bootstrap(monkeypatch, tmp_path, cap
         ts._smoketest_python()
 
     assert e.value.code == 1
-    assert "could not prepare the protobuf runtime" in flat(capsys.readouterr().out)
+    assert "could not prepare the protobuf runtime" in flat(capsys.readouterr().err)
 
 
 # ── testserver verify / smoke ────────────────────────────────────────────────
@@ -296,7 +296,7 @@ def test_render_verify_reports_a_verifier_that_gave_no_verdict(monkeypatch, caps
     rc = ts._render_verify(sys.executable, "127.0.0.1", 5566, 8)
 
     assert rc == 2
-    assert "without a verdict" in flat(capsys.readouterr().out)
+    assert "without a verdict" in flat(capsys.readouterr().err)
 
 
 def test_render_verify_passes_unexpected_child_output_through(monkeypatch, capsys):

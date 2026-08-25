@@ -32,7 +32,18 @@ def gen():
         sys.exit(1)
 
     print_info(f"Running {GEN_PROTO.name} (bootstraps a pinned venv on first run) …")
-    rc = subprocess.run(["bash", str(GEN_PROTO)]).returncode
+    try:
+        rc = subprocess.run(["bash", str(GEN_PROTO)]).returncode
+    except KeyboardInterrupt:
+        print_info("generation interrupted.")
+        sys.exit(130)
+    except FileNotFoundError:
+        print_error(
+            "bash is not installed, or not on your PATH.\n"
+            "Install it with your package manager (e.g. sudo apt install bash) "
+            "and re-run."
+        )
+        sys.exit(1)
     if rc == 0:
         print_success("Protobuf sources regenerated.")
     sys.exit(rc)

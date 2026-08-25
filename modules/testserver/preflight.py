@@ -16,6 +16,7 @@ things here, *before* shelling out, so the CLI explains each one in its own UI.
 
 from __future__ import annotations
 
+import errno
 import os
 import platform
 import shutil
@@ -89,7 +90,22 @@ def check_server_sources(server_dir: Path, fetch_script: Path) -> None:
         sys.exit(1)
 
     print_info(f"Running {fetch} …")
-    if subprocess.run(["bash", str(fetch_script)]).returncode != 0:
+    try:
+        rc = subprocess.run(["bash", str(fetch_script)]).returncode
+    except FileNotFoundError:
+        print_error_panel(
+            TITLE,
+            "bash is not installed, or not on your PATH.",
+            f"The CLI fetches the nfcgate-server sources through a shell script\n"
+            f"({fetch}), so it needs bash to run it.",
+            fix=[
+                "Install bash with your package manager (e.g. "
+                + fmt_command("sudo apt install bash"),
+                f"{fmt_command('bombercat testserver run')}\n     re-run this command",
+            ],
+        )
+        sys.exit(1)
+    if rc != 0:
         print_error_panel(
             TITLE,
             "Fetching the nfcgate-server failed.",
@@ -292,12 +308,27 @@ def check_docker() -> None:
 
     # `docker info` touches the daemon exactly like `docker build` will, so its
     # failure is the one the build would have hit — only earlier and quieter.
-    probe = subprocess.run(
-        ["docker", "info"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        probe = subprocess.run(
+            ["docker", "info"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        print_error_panel(
+            TITLE,
+            "The Docker daemon is not responding.",
+            "`docker info` did not return within 10 seconds — the daemon may be\n"
+            "hung, or a proxy/socket in front of it is stuck.",
+            fix=[
+                f"{fmt_command('docker run --rm hello-world')}\n"
+                "     confirm the daemon still responds to a plain command",
+                "Restart the Docker daemon/service and re-run this command.",
+            ],
+        )
+        sys.exit(1)
     if probe.returncode == 0:
         return
 
@@ -356,31 +387,77 @@ def check_docker() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def check_port(port: int, container_name: str) -> None:
-    """Warn early if the host port is taken — `docker run` fails late and cryptically."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+def _bind_probe(family: socket.AddressFamily, addr: str, port: int) -> OSError | None:
+    """Try to bind `addr:port`; return the OSError on failure, None on success."""
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if family == socket.AF_INET6:
+            probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
         probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            probe.bind(("0.0.0.0", port))
-            return
-        except OSError:
-            pass
+            probe.bind((addr, port))
+            return None
+        except OSError as e:
+            return e
+
+
+def check_port(port: int, container_name: str) -> None:
+    """Warn early if the host port is taken — `docker run` fails late and cryptically."""
+    # Loopback only: `docker -p` publishes the container on every interface,
+    # but we only need to know whether *something* already owns this port, and
+    # binding 0.0.0.0 briefly grabs it on every interface to find out — more
+    # intrusive than needed.
+    err = _bind_probe(socket.AF_INET, "127.0.0.1", port)
+    if err is None and socket.has_ipv6:
+        # An IPv6-only listener (`[::1]:port`, V6ONLY) is invisible to the
+        # AF_INET probe above, so check it too.
+        err = _bind_probe(socket.AF_INET6, "::1", port)
+    if err is None:
+        return
+
+    if err.errno == errno.EACCES:
+        print_error_panel(
+            TITLE,
+            f"Not allowed to bind host port {port}.",
+            "Ports below 1024 are reserved for privileged processes on most\n"
+            "systems — Docker's own port-publish would hit the same restriction.",
+            fix=[
+                f"{fmt_command('bombercat testserver run -p 5566')}\n"
+                "     use an unprivileged port (>= 1024) instead",
+                "Or grant this command the privileges needed to bind low ports.",
+            ],
+        )
+        sys.exit(1)
+
+    if err.errno != errno.EADDRINUSE:
+        print_error_panel(
+            TITLE,
+            f"Could not check whether host port {port} is free.",
+            f"Probing the port failed with: {err}",
+            fix=[
+                f"{fmt_command('bombercat testserver run')}\n     re-run this command",
+            ],
+        )
+        sys.exit(1)
 
     # A container we started and never cleaned up is the likeliest culprit, and
     # the only one we can name precisely.
-    ours = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "--filter",
-            f"name={container_name}",
-            "--format",
-            "{{.Names}}",
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    ).stdout.strip()
+    try:
+        ours = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                f"name={container_name}",
+                "--format",
+                "{{.Names}}",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except subprocess.TimeoutExpired:
+        ours = ""
 
     if ours:
         print_error_panel(

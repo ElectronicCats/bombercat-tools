@@ -9,8 +9,10 @@
 
 import csv
 import json
+import os
 import re
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -29,7 +31,7 @@ from ..utils.output import (
     print_info,
     print_warning,
 )
-from .aggregator import TagAggregator
+from .aggregator import _RESERVED_KEYS, TagAggregator
 from .parser import Tag, TagParser
 
 # How long `tags info` listens for a ':tag' event before concluding the
@@ -41,6 +43,12 @@ _INFO_PROBE_SECONDS = 2.0
 _NOISE_RE = re.compile(
     r"^(Restarting\.\.\.|Waiting for a Card\.\.\.|Card removed!)\s*$"
 )
+
+# Firmware that prints no UID (legacy NFC-B/F) keys `watch`'s dedupe table by
+# `tech:protocol:ts_ms`, which never repeats — an unattended `watch` running
+# for hours/days would otherwise grow this dict without bound. Cap it as an
+# LRU: oldest key evicted once full (M15).
+_MAX_DEDUPE_KEYS = 10_000
 
 
 @click.group("tags", context_settings={"help_option_names": ["-h", "--help"]})
@@ -95,7 +103,8 @@ def _tag_to_dict(tag: Tag) -> Dict[str, object]:
         "protocol": tag.protocol,
         "ts_ms": tag.ts_ms,
     }
-    d.update(tag.extra)
+    for key, value in tag.extra.items():
+        d["x_" + key if key in _RESERVED_KEYS else key] = value
     return d
 
 
@@ -192,7 +201,8 @@ def watch_cmd(ctx, dedupe, quiet_noise, as_json, verbose, port, device_id):
     """Stream tag detections continuously. Ctrl-C to stop and print a summary."""
     level = _verbosity(ctx, verbose)
     detections = 0
-    counts: Dict[str, int] = {}
+    counts: "OrderedDict[str, int]" = OrderedDict()
+    capped = False
     start = time.monotonic()
     with _tags_session(port, device_id, trace=make_tracer(level)) as (target, link):
         if not as_json:
@@ -214,7 +224,16 @@ def watch_cmd(ctx, dedupe, quiet_noise, as_json, verbose, port, device_id):
 
                 detections += 1
                 key = tag.uid or f"{tag.tech}:{tag.protocol}:{tag.ts_ms}"
+                if key not in counts and len(counts) >= _MAX_DEDUPE_KEYS:
+                    counts.popitem(last=False)
+                    if not capped:
+                        print_warning(
+                            f"dedupe table capped at {_MAX_DEDUPE_KEYS} "
+                            "entries — oldest UIDs are being evicted"
+                        )
+                        capped = True
                 counts[key] = counts.get(key, 0) + 1
+                counts.move_to_end(key)
                 if dedupe and counts[key] > 1:
                     if not as_json:
                         console.print(
@@ -241,7 +260,7 @@ def watch_cmd(ctx, dedupe, quiet_noise, as_json, verbose, port, device_id):
 
 
 def _write_json(path: str, rows: List[Dict[str, object]]) -> None:
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2)
         f.write("\n")
 
@@ -252,10 +271,27 @@ def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
         for key in row:
             if key not in fieldnames:
                 fieldnames.append(key)
-    with open(path, "w", newline="") as f:
+    with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _refuse_overwrite(path: str, force: bool) -> None:
+    """These outputs are audit evidence (a scan export may reflect card/UID
+    data captured live) — refuse a silent overwrite unless --force."""
+    if not force and os.path.exists(path):
+        print_error(f"{path} already exists — pass --force to overwrite")
+        raise SystemExit(1)
+
+
+def _write_export(path: str, rows: List[Dict[str, object]], writer) -> None:
+    try:
+        writer(path, rows)
+    except OSError as e:
+        print_error(f"could not write {path}: {e}")
+        raise SystemExit(1)
+    print_info(f"wrote {path}")
 
 
 @tags.command("scan", context_settings={"help_option_names": ["-h", "--help"]})
@@ -282,14 +318,24 @@ def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
     metavar="FILE",
     help="Write the aggregate as CSV to FILE.",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite --json/--csv output files if they already exist.",
+)
 @device_options
 @click.pass_context
-def scan_cmd(ctx, timeout, json_file, csv_file, verbose, port, device_id):
+def scan_cmd(ctx, timeout, json_file, csv_file, force, verbose, port, device_id):
     """Sample tag detections for a while and print an aggregated summary.
 
     Repeat detections of the same UID collapse into one row with a count and
     a first/last time seen. Ctrl-C ends the sample early.
     """
+    if json_file:
+        _refuse_overwrite(json_file, force)
+    if csv_file:
+        _refuse_overwrite(csv_file, force)
+
     level = _verbosity(ctx, verbose)
     aggregator = TagAggregator()
     with _tags_session(port, device_id, trace=make_tracer(level)) as (target, link):
@@ -354,11 +400,9 @@ def scan_cmd(ctx, timeout, json_file, csv_file, verbose, port, device_id):
         print_dim("no tags detected")
 
     if json_file:
-        _write_json(json_file, rows)
-        print_info(f"wrote {json_file}")
+        _write_export(json_file, rows, _write_json)
     if csv_file:
-        _write_csv(csv_file, rows)
-        print_info(f"wrote {csv_file}")
+        _write_export(csv_file, rows, _write_csv)
 
 
 # ── info ─────────────────────────────────────────────────────────────────────

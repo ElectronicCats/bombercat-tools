@@ -7,12 +7,18 @@
 # docs/CLI_IMPROVEMENTS_DetectTags.md §3.5, §6.
 # Distributed as-is; no warranty is given.
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
+logger = logging.getLogger("rich")
+
 # :tag <ts_ms> <tech> <protocol> <uid_hex|-> [k=v ...]
 _TAG_EVENT = re.compile(r"^:tag\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)$")
+
+# A valid UID is hex digits only (after `_hex_compact` strips any "0x" tokens).
+_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
 # Legacy text: "\tNFC ID = 0x04 0x1a 0x2b"  /  "\tTechnology: NFC-A"
 # PUPI (NFC-B) and IDm (NFC-F) are the UID-equivalent fields firmware with the
@@ -67,6 +73,19 @@ def _hex_compact(text: str) -> Optional[str]:
     return out.upper() or None
 
 
+def _validated_uid(raw: str, extra: Dict[str, str]) -> Optional[str]:
+    """Only accept `raw` as a UID if it's actually hex digits. Garbage (glitch
+    bytes, a malformed line) is kept as text in `extra["raw_uid"]` instead of
+    silently becoming a "valid-looking" UID that pollutes reports/exports."""
+    if raw is None:
+        return None
+    if _HEX_RE.match(raw):
+        return raw
+    logger.warning("discarding non-hex UID %r", raw)
+    extra["raw_uid"] = raw
+    return None
+
+
 class TagParser:
     """Feed serial lines in; get a Tag back once a detection completes, else
     None. Switches to structured mode permanently on the first ':tag' seen."""
@@ -81,8 +100,9 @@ class TagParser:
             self.structured = True
             ts, tech, proto, uid, rest = m.groups()
             extra = dict(kv.split("=", 1) for kv in rest.split() if "=" in kv)
+            uid = None if uid == "-" else uid.upper()
             return Tag(
-                uid=None if uid == "-" else uid.upper(),
+                uid=_validated_uid(uid, extra),
                 tech=tech,
                 protocol=proto,
                 ts_ms=int(ts),
@@ -108,7 +128,9 @@ class TagParser:
             return None
         m = _LEGACY_ID.match(line)
         if m and self._pending.tech:
-            self._pending.uid = _hex_compact(m.group(1))
+            self._pending.uid = _validated_uid(
+                _hex_compact(m.group(1)), self._pending.extra
+            )
             done, self._pending = self._pending, Tag()
             return done
         if _LEGACY_CLOSE.match(line) and self._pending.tech in ("NFC-B", "NFC-F"):

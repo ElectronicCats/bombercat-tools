@@ -13,6 +13,16 @@ from typing import Dict, List, Optional
 
 from .parser import Tag
 
+# Columns this module computes itself. A device-supplied `extra` key with the
+# same name (e.g. a firmware emitting `count=99`) must not silently overwrite
+# them (M13) — such keys are renamed with an `x_` prefix instead.
+_RESERVED_KEYS = {"uid", "tech", "protocol", "count", "first_s", "last_s", "ts_ms"}
+
+
+def _merge_extra(row: Dict[str, object], extra: Dict[str, str]) -> None:
+    for key, value in extra.items():
+        row["x_" + key if key in _RESERVED_KEYS else key] = value
+
 
 @dataclass
 class _Entry:
@@ -67,6 +77,6 @@ class TagAggregator:
                 "first_s": round(e.first_s, 1),
                 "last_s": round(e.last_s, 1),
             }
-            row.update(e.tag.extra)
+            _merge_extra(row, e.tag.extra)
             rows.append(row)
         return rows

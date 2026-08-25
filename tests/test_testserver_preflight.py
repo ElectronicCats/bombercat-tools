@@ -7,6 +7,7 @@
 # these tests assert on the branch taken and on the advice printed. Nothing here
 # needs Docker installed: the environment is scripted per test.
 
+import errno
 import socket
 import subprocess
 import sys
@@ -104,6 +105,24 @@ def test_server_sources_check_can_fetch_the_clone(tmp_path, monkeypatch, capsys)
     assert "nfcgate-server fetched" in flat(capsys.readouterr().out)
 
 
+def test_server_sources_check_explains_a_missing_bash(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(preflight.click, "confirm", lambda *a, **k: True)
+
+    def _raise(*a, **k):
+        raise FileNotFoundError("bash")
+
+    monkeypatch.setattr(subprocess, "run", _raise)
+    with pytest.raises(SystemExit) as e:
+        preflight.check_server_sources(tmp_path / "server", tmp_path / "fetch.sh")
+    out = flat(capsys.readouterr().out)
+
+    assert e.value.code == 1
+    assert "bash is not installed" in out
+    assert "sudo apt install bash" in out
+
+
 def test_server_sources_check_reports_a_failed_fetch(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
     monkeypatch.setattr(sys.stdout, "isatty", lambda: True, raising=False)
@@ -187,6 +206,21 @@ def test_docker_check_passes_an_unrecognised_failure_through(docker_probe, capsy
 
     assert "installed but not usable" in out
     assert "context deadline exceeded" in out
+
+
+def test_docker_check_reports_a_hung_daemon(monkeypatch, capsys):
+    monkeypatch.setattr(preflight.shutil, "which", lambda name: "/usr/bin/docker")
+
+    def _hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    with pytest.raises(SystemExit) as e:
+        preflight.check_docker()
+    out = flat(capsys.readouterr().out)
+
+    assert e.value.code == 1
+    assert "not responding" in out
 
 
 # ── docker group state ───────────────────────────────────────────────────────
@@ -379,3 +413,50 @@ def test_port_check_suggests_another_port_when_something_else_holds_it(
 
     assert "already in use by another program" in out
     assert f"-p {port + 1}" in out
+
+
+def test_port_check_explains_a_privileged_port(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight,
+        "_bind_probe",
+        lambda family, addr, port: OSError(errno.EACCES, "Permission denied"),
+    )
+    with pytest.raises(SystemExit) as e:
+        preflight.check_port(80, "bombercat-nfcgate-server-run")
+    out = flat(capsys.readouterr().out)
+
+    assert e.value.code == 1
+    assert "Not allowed to bind" in out
+    assert "privileged" in out
+
+
+def test_port_check_reports_an_unexpected_probe_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        preflight,
+        "_bind_probe",
+        lambda family, addr, port: OSError(errno.EINVAL, "Invalid argument"),
+    )
+    with pytest.raises(SystemExit) as e:
+        preflight.check_port(5566, "bombercat-nfcgate-server-run")
+    out = flat(capsys.readouterr().out)
+
+    assert e.value.code == 1
+    assert "Could not check whether host port" in out
+
+
+def test_port_check_survives_a_hung_docker_ps(monkeypatch, capsys):
+    def _hang(*a, **k):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=k.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    with socket.socket() as held:
+        held.bind(("0.0.0.0", 0))
+        held.listen(1)
+        port = held.getsockname()[1]
+        with pytest.raises(SystemExit):
+            preflight.check_port(port, "bombercat-nfcgate-server-run")
+    out = flat(capsys.readouterr().out)
+
+    # docker ps hung, so the check falls back to the generic "in use" report
+    # instead of hanging or crashing.
+    assert "already in use by another program" in out

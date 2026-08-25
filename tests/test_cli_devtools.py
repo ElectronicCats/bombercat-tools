@@ -85,6 +85,32 @@ def test_gen_proto_script_ships_with_the_repo():
     assert proto_cli.GEN_PROTO.exists()
 
 
+def test_proto_gen_explains_a_missing_bash(runner, fake_run, tmp_path, monkeypatch):
+    script = tmp_path / "gen_proto.sh"
+    script.write_text("#!/bin/bash\n")
+    monkeypatch.setattr(proto_cli, "GEN_PROTO", script)
+    fake_run(raises=FileNotFoundError("bash"))
+    result = runner.invoke(proto, ["gen"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "bash is not installed" in out
+    assert "sudo apt install bash" in out
+
+
+def test_proto_gen_reports_a_clean_interruption_on_ctrl_c(
+    runner, fake_run, tmp_path, monkeypatch
+):
+    script = tmp_path / "gen_proto.sh"
+    script.write_text("#!/bin/bash\n")
+    monkeypatch.setattr(proto_cli, "GEN_PROTO", script)
+    fake_run(raises=KeyboardInterrupt)
+    result = runner.invoke(proto, ["gen"])
+
+    assert result.exit_code == 130
+    assert "generation interrupted" in flat(result.output)
+
+
 # ── testserver: the protobuf interpreter ─────────────────────────────────────
 
 

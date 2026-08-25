@@ -155,7 +155,8 @@ class UnixPipe:
             if self.pipe_writer:
                 return self.pipe_writer.read(size)
             return b""
-        except Exception:
+        except Exception as e:
+            logger.debug("pipe read failed: %s", e)
             return b""
 
     def close(self) -> None:
@@ -255,7 +256,8 @@ class WindowsPipe:
                 hr, data = win32file.ReadFile(self.pipe_writer, min(size, available))
                 return data
             return b""
-        except Exception:
+        except Exception as e:
+            logger.debug("pipe read failed: %s", e)
             return b""
 
     def close(self) -> None:

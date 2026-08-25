@@ -316,7 +316,7 @@ def _write_export(path: str, rows: List[Dict[str, object]], writer) -> None:
     help="Seconds to sample for.",
 )
 @click.option(
-    "--json",
+    "--json-out",
     "json_file",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
@@ -324,7 +324,7 @@ def _write_export(path: str, rows: List[Dict[str, object]], writer) -> None:
     help="Write the aggregate as a JSON array to FILE.",
 )
 @click.option(
-    "--csv",
+    "--csv-out",
     "csv_file",
     type=click.Path(dir_okay=False, writable=True),
     default=None,
@@ -332,18 +332,51 @@ def _write_export(path: str, rows: List[Dict[str, object]], writer) -> None:
     help="Write the aggregate as CSV to FILE.",
 )
 @click.option(
+    "--json",
+    "json_file_legacy",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    hidden=True,  # deprecated alias for --json-out (L4): `--json` is a boolean
+    # flag on `read`/`watch` but took a FILE here, which was confusing.
+)
+@click.option(
+    "--csv",
+    "csv_file_legacy",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    hidden=True,  # deprecated alias for --csv-out (L4)
+)
+@click.option(
     "--force",
     is_flag=True,
-    help="Overwrite --json/--csv output files if they already exist.",
+    help="Overwrite --json-out/--csv-out output files if they already exist.",
 )
 @device_options
 @click.pass_context
-def scan_cmd(ctx, timeout, json_file, csv_file, force, verbose, port, device_id):
+def scan_cmd(
+    ctx,
+    timeout,
+    json_file,
+    csv_file,
+    json_file_legacy,
+    csv_file_legacy,
+    force,
+    verbose,
+    port,
+    device_id,
+):
     """Sample tag detections for a while and print an aggregated summary.
 
     Repeat detections of the same UID collapse into one row with a count and
     a first/last time seen. Ctrl-C ends the sample early.
     """
+    if json_file_legacy:
+        print_warning("`scan --json FILE` is deprecated — use `--json-out FILE`.")
+        json_file = json_file or json_file_legacy
+    if csv_file_legacy:
+        print_warning("`scan --csv FILE` is deprecated — use `--csv-out FILE`.")
+        csv_file = csv_file or csv_file_legacy
+
     if json_file:
         _refuse_overwrite(json_file, force)
     if csv_file:

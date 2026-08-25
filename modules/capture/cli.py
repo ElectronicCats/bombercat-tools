@@ -126,8 +126,17 @@ def capture():
     "--profile", default=None, help="Wireshark configuration profile to launch with."
 )
 @click.option("--force", is_flag=True, help="Overwrite -o FILE if it already exists.")
+@click.option(
+    "--strict",
+    is_flag=True,
+    help=(
+        "Exit 2 if the link ends on its own (device unplugged, board reset) "
+        "with zero frames captured, instead of the normal exit 0. A manual "
+        "Ctrl-C always exits 0, even with zero frames."
+    ),
+)
 @target_options
-def capture_start(output, wireshark, profile, force, port, device_id):
+def capture_start(output, wireshark, profile, force, strict, port, device_id):
     """Arm the tap and stream APDUs to Wireshark and/or a file until Ctrl-C.
 
     \b
@@ -231,10 +240,11 @@ def capture_start(output, wireshark, profile, force, port, device_id):
                     ).start()
 
             print_info(f"capturing from {target} — press Ctrl-C to stop")
-            _pump(link, sink)
+            frame_count = _pump(link, sink)
 
         except KeyboardInterrupt:
             console.print("\n[dim]stopping capture…[/dim]")
+            frame_count = None  # user-initiated stop: never subject to --strict
         finally:
             # Best-effort: disarm the tap and tear down the sinks. The port is
             # closed by _device_session; we just clean up our own resources.
@@ -254,8 +264,12 @@ def capture_start(output, wireshark, profile, force, port, device_id):
                 except Exception as e:
                     print_warning(f"could not clean up the Wireshark pipe: {e}")
 
+    if strict and frame_count == 0:
+        print_error("link ended with zero frames captured (--strict)")
+        raise SystemExit(2)
 
-def _pump(link: DeviceLink, sink: _CaptureSink) -> None:
+
+def _pump(link: DeviceLink, sink: _CaptureSink) -> int:
     """Read the device's serial, convert each ":apdu" event to a pcap frame, and
     write it to the sink. Blocks until the link drops or the caller interrupts."""
     builder = PcapBuilder()
@@ -296,13 +310,14 @@ def _pump(link: DeviceLink, sink: _CaptureSink) -> None:
             sink.pipe = None
             if sink.fileobj is None:
                 print_warning("Wireshark closed the pipe; stopping capture.")
-                return
+                return count
             print_warning("Wireshark closed the pipe; continuing to the file only.")
         count += 1
         arrow = "→ card " if direction == "cmd" else "← card "
         console.print(f"[cyan]{arrow}[/cyan] [dim]{ts_ms:>8} ms[/dim]  {apdu.hex()}")
 
     print_dim(f"link ended after {count} APDU frame(s)")
+    return count
 
 
 # ── capture stop (disarm a board left armed) ──────────────────────────────────

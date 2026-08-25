@@ -80,6 +80,18 @@ def _validate_asset_url(url: str) -> None:
         raise FirmwareError(f"refusing to download asset from untrusted URL: {url}")
 
 
+# owner/repo, GitHub's own naming rules (alnum + hyphens for the owner,
+# alnum/./_/- for the repo). Validated once at construction so a malformed
+# BOMBERCAT_FIRMWARE_REPO fails with a clear message instead of a cryptic
+# HTTP error surfacing deep inside the first API call (docs/AUDIT_ERROR_HANDLING.md L17).
+_REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$")
+
+
+def _validate_repo(repo: str) -> None:
+    if not _REPO_RE.match(repo):
+        raise FirmwareError(f"{REPO_ENV!r} must look like 'owner/repo', got {repo!r}")
+
+
 class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
     """Cross-host redirects must not carry the GitHub token along with them.
 
@@ -244,6 +256,7 @@ class ReleaseCache:
             root or os.environ.get(CACHE_ENV) or Path.home() / ".bombercat" / "firmware"
         )
         self.repo = repo or os.environ.get(REPO_ENV) or DEFAULT_REPO
+        _validate_repo(self.repo)
         # Injected in the tests; "no network" and "bad checksum" become two
         # ordinary function calls instead of urllib surgery (FLASH_PLAN §5).
         self._fetch = fetch or http_get

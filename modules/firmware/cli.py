@@ -278,17 +278,24 @@ def flash(firmware, list_only, refresh, full, yes, port, device_id):
         bombercat flash NFCGate -d 2    # pick a board by ID
         bombercat flash ./mine.uf2      # flash a local image
     """
-    cache = ReleaseCache()
+    try:
+        cache = ReleaseCache()
+    except FirmwareError as e:
+        print_error(str(e))
+        raise SystemExit(1)
 
     if list_only or not firmware:
+        if list_only and firmware:
+            print_warning(
+                f"ignoring '{firmware}' — `--list` shows every firmware; "
+                f"drop --list to flash '{firmware}'."
+            )
         try:
             _ensure_cache(cache, refresh)
         except FirmwareError as e:
             print_error(str(e))
             raise SystemExit(1)
         _show_list(cache, full)
-        if not firmware:
-            return
         return
 
     try:
@@ -301,7 +308,12 @@ def flash(firmware, list_only, refresh, full, yes, port, device_id):
 
     where = target or f"the {DRIVE_LABEL} drive"
     if not yes:
-        print_info(f"About to flash {image.name} ({human_size(image.stat().st_size)})")
+        try:
+            size = human_size(image.stat().st_size)
+        except OSError as e:
+            print_error(f"could not read {image}: {e}")
+            raise SystemExit(1)
+        print_info(f"About to flash {image.name} ({size})")
         if not click.confirm(f"  Write it to {where}?", default=False):
             print_dim("Nothing was written.")
             return

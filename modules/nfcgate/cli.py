@@ -159,6 +159,9 @@ def config_wifi(ssid, password, save, port, device_id):
 def config_nfcgate(server, session, role, save, port, device_id):
     """Set the nfcgate-server, session and role."""
     host, _, port_str = server.partition(":")
+    if not host:
+        print_error(f"invalid --server value {server!r}: missing host")
+        raise SystemExit(1)
     pairs = [("server", host)]
     if port_str:
         if not port_str.isdigit() or not (1 <= int(port_str) <= 65535):

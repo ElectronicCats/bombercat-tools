@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 # External
@@ -109,6 +110,7 @@ def testserver():
     "--port",
     default=5566,
     show_default=True,
+    type=click.IntRange(1, 65535),
     help="Host port to publish (container always listens on 5566).",
 )
 def run(port):
@@ -152,9 +154,14 @@ def run(port):
 
 @testserver.command("verify")
 @click.argument("host", default="127.0.0.1")
-@click.argument("port", default=5566, type=int)
+@click.argument("port", default=5566, type=click.IntRange(1, 65535))
 @click.option(
-    "-n", "--rounds", default=8, show_default=True, help="Relayed frames to measure."
+    "-n",
+    "--rounds",
+    default=8,
+    show_default=True,
+    type=click.IntRange(1),
+    help="Relayed frames to measure.",
 )
 def verify(host, port, rounds):
     """Check that a RUNNING server carries the relay latency patch.
@@ -177,6 +184,14 @@ def verify(host, port, rounds):
     sys.exit(_render_verify(python, host, port, rounds))
 
 
+# verify_patch.py bounds each round with its own 10 s socket timeouts, but
+# nothing on this side enforces an overall ceiling: without one, a truly
+# wedged child blocks `bombercat testserver verify` forever, and Ctrl-C would
+# abandon it running instead of stopping it.
+_VERIFY_TIMEOUT_FLOOR_S = 60
+_VERIFY_TIMEOUT_PER_ROUND_S = 15
+
+
 def _render_verify(python, host, port, rounds) -> int:
     """Draw verify_patch.py's JSON-line report and return its exit code.
 
@@ -184,11 +199,26 @@ def _render_verify(python, host, port, rounds) -> int:
     streams so the progress bar advances with the relay, which matters on a link
     slow enough that you would otherwise stare at a frozen terminal.
     """
-    proc = subprocess.Popen(
-        [python, str(VERIFY), host, str(port), "-n", str(rounds), "--json"],
-        stdout=subprocess.PIPE,
-        text=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            [python, str(VERIFY), host, str(port), "-n", str(rounds), "--json"],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        print_error(f"could not start the verifier: {e}")
+        return 1
+
+    timed_out = threading.Event()
+
+    def _on_timeout():
+        timed_out.set()
+        proc.kill()
+
+    deadline_s = max(_VERIFY_TIMEOUT_FLOOR_S, rounds * _VERIFY_TIMEOUT_PER_ROUND_S)
+    watchdog = threading.Timer(deadline_s, _on_timeout)
+    watchdog.daemon = True
+    watchdog.start()
 
     table = _rounds_table()
     result = error = None
@@ -202,39 +232,57 @@ def _render_verify(python, host, port, rounds) -> int:
         transient=True,
     )
 
-    with progress:
-        task = progress.add_task("", total=rounds, last="")
-        for line in proc.stdout:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except ValueError:
-                # Anything the child writes that is not one of our events (a
-                # protobuf deprecation warning, say) is passed through as-is.
-                console.print(f"[dim]{line}[/dim]")
-                continue
+    try:
+        with progress:
+            task = progress.add_task("", total=rounds, last="")
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    # Anything the child writes that is not one of our events (a
+                    # protobuf deprecation warning, say) is passed through as-is.
+                    console.print(f"[dim]{line}[/dim]")
+                    continue
 
-            kind = event.get("event")
-            if kind == "start":
-                progress.update(task, total=event["rounds"])
-                print_dim(
-                    "session 0x%02X · %d rounds" % (event["session"], event["rounds"])
-                )
-            elif kind == "round":
-                _add_round(table, event)
-                progress.update(
-                    task,
-                    completed=event["i"],
-                    last="last %.2f ms" % event["total_ms"],
-                )
-            elif kind == "result":
-                result = event
-            elif kind == "error":
-                error = event
+                kind = event.get("event")
+                if kind == "start":
+                    progress.update(task, total=event["rounds"])
+                    print_dim(
+                        "session 0x%02X · %d rounds"
+                        % (event["session"], event["rounds"])
+                    )
+                elif kind == "round":
+                    _add_round(table, event)
+                    progress.update(
+                        task,
+                        completed=event["i"],
+                        last="last %.2f ms" % event["total_ms"],
+                    )
+                elif kind == "result":
+                    result = event
+                elif kind == "error":
+                    error = event
+    finally:
+        # Ctrl-C, the watchdog, or any exception above must not leave the
+        # child running: stop it and always reap it so it never lingers as a
+        # zombie/orphan under this process.
+        watchdog.cancel()
+        if proc.poll() is None:
+            proc.terminate()
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
 
-    rc = proc.wait()
+    if timed_out.is_set():
+        print_error(
+            f"verifier timed out after {deadline_s}s — is the server responding?"
+        )
+        return rc or 2
 
     if error:
         print_error_panel(
@@ -325,7 +373,7 @@ def _print_verdict(result, host, port) -> None:
 
 @testserver.command("smoke")
 @click.argument("host", default="127.0.0.1")
-@click.argument("port", default=5566, type=int)
+@click.argument("port", default=5566, type=click.IntRange(1, 65535))
 def smoke(host, port):
     """Run the relay smoke test against a running server (needs protobuf==3.20.3)."""
     if not SMOKETEST.exists():

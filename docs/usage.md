@@ -205,6 +205,34 @@ looks quiet with a card actually on the reader.
 
 ---
 
+## Detecting NFC readers/terminals with DetectReaders
+
+The mirror image of the workflow above: instead of reading tags, the board
+*presents itself as one* (card-emulation mode) and reports every
+reader/terminal that comes close enough to probe it — useful for spotting an
+unexpected POS terminal or skimmer-style reader nearby.
+
+```sh
+bombercat status                    # confirm DetectReaders is flashed (or flash it)
+bombercat flash DetectReaders -d 1  # if it isn't
+
+bombercat readers read              # wait for one reader, print its fingerprint and exit
+bombercat readers watch             # stream detections until Ctrl-C
+bombercat readers scan -t 20        # sample for 20s, print an aggregated summary
+bombercat readers info              # firmware version + whether events have been seen
+```
+
+Full flag reference and sample output: [`readers`](reference.md#readers).
+
+Unlike `tags`, there is no legacy text mode to worry about — DetectReaders
+was born speaking the structured `:reader` event line, so every published
+`.uf2` parses the same way. The first APDU a reader sends drives the
+fingerprint (`emv-payment`, `visa`, `mastercard`, `amex`, `ndef`, or
+`unknown`); a reader that never sends an APDU (RF-layer activation only)
+still gets classified `unknown` with `apdu=-`.
+
+---
+
 ## Cheat sheet
 
 | Step | Single board | Two boards |

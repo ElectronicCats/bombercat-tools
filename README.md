@@ -3,7 +3,8 @@
 A `click`/`rich` command-line tool for BomberCat firmwares. It talks to a
 BomberCat over **USB-serial** to configure it, start/stop the NFCGate relay,
 watch it live, capture the relayed APDUs to Wireshark, and — on the
-**DetectTags** firmware — read NFC tags directly with the board's PN7150.
+**DetectTags** firmware — read NFC tags directly with the board's PN7150, or
+— on **DetectReaders** — detect the readers/terminals that probe it.
 
 **Control plane only.** No APDUs travel over serial — those go over WiFi/TCP to
 the `nfcgate-server`. The USB link is a text, line-based control channel: it
@@ -83,6 +84,18 @@ bombercat tags scan -t 20             # sample for 20s, aggregated summary
 
 See [Detecting NFC tags](docs/usage.md#detecting-nfc-tags-with-detecttags).
 
+Or flip it around: `bombercat flash DetectReaders` and detect the
+readers/terminals that probe the board's emulated card — no server, no
+second board:
+
+```sh
+bombercat readers read                # wait for one reader, print its fingerprint
+bombercat readers watch               # stream detections until Ctrl-C
+bombercat readers scan -t 20          # sample for 20s, aggregated summary
+```
+
+See [Detecting NFC readers](docs/usage.md#detecting-nfc-readersterminals-with-detectreaders).
+
 > **Command layout changed.** The relay commands now live under `bombercat
 > relay …`, and `bombercat status` reports the **flashed firmware** instead of
 > the relay state (that moved to `bombercat relay status`). The old root
@@ -99,8 +112,8 @@ one by its ID with `-d/--device`. See the
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
-| [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags` workflow on DetectTags. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`), `readers …` (`read`/`watch`/`scan`/`info`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags`/`readers` workflows on DetectTags/DetectReaders. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
 | [Troubleshooting](docs/troubleshooting.md) | Serial permissions, board not detected, old firmware without `identify`/`capture`, `run` timeouts. |
@@ -155,6 +168,7 @@ POSIX-only APIs, so support thins out elsewhere:
 |---|---|---|---|
 | `device`, `status`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`) | tested | should work, untested | should work, untested |
 | `tags …` (`read`/`watch`/`scan`/`info`) | tested | should work, untested | should work, untested |
+| `readers …` (`read`/`watch`/`scan`/`info`) | tested | should work, untested | should work, untested |
 | `capture start -o file.pcap` | tested | should work, untested | should work, untested |
 | `capture start -ws` (live Wireshark) | tested | FIFO path, untested | needs `pywin32`, untested |
 | `completion install` | bash/zsh/fish | bash/zsh/fish | not offered |

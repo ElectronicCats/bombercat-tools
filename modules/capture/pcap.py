@@ -58,6 +58,13 @@ def record(payload: bytes, ts_seconds: float) -> bytes:
     if usec >= 1_000_000:  # rounding can push it over; carry into seconds
         sec += 1
         usec -= 1_000_000
+    # `<LLLL` is unsigned: a negative sec/usec (device clock jump, caller bug)
+    # would otherwise raise struct.error mid-capture. Clamp to 0 instead of
+    # crashing a forensic capture over a timestamp that is already suspect.
+    if sec < 0:
+        sec = 0
+    if usec < 0:
+        usec = 0
     return struct.pack(_PACKET_HEADER, sec, usec, len(payload), len(payload)) + payload
 
 

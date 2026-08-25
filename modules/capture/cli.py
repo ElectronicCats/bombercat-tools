@@ -8,6 +8,7 @@
 # Distributed as-is; no warranty is given.
 
 import _thread
+import os
 import platform
 import re
 import threading
@@ -123,8 +124,9 @@ def capture():
 @click.option(
     "--profile", default=None, help="Wireshark configuration profile to launch with."
 )
+@click.option("--force", is_flag=True, help="Overwrite -o FILE if it already exists.")
 @target_options
-def capture_start(output, wireshark, profile, port, device_id):
+def capture_start(output, wireshark, profile, force, port, device_id):
     """Arm the tap and stream APDUs to Wireshark and/or a file until Ctrl-C.
 
     \b
@@ -139,6 +141,12 @@ def capture_start(output, wireshark, profile, port, device_id):
     """
     if not wireshark and not output:
         print_error("nothing to do: pass -o FILE to record, -ws to open Wireshark.")
+        raise SystemExit(1)
+
+    # A pcap may hold EMV/PIN traffic captured earlier — never truncate one
+    # silently.
+    if output and not force and os.path.exists(output):
+        print_error(f"{output} already exists — pass --force to overwrite")
         raise SystemExit(1)
 
     # A Wireshark binary is required only for the live feed; a file-only capture
@@ -217,11 +225,17 @@ def capture_start(output, wireshark, profile, port, device_id):
             try:
                 link.command("capture off")
             except DeviceError:
-                pass
+                print_warning("could not disarm capture — run: bombercat capture stop")
             if fileobj is not None:
-                fileobj.close()
+                try:
+                    fileobj.close()
+                except OSError as e:
+                    print_warning(f"could not close pcap file cleanly: {e}")
             if pipe is not None:
-                pipe.remove()
+                try:
+                    pipe.remove()
+                except Exception as e:
+                    print_warning(f"could not clean up the Wireshark pipe: {e}")
 
 
 def _pump(link: DeviceLink, sink: _CaptureSink) -> None:
@@ -249,7 +263,12 @@ def _pump(link: DeviceLink, sink: _CaptureSink) -> None:
         # event, so the pcap carries real timestamps whose *deltas* are the
         # device's ground-truth timing.
         ts_ms = int(ts_ms_str)
-        if anchor_wall is None:
+        if anchor_wall is None or ts_ms < anchor_dev:
+            # First event, or the device clock went backwards (reset mid-
+            # capture, USB re-enumeration, millis() wraparound at ~49.7 days):
+            # re-anchor to "now" instead of feeding a negative delta forward.
+            if anchor_wall is not None:
+                print_warning("device clock reset — timestamps re-anchored")
             anchor_wall = time.time()
             anchor_dev = ts_ms
         ts_seconds = anchor_wall + (ts_ms - anchor_dev) / 1000.0

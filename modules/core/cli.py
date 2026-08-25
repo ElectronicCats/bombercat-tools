@@ -11,6 +11,8 @@ import logging
 import os
 import sys
 
+import serial
+
 # Internal
 from ..utils._version import __version__
 from .bombercat import DeviceError, DeviceLink, resolve_port
@@ -163,7 +165,7 @@ def identify_cmd(port, device_id):
     except DeviceError as e:
         print_error(str(e))
         raise SystemExit(1)
-    except Exception as e:
+    except (serial.SerialException, OSError) as e:
         print_error(f"{type(e).__name__}: {e}")
         raise SystemExit(1)
 
@@ -421,7 +423,7 @@ def completion_install(shell):
             text=True,
         )
         script = result.stdout
-    except Exception as e:
+    except OSError as e:
         print_error(f"Failed to generate completion script: {e}")
         sys.exit(1)
 
@@ -431,6 +433,8 @@ def completion_install(shell):
             "Make sure you are running this command via:\n"
             f"  python {script_abs} completion install"
         )
+        if result.stderr.strip():
+            print_dim(result.stderr.strip())
         sys.exit(1)
 
     # ------------------------------------------------------------------ #
@@ -540,17 +544,32 @@ def completion_install(shell):
         )
 
     # Write script
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(script)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(script, encoding="utf-8")
+    except OSError as e:
+        print_error(f"could not write completion script to {target}: {e}")
+        sys.exit(1)
     print_success(f"Completion script written to: {target}")
 
     # zsh needs fpath entry in .zshrc
     if rc_note:
         zshrc = Path.home() / ".zshrc"
-        existing = zshrc.read_text() if zshrc.exists() else ""
+        try:
+            existing = zshrc.read_text(encoding="utf-8") if zshrc.exists() else ""
+        except OSError as e:
+            print_error(f"could not read {zshrc}: {e}")
+            sys.exit(1)
         if "~/.zfunc" not in existing and ".zfunc" not in existing:
-            with zshrc.open("a") as f:
-                f.write(f"\n# bombercat tab completion\n{rc_note}\n")
+            try:
+                if zshrc.exists():
+                    backup = zshrc.with_name(".zshrc.bak-bombercat")
+                    backup.write_text(existing, encoding="utf-8")
+                with zshrc.open("a", encoding="utf-8") as f:
+                    f.write(f"\n# bombercat tab completion\n{rc_note}\n")
+            except OSError as e:
+                print_error(f"could not update {zshrc}: {e}")
+                sys.exit(1)
             print_success(f"Added fpath entry to {zshrc}")
         else:
             print_dim("~/.zfunc already in fpath — skipping .zshrc edit")

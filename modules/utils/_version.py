@@ -5,7 +5,7 @@ _version_file = Path(__file__).parent.parent.parent / "VERSION"
 
 if _version_file.exists():
     # En desarrollo, siempre usamos el archivo VERSION local si existe
-    __version__ = _version_file.read_text().strip()
+    __version__ = _version_file.read_text(encoding="utf-8").strip()
 else:
     try:
         __version__ = version("bombercat")

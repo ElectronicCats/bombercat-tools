@@ -60,7 +60,7 @@ def make_tracer(
     return trace
 
 
-def safe_print(text: str, **kwargs) -> None:
+def safe_print(text: str, *, err: bool = False, **kwargs) -> None:
     """`console.print`, but never crash on malformed Rich markup.
 
     Several call sites interpolate externally-derived text (device serial
@@ -69,11 +69,16 @@ def safe_print(text: str, **kwargs) -> None:
     something like ``[/x]``) makes Rich's markup parser raise `MarkupError`
     and would otherwise kill a live stream (`monitor`, `capture`) outright.
     Fall back to printing the same text with markup disabled instead.
+
+    `err=True` routes through `console_err` (stderr) instead of `console`
+    (stdout), so `print_error`/`print_warning` don't pollute piped/redirected
+    stdout (e.g. `bombercat tags read --json | jq` or `2>/dev/null`).
     """
+    out = console_err if err else console
     try:
-        console.print(text, **kwargs)
+        out.print(text, **kwargs)
     except MarkupError:
-        console.print(text, markup=False, **kwargs)
+        out.print(text, markup=False, **kwargs)
 
 
 def print_success(message: str) -> None:
@@ -81,11 +86,11 @@ def print_success(message: str) -> None:
 
 
 def print_warning(message: str) -> None:
-    safe_print(f"[yellow]⚠[/yellow] {message}", style=STYLES["warning"])
+    safe_print(f"[yellow]⚠[/yellow] {message}", style=STYLES["warning"], err=True)
 
 
 def print_error(message: str) -> None:
-    safe_print(f"[red]✗[/red] {message}", style=STYLES["error"])
+    safe_print(f"[red]✗[/red] {message}", style=STYLES["error"], err=True)
 
 
 def print_info(message: str) -> None:

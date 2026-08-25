@@ -49,7 +49,19 @@ from contextlib import closing
 # Import the server's committed protobuf modules (repo ./server/plugins).
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(_REPO, "server"))
-from plugins import c2c_pb2, c2s_pb2  # noqa: E402
+try:
+    from plugins import c2c_pb2, c2s_pb2  # noqa: E402
+except ImportError as e:
+    # `bombercat testserver verify` runs this through preflight.check_server_sources,
+    # which explains and offers to fetch the clone; standalone execution (the
+    # usage this file documents at the top) has no such guard.
+    sys.exit(
+        f"{e}\n\n"
+        "The nfcgate-server sources are missing (expected them at "
+        f"{os.path.join(_REPO, 'server', 'plugins')}).\n"
+        "Fetch them once with: testserver/fetch_server.sh\n"
+        "(or run this through `bombercat testserver verify`, which does that for you)"
+    )
 
 # A frame arriving whole in the first recv() means one TCP segment: coalesced
 # write, no Nagle stall. A first recv() of exactly the 4-byte header means the
@@ -144,8 +156,13 @@ def drain(sock):
     try:
         while sock.recv(65536):
             pass
-    except (BlockingIOError, OSError):
-        pass
+    except BlockingIOError:
+        pass  # nothing left queued — the expected way this loop ends
+    except OSError as e:
+        # A real fault (connection reset, bad fd, ...) here would otherwise
+        # be silently discarded and surface displaced later as a confusing
+        # error from whatever uses the socket next.
+        print(f"[drain] socket error: {e}", file=sys.stderr)
     sock.setblocking(True)
     sock.settimeout(10)
 

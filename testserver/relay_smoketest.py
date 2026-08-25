@@ -119,7 +119,8 @@ def main():
         send_frame(reader, reader_blob, SESSION)
 
         got = recv_frame(card)
-        assert got == reader_blob, "card did not receive identical blob"
+        if got != reader_blob:
+            sys.exit("FAILED: card did not receive identical blob")
         sd, nfc = decode(got)
         print(
             "[OK] reader->card  opcode=%s source=%s apdu=%s"
@@ -129,7 +130,8 @@ def main():
                 bytes(nfc.data).hex(),
             )
         )
-        assert bytes(nfc.data) == ppse
+        if bytes(nfc.data) != ppse:
+            sys.exit("FAILED: reader->card APDU does not match what was sent")
 
         # card -> reader : FCI response
         resp = bytes.fromhex("6F23840E325041592E5359532E4444463031A5119000")
@@ -137,7 +139,8 @@ def main():
         send_frame(card, card_blob, SESSION)
 
         got2 = recv_frame(reader)
-        assert got2 == card_blob, "reader did not receive identical blob"
+        if got2 != card_blob:
+            sys.exit("FAILED: reader did not receive identical blob")
         sd2, nfc2 = decode(got2)
         print(
             "[OK] card->reader  opcode=%s source=%s apdu=%s"
@@ -147,7 +150,8 @@ def main():
                 bytes(nfc2.data).hex(),
             )
         )
-        assert bytes(nfc2.data) == resp
+        if bytes(nfc2.data) != resp:
+            sys.exit("FAILED: card->reader APDU does not match what was sent")
 
     print("\nRELAY SMOKE TEST PASSED")
 

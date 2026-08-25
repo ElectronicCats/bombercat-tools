@@ -122,6 +122,19 @@ def test_lookup_by_uf2_finds_detectreaders():
     assert fw.by_uf2("detectreaders.uf2").id == "detectreaders"
 
 
+def test_magspoof_claims_the_magspoof_capability():
+    magspoof = fw.by_id("magspoof")
+    assert magspoof.can(fw.CAP_MAGSPOOF)
+    assert magspoof.has_repl
+
+
+def test_only_magspoof_claims_the_magspoof_capability():
+    """magspoofcvsattack/magspoofmqtt still lack the FW-4 command hook."""
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_MAGSPOOF):
+            assert f.id == "magspoof"
+
+
 def test_a_non_object_descriptions_payload_is_ignored_instead_of_crashing():
     """descriptions.json is user-editable, remote-persisted cache data — a
     malformed top-level shape must degrade to "no descriptions", not raise

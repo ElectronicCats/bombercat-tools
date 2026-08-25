@@ -261,6 +261,29 @@ def test_a_repo_without_releases_says_what_to_do(cache):
     assert "BOMBERCAT_FIRMWARE_REPO" in str(excinfo.value)
 
 
+@pytest.mark.parametrize(
+    "repo",
+    [
+        "not-a-repo",
+        "owner/",
+        "/repo",
+        "owner/repo/extra",
+        "https://github.com/owner/repo",
+    ],
+)
+def test_a_malformed_repo_is_rejected_at_construction(tmp_path, repo):
+    """L17: a malformed BOMBERCAT_FIRMWARE_REPO must fail with a clear message
+    up front instead of a cryptic HTTP error surfacing from the first API call."""
+    with pytest.raises(FirmwareError) as excinfo:
+        ReleaseCache(root=tmp_path, repo=repo, fetch=FakeGitHub())
+
+    assert "owner/repo" in str(excinfo.value)
+
+
+def test_a_well_formed_repo_is_accepted(tmp_path):
+    ReleaseCache(root=tmp_path, repo="some-org/some.repo_name", fetch=FakeGitHub())
+
+
 def test_a_404_reads_as_no_release_rather_than_a_bare_url(cache):
     # What `releases/latest` actually answers for a repo that never published
     # one — the state ElectronicCats/bombercat-firmware is in today.
@@ -524,6 +547,20 @@ def test_list_fills_an_empty_cache_and_tabulates_it(runner, cache, use_cache):
     assert "4 KB" in out
     assert "bombercat flash DetectTags" in out
     assert github.asset_calls, "an empty cache should have been filled on demand"
+
+
+def test_list_with_a_name_warns_that_the_name_is_ignored(runner, cache, use_cache):
+    """L5: `flash --list NAME` used to silently ignore NAME and just list
+    everything, with no signal that NAME was never consulted."""
+    c, _ = cache()
+    use_cache(c)
+
+    result = runner.invoke(flash, ["--list", "NFCGate"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "ignoring 'NFCGate'" in out
+    assert "DetectTags" in out  # still lists everything
 
 
 def test_list_does_not_call_github_when_the_cache_is_fresh(runner, cache, use_cache):
@@ -1113,6 +1150,39 @@ def test_flashing_asks_before_writing_anything(runner, cache, use_cache, bench):
     assert "Write it to /dev/ttyACM0?" in out
     assert "Nothing was written" in out
     assert calls == [], "answering no must not write"
+
+
+def test_a_malformed_repo_env_var_is_a_clean_cli_error(runner, monkeypatch):
+    """L17, at the CLI layer: BOMBERCAT_FIRMWARE_REPO is read by the real
+    ReleaseCache() the `flash` command constructs — a bad value must produce
+    a one-line error, not a raw traceback."""
+    monkeypatch.setenv("BOMBERCAT_FIRMWARE_REPO", "not-a-repo")
+
+    result = runner.invoke(flash, ["--list"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "BOMBERCAT_FIRMWARE_REPO" in out
+    assert "owner/repo" in out
+
+
+def test_a_vanished_image_before_the_prompt_is_a_clean_error(
+    runner, cache, use_cache, bench, monkeypatch, tmp_path
+):
+    """L5/L20: `image.stat()` for the "About to flash" message used to sit
+    outside any try/except - a file disappearing between resolve and the
+    confirm prompt raised a raw traceback instead of a one-line error."""
+    c, _ = cache()
+    use_cache(c)
+    bench(devices=[make_device(1, "/dev/ttyACM0")])
+    monkeypatch.setattr(fw, "_resolve_image", lambda *a, **k: tmp_path / "gone.uf2")
+
+    result = runner.invoke(flash, ["NFCGate"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "could not read" in out
+    assert "gone.uf2" in out
 
 
 def test_yes_skips_the_prompt_and_flashes(runner, cache, use_cache, bench):

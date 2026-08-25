@@ -257,7 +257,8 @@ def test_scan_writes_json_and_csv_exports(runner, use_link, tmp_path):
 
     use_link(tagscli, FakeLink(stream_lines=_lines()))
     result = runner.invoke(
-        scan_cmd, ["-t", "0.05", "--json", str(json_path), "--csv", str(csv_path)]
+        scan_cmd,
+        ["-t", "0.05", "--json-out", str(json_path), "--csv-out", str(csv_path)],
     )
 
     assert result.exit_code == 0
@@ -280,13 +281,28 @@ def test_scan_writes_json_and_csv_exports(runner, use_link, tmp_path):
     assert rows[0]["count"] == "2"
 
 
+def test_scan_json_is_a_deprecated_alias_for_json_out(runner, use_link, tmp_path):
+    """L4: `scan --json FILE` used to collide in meaning with the boolean
+    `--json` flag on `read`/`watch`. It must keep working as a hidden alias
+    for `--json-out`, with a one-line deprecation warning."""
+    json_path = tmp_path / "scan.json"
+    use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
+
+    result = runner.invoke(scan_cmd, ["-t", "0.01", "--json", str(json_path)])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "deprecated" in out and "--json-out" in out
+    assert json.loads(json_path.read_text())
+
+
 def test_scan_refuses_to_overwrite_an_existing_export_without_force(
     runner, use_link, tmp_path
 ):
     json_path = tmp_path / "scan.json"
     json_path.write_text("existing")
     use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
-    result = runner.invoke(scan_cmd, ["-t", "0.01", "--json", str(json_path)])
+    result = runner.invoke(scan_cmd, ["-t", "0.01", "--json-out", str(json_path)])
 
     assert result.exit_code == 1
     assert "already exists" in flat(result.output)
@@ -298,7 +314,7 @@ def test_scan_force_overwrites_an_existing_export(runner, use_link, tmp_path):
     json_path.write_text("existing")
     use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
     result = runner.invoke(
-        scan_cmd, ["-t", "0.01", "--json", str(json_path), "--force"]
+        scan_cmd, ["-t", "0.01", "--json-out", str(json_path), "--force"]
     )
 
     assert result.exit_code == 0
@@ -315,7 +331,7 @@ def test_scan_reports_a_write_failure_instead_of_crashing(
         lambda path, rows: (_ for _ in ()).throw(OSError("disk full")),
     )
     result = runner.invoke(
-        scan_cmd, ["-t", "0.01", "--json", str(tmp_path / "scan.json")]
+        scan_cmd, ["-t", "0.01", "--json-out", str(tmp_path / "scan.json")]
     )
 
     assert result.exit_code == 1
@@ -337,7 +353,8 @@ def test_scan_csv_export_neutralizes_formula_injection_in_device_fields(
 
     use_link(tagscli, FakeLink(stream_lines=[line]))
     result = runner.invoke(
-        scan_cmd, ["-t", "0.05", "--json", str(json_path), "--csv", str(csv_path)]
+        scan_cmd,
+        ["-t", "0.05", "--json-out", str(json_path), "--csv-out", str(csv_path)],
     )
 
     assert result.exit_code == 0

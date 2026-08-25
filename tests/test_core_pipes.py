@@ -6,6 +6,7 @@
 # for real (in a tmp dir, with a reader on the other end); Wireshark itself is
 # never started. docs/NFCGATE_PLAN.md Fase 8 / §16.
 
+import logging
 import os
 import stat
 import subprocess
@@ -182,6 +183,20 @@ def test_reading_from_a_write_only_pipe_returns_nothing(fifo_path, reader):
     pipe.open()
 
     assert pipe.read() == b""
+
+
+def test_reading_from_a_write_only_pipe_logs_the_failure_at_debug(
+    fifo_path, reader, caplog
+):
+    """A swallowed read() error must still be diagnosable (L7)."""
+    pipe = UnixPipe(fifo_path)
+    reader()
+    pipe.open()
+
+    with caplog.at_level(logging.DEBUG, logger="rich"):
+        pipe.read()
+
+    assert "pipe read failed" in caplog.text
 
 
 def test_reading_before_opening_returns_nothing(fifo_path):

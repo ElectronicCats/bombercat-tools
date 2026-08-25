@@ -472,6 +472,63 @@ def test_start_force_overwrites_an_existing_pcap(runner, fake_session, tmp_path)
     assert out.read_bytes() != b"already here"
 
 
+# ── --strict (L16) ───────────────────────────────────────────────────────────
+
+
+def test_start_without_strict_exits_zero_on_a_zero_frame_link_end(
+    runner, fake_session, tmp_path
+):
+    """Default behavior is unchanged: a link that ends with no frames (e.g.
+    the device was unplugged before anything happened) still exits 0."""
+    fake_session(cap, FakeLink(stream_lines=()))
+    result = runner.invoke(capture, ["start", "-o", str(tmp_path / "x.pcap")])
+
+    assert result.exit_code == 0
+
+
+def test_start_strict_exits_nonzero_on_a_zero_frame_link_end(
+    runner, fake_session, tmp_path
+):
+    fake_session(cap, FakeLink(stream_lines=()))
+    result = runner.invoke(
+        capture, ["start", "-o", str(tmp_path / "x.pcap"), "--strict"]
+    )
+
+    assert result.exit_code == 2
+    assert "zero frames" in flat(result.output)
+
+
+def test_start_strict_exits_zero_when_frames_were_captured(
+    runner, fake_session, tmp_path
+):
+    fake_session(cap, FakeLink(stream_lines=TRANSCRIPT))
+    result = runner.invoke(
+        capture, ["start", "-o", str(tmp_path / "x.pcap"), "--strict"]
+    )
+
+    assert result.exit_code == 0
+
+
+def test_start_strict_exits_zero_on_a_manual_ctrl_c_with_no_frames(
+    runner, fake_session, tmp_path
+):
+    """A user-initiated Ctrl-C is always a clean stop, even at zero frames -
+    --strict only guards against the link dropping on its own."""
+
+    def _lines():
+        raise KeyboardInterrupt
+        yield  # pragma: no cover — unreachable, just makes this a generator
+
+    fake_session(cap, FakeLink(stream_lines=_lines()))
+    result = runner.invoke(
+        capture,
+        ["start", "-o", str(tmp_path / "x.pcap"), "--strict"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+
+
 # ── capture stop ─────────────────────────────────────────────────────────────
 
 

@@ -32,6 +32,7 @@ CAP_TAGS = "tags"  # NFC tag detection (`bombercat tags read/watch`)
 CAP_READERS = (
     "readers"  # NFC reader/terminal detection (`bombercat readers read/watch`)
 )
+CAP_MAGSPOOF = "magspoof"  # magstripe emulation control (`bombercat magspoof …`)
 
 
 @dataclass(frozen=True)
@@ -88,7 +89,7 @@ _ENTRIES = (
         display="magspoof",
         uf2="magspoof.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
-        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY}),
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_MAGSPOOF}),
         banners=("Default tracks:",),  # printed by setupTracks() at boot
     ),
     Firmware(

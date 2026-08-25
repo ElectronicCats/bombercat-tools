@@ -24,6 +24,7 @@ from .firmwares import (
     USB,
     CAP_MONITOR,
     CAP_PASSTHROUGH,
+    CAP_READERS,
     CAP_RELAY,
     CAP_TAGS,
     detect_firmware,
@@ -41,6 +42,7 @@ from ..nfcgate.cli import (
 from ..capture.cli import capture as _capture
 from ..firmware.cli import flash as _flash
 from ..proto.cli import proto as _proto
+from ..readers.cli import readers as _readers
 from ..tags.cli import tags as _tags
 from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
@@ -222,6 +224,9 @@ def _next_steps(detection):
     elif fw.can(CAP_TAGS):
         steps.append("bombercat tags read       — detect a single NFC tag")
         steps.append("bombercat tags watch      — stream tag detections")
+    elif fw.can(CAP_READERS):
+        steps.append("bombercat readers read       — catch one reader probing the card")
+        steps.append("bombercat readers watch      — stream reader detections")
     elif fw.can(CAP_MONITOR):
         steps.append("watch its serial output with a terminal (screen/minicom), or")
         steps.append("bombercat flash NFCGate   — switch to the relay firmware")
@@ -599,6 +604,7 @@ def main_cli() -> None:
     cli.add_command(_capture)
     cli.add_command(_flash)
     cli.add_command(_tags)
+    cli.add_command(_readers)
 
     # Deprecated compatibility aliases (hidden): old root spellings still work
     # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).

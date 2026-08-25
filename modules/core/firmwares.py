@@ -29,6 +29,9 @@ CAP_IDENTIFY = "identify"  # can blink its LED on command
 CAP_CAPTURE = "capture"  # APDU capture to pcap
 CAP_PASSTHROUGH = "passthrough"  # transparent serial bridge (no REPL)
 CAP_TAGS = "tags"  # NFC tag detection (`bombercat tags read/watch`)
+CAP_READERS = (
+    "readers"  # NFC reader/terminal detection (`bombercat readers read/watch`)
+)
 
 
 @dataclass(frozen=True)
@@ -71,6 +74,14 @@ _ENTRIES = (
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_TAGS}),
         banners=("Detect NFC tags with PN7150", "Detect NFC tags"),
+    ),
+    Firmware(
+        id="detectreaders",
+        display="DetectReaders",
+        uf2="DetectReaders.uf2",
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_READERS}),
+        banners=("Detect NFC readers",),
     ),
     Firmware(
         id="magspoof",

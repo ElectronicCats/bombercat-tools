@@ -58,7 +58,9 @@ class Reader:
         return ":".join(parts)
 
 
-def _validated_hex(raw: Optional[str], field_name: str, extra: Dict[str, str]) -> Optional[str]:
+def _validated_hex(
+    raw: Optional[str], field_name: str, extra: Dict[str, str]
+) -> Optional[str]:
     """Only accept `raw` as hex if it's actually hex digits. Garbage is kept
     as text in `extra["raw_<field_name>"]` instead of silently becoming a
     "valid-looking" value that pollutes reports/exports."""
@@ -103,7 +105,9 @@ class ReaderParser:
         if apdu_raw is not None and apdu_raw != "-":
             apdu = _validated_hex(apdu_raw.upper(), "apdu", extra)
         aid = (
-            _validated_hex(aid_raw.upper(), "aid", extra) if aid_raw is not None else None
+            _validated_hex(aid_raw.upper(), "aid", extra)
+            if aid_raw is not None
+            else None
         )
         n = int(n_raw) if n_raw is not None and n_raw.isdigit() else None
 

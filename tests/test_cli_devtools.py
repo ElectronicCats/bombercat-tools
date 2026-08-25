@@ -11,6 +11,7 @@
 import json
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -164,6 +165,17 @@ def test_verify_passes_host_port_and_rounds_through(runner, no_preflight, monkey
     assert seen == {"host": "10.0.0.9", "port": 6000, "rounds": 3}
 
 
+@pytest.mark.parametrize("bad_port", ["0", "70000", "-1"])
+def test_verify_rejects_a_port_outside_1_65535(runner, no_preflight, bad_port):
+    result = runner.invoke(ts_group, ["verify", "127.0.0.1", bad_port])
+    assert result.exit_code == 2  # click usage error, no subprocess spawned
+
+
+def test_verify_rejects_a_non_positive_rounds_count(runner, no_preflight):
+    result = runner.invoke(ts_group, ["verify", "-n", "0"])
+    assert result.exit_code == 2
+
+
 def test_smoke_reports_a_missing_test(runner, tmp_path, monkeypatch):
     monkeypatch.setattr(ts, "SMOKETEST", tmp_path / "nope.py")
     result = runner.invoke(ts_group, ["smoke"])
@@ -187,19 +199,41 @@ def test_smoke_passes_the_tests_exit_code_through(runner, no_preflight, fake_run
     assert runner.invoke(ts_group, ["smoke"]).exit_code == 2
 
 
+@pytest.mark.parametrize("bad_port", ["0", "70000"])
+def test_smoke_rejects_a_port_outside_1_65535(runner, no_preflight, bad_port):
+    result = runner.invoke(ts_group, ["smoke", "127.0.0.1", bad_port])
+    assert result.exit_code == 2
+
+
 # ── testserver verify: rendering the verifier's report ───────────────────────
 
 
 def _verifier(*events, returncode=0):
-    """A `subprocess.Popen` stand-in that replays JSON-line events."""
+    """A `subprocess.Popen` stand-in that replays JSON-line events.
+
+    By the time every event has been read, a real child has already exited —
+    `poll()`/`wait()` reflect that so `_render_verify`'s cleanup `finally`
+    (M28) sees a already-finished process and skips terminate/kill.
+    """
 
     class _Proc:
         def __init__(self, *a, **k):
             self.stdout = iter(
                 [e if isinstance(e, str) else json.dumps(e) for e in events]
             )
+            self.terminated = False
+            self.killed = False
 
-        def wait(self):
+        def poll(self):
+            return returncode
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
             return returncode
 
     return _Proc
@@ -310,6 +344,62 @@ def test_render_verify_passes_unexpected_child_output_through(monkeypatch, capsy
     assert "DeprecationWarning: protobuf" in flat(capsys.readouterr().out)
 
 
+def test_render_verify_reports_a_missing_interpreter(monkeypatch, capsys):
+    """M28: Popen's own FileNotFoundError must not raise a raw traceback."""
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("no such file")),
+    )
+    rc = ts._render_verify(sys.executable, "127.0.0.1", 5566, 8)
+
+    assert rc == 1
+    assert "could not start the verifier" in flat(capsys.readouterr().err)
+
+
+def test_render_verify_kills_a_wedged_child_after_the_deadline(monkeypatch, capsys):
+    """M28: a child that never emits a verdict must be killed, not waited on
+    forever, and the child must always be reaped."""
+    monkeypatch.setattr(ts, "_VERIFY_TIMEOUT_FLOOR_S", 0.05)
+    monkeypatch.setattr(ts, "_VERIFY_TIMEOUT_PER_ROUND_S", 0.01)
+
+    class _WedgedProc:
+        def __init__(self, *a, **k):
+            self._killed = threading.Event()
+
+            class _Stdout:
+                def __iter__(inner):
+                    return inner
+
+                def __next__(inner):
+                    # A real pipe only reaches EOF once the child dies; block
+                    # here until our own kill() fires, same as that.
+                    if not self._killed.wait(timeout=5):
+                        raise AssertionError("watchdog never killed the child")
+                    raise StopIteration
+
+            self.stdout = _Stdout()
+
+        def poll(self):
+            return 0 if self._killed.is_set() else None
+
+        def terminate(self):
+            raise AssertionError("a killed child should not also be terminate()d")
+
+        def kill(self):
+            self._killed.set()
+
+        def wait(self, timeout=None):
+            self._killed.wait(timeout)
+            return -9
+
+    monkeypatch.setattr(subprocess, "Popen", _WedgedProc)
+    rc = ts._render_verify(sys.executable, "127.0.0.1", 5566, 1)
+
+    assert rc != 0
+    assert "timed out" in flat(capsys.readouterr().err)
+
+
 # ── testserver: millisecond formatting ───────────────────────────────────────
 
 
@@ -418,6 +508,12 @@ def test_run_passes_the_servers_exit_code_through(
         subprocess, "run", lambda cmd, *a, **k: subprocess.CompletedProcess(cmd, 4)
     )
     assert runner.invoke(ts_group, ["run"]).exit_code == 4
+
+
+@pytest.mark.parametrize("bad_port", ["0", "70000"])
+def test_run_rejects_a_port_outside_1_65535(runner, no_run_preflight, bad_port):
+    result = runner.invoke(ts_group, ["run", "-p", bad_port])
+    assert result.exit_code == 2
 
 
 def test_run_reports_a_missing_launcher(runner, tmp_path, monkeypatch):

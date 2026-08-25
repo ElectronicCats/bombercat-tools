@@ -195,6 +195,15 @@ def test_config_nfcgate_rejects_an_invalid_port(runner, use_link, bad):
     assert link.sent == []  # rejected before touching the board
 
 
+def test_config_nfcgate_rejects_a_server_value_with_no_host(runner, use_link):
+    link = use_link(nfc, FakeLink())
+    result = runner.invoke(config, BASE_NFCGATE + ["--server", ":5566"])
+
+    assert result.exit_code == 1
+    assert "missing host" in flat(result.output)
+    assert link.sent == []  # rejected before touching the board
+
+
 @pytest.mark.parametrize("session", ["0", "256"])
 def test_config_nfcgate_rejects_a_session_outside_1_255(runner, session):
     result = runner.invoke(

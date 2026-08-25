@@ -37,6 +37,7 @@ def test_exactly_the_repl_firmwares_are_flagged():
     assert repl == {
         "nfcgate",
         "detecttags",
+        "detectreaders",
         "magspoof",
         "magspoofcvsattack",
         "magspoofmqtt",
@@ -102,6 +103,23 @@ def test_only_detecttags_claims_the_tags_capability():
     for f in fw.all_firmwares(enrich=False):
         if f.can(fw.CAP_TAGS):
             assert f.id == "detecttags"
+
+
+def test_detectreaders_claims_the_readers_capability():
+    detectreaders = fw.by_id("detectreaders")
+    assert detectreaders.can(fw.CAP_READERS)
+    assert detectreaders.has_repl
+
+
+def test_only_detectreaders_claims_the_readers_capability():
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_READERS):
+            assert f.id == "detectreaders"
+
+
+def test_lookup_by_uf2_finds_detectreaders():
+    assert fw.by_uf2("DetectReaders.uf2").id == "detectreaders"
+    assert fw.by_uf2("detectreaders.uf2").id == "detectreaders"
 
 
 def test_a_non_object_descriptions_payload_is_ignored_instead_of_crashing():

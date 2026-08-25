@@ -55,6 +55,15 @@ def test_handshake_names_a_firmware_other_than_nfcgate(fake_link):
     assert r.version == "0.9.8"
 
 
+def test_handshake_identifies_detectreaders(fake_link):
+    fake_link(FakeLink({"info": ok(fw="1.0.0", fw_name="detectreaders")}, ping_ok=True))
+    r = fw.detect_firmware("/dev/ttyACM0")
+
+    assert r.confidence == fw.HANDSHAKE
+    assert r.firmware.id == "detectreaders"
+    assert r.version == "1.0.0"
+
+
 def test_an_unnamed_repl_board_is_inferred_not_asserted(fake_link):
     """A pre-`fw_name` build — every NFCGate up to 0.9.7, i.e. what is flashed
     on the boards in the wild today.

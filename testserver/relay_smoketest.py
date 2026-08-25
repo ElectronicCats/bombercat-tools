@@ -27,6 +27,7 @@ import socket
 import struct
 import sys
 import time
+from contextlib import closing
 
 # Import the server's committed protobuf modules (repo ./server/plugins).
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -41,6 +42,10 @@ PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 5566
 # join the session and its OP_SYN would arrive here, breaking the byte-identity
 # assertions below. Excluding 42 keeps this test isolated from a live device.
 SESSION = random.choice([b for b in range(1, 256) if b != 42])
+
+# Real frames here are a few dozen bytes; a corrupt/hostile server sending a
+# bogus length (e.g. 0xFFFFFFFF) must not trigger a multi-GB allocation.
+MAX_FRAME = 1 << 20
 
 
 def recvn(sock, n):
@@ -59,6 +64,8 @@ def send_frame(sock, payload, session):
 
 def recv_frame(sock):
     length = struct.unpack("!I", recvn(sock, 4))[0]
+    if length > MAX_FRAME:
+        raise RuntimeError(f"frame length {length} exceeds sanity cap ({MAX_FRAME})")
     return recvn(sock, length)
 
 
@@ -90,51 +97,47 @@ def connect():
 
 def main():
     print("Connecting to %s:%d (session 0x%02X)" % (HOST, PORT, SESSION))
-    reader = connect()
-    card = connect()
+    with closing(connect()) as reader, closing(connect()) as card:
+        # Card associates with the session first (empty NFCData placeholder).
+        send_frame(card, make_serverdata(b"", c2c_pb2.NFCData.CARD), SESSION)
+        time.sleep(0.2)
 
-    # Card associates with the session first (empty NFCData placeholder).
-    send_frame(card, make_serverdata(b"", c2c_pb2.NFCData.CARD), SESSION)
-    time.sleep(0.2)
+        # reader -> card : SELECT PPSE
+        ppse = bytes.fromhex("00A404000E325041592E5359532E444446303100")
+        reader_blob = make_serverdata(ppse, c2c_pb2.NFCData.READER)
+        send_frame(reader, reader_blob, SESSION)
 
-    # reader -> card : SELECT PPSE
-    ppse = bytes.fromhex("00A404000E325041592E5359532E444446303100")
-    reader_blob = make_serverdata(ppse, c2c_pb2.NFCData.READER)
-    send_frame(reader, reader_blob, SESSION)
-
-    got = recv_frame(card)
-    assert got == reader_blob, "card did not receive identical blob"
-    sd, nfc = decode(got)
-    print(
-        "[OK] reader->card  opcode=%s source=%s apdu=%s"
-        % (
-            c2s_pb2.ServerData.Opcode.Name(sd.opcode),
-            c2c_pb2.NFCData.DataSource.Name(nfc.data_source),
-            bytes(nfc.data).hex(),
+        got = recv_frame(card)
+        assert got == reader_blob, "card did not receive identical blob"
+        sd, nfc = decode(got)
+        print(
+            "[OK] reader->card  opcode=%s source=%s apdu=%s"
+            % (
+                c2s_pb2.ServerData.Opcode.Name(sd.opcode),
+                c2c_pb2.NFCData.DataSource.Name(nfc.data_source),
+                bytes(nfc.data).hex(),
+            )
         )
-    )
-    assert bytes(nfc.data) == ppse
+        assert bytes(nfc.data) == ppse
 
-    # card -> reader : FCI response
-    resp = bytes.fromhex("6F23840E325041592E5359532E4444463031A5119000")
-    card_blob = make_serverdata(resp, c2c_pb2.NFCData.CARD)
-    send_frame(card, card_blob, SESSION)
+        # card -> reader : FCI response
+        resp = bytes.fromhex("6F23840E325041592E5359532E4444463031A5119000")
+        card_blob = make_serverdata(resp, c2c_pb2.NFCData.CARD)
+        send_frame(card, card_blob, SESSION)
 
-    got2 = recv_frame(reader)
-    assert got2 == card_blob, "reader did not receive identical blob"
-    sd2, nfc2 = decode(got2)
-    print(
-        "[OK] card->reader  opcode=%s source=%s apdu=%s"
-        % (
-            c2s_pb2.ServerData.Opcode.Name(sd2.opcode),
-            c2c_pb2.NFCData.DataSource.Name(nfc2.data_source),
-            bytes(nfc2.data).hex(),
+        got2 = recv_frame(reader)
+        assert got2 == card_blob, "reader did not receive identical blob"
+        sd2, nfc2 = decode(got2)
+        print(
+            "[OK] card->reader  opcode=%s source=%s apdu=%s"
+            % (
+                c2s_pb2.ServerData.Opcode.Name(sd2.opcode),
+                c2c_pb2.NFCData.DataSource.Name(nfc2.data_source),
+                bytes(nfc2.data).hex(),
+            )
         )
-    )
-    assert bytes(nfc2.data) == resp
+        assert bytes(nfc2.data) == resp
 
-    reader.close()
-    card.close()
     print("\nRELAY SMOKE TEST PASSED")
 
 

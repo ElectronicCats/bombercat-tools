@@ -44,6 +44,7 @@ import struct
 import sys
 import textwrap
 import time
+from contextlib import closing
 
 # Import the server's committed protobuf modules (repo ./server/plugins).
 _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -54,6 +55,9 @@ from plugins import c2c_pb2, c2s_pb2  # noqa: E402
 # write, no Nagle stall. A first recv() of exactly the 4-byte header means the
 # payload was still in flight -- the unpatched signature.
 HEADER_LEN = 4
+# Real frames here are a few dozen bytes; a corrupt/hostile server sending a
+# bogus length (e.g. 0xFFFFFFFF) must not trigger a multi-GB allocation.
+MAX_FRAME = 1 << 20
 # Delayed-ACK timers are ~40 ms on Linux and up to 200 ms elsewhere. Anything
 # above this threshold is a stall, not scheduling noise.
 STALL_MS = 15.0
@@ -162,7 +166,12 @@ def relay_once(src, dst, blob, session):
         raise RuntimeError("connection closed by server")
 
     first_chunk_len = len(chunk)
-    want = HEADER_LEN + struct.unpack("!I", chunk[:HEADER_LEN])[0]
+    declared_len = struct.unpack("!I", chunk[:HEADER_LEN])[0]
+    if declared_len > MAX_FRAME:
+        raise RuntimeError(
+            f"frame length {declared_len} exceeds sanity cap ({MAX_FRAME})"
+        )
+    want = HEADER_LEN + declared_len
     while len(chunk) < want:
         more = dst.recv(65536)
         if not more:
@@ -283,84 +292,92 @@ def run(args, rep):
     session = random.choice([b for b in range(1, 256) if b != 42])
 
     # Connect before announcing the run: an unreachable server should show its
-    # error, not a session banner for a measurement that never started.
-    reader = connect(args.host, args.port)
-    card = connect(args.host, args.port)
-    rep.start(args.host, args.port, session, args.rounds)
+    # error, not a session banner for a measurement that never started. Each
+    # socket is wrapped in `closing` so a failure connecting the second one
+    # (or any error/assert further down) still closes whichever socket(s)
+    # already opened, instead of leaking them.
+    with closing(connect(args.host, args.port)) as reader, closing(
+        connect(args.host, args.port)
+    ) as card:
+        rep.start(args.host, args.port, session, args.rounds)
 
-    # Both peers must be registered in the session before anything is relayed.
-    # The server forwards each registration frame to whoever is already in the
-    # session, so both sockets can be holding a frame we never asked for — drain
-    # them, or the first measured round reads a registration instead of its own
-    # payload.
-    send_frame(card, make_serverdata(b"", c2c_pb2.NFCData.CARD), session)
-    send_frame(reader, make_serverdata(b"", c2c_pb2.NFCData.READER), session)
-    time.sleep(0.3)
-    drain(reader)
-    drain(card)
+        # Both peers must be registered in the session before anything is
+        # relayed. The server forwards each registration frame to whoever is
+        # already in the session, so both sockets can be holding a frame we
+        # never asked for — drain them, or the first measured round reads a
+        # registration instead of its own payload.
+        send_frame(card, make_serverdata(b"", c2c_pb2.NFCData.CARD), session)
+        send_frame(reader, make_serverdata(b"", c2c_pb2.NFCData.READER), session)
+        time.sleep(0.3)
+        drain(reader)
+        drain(card)
 
-    ppse = bytes.fromhex("00A404000E325041592E5359532E444446303100")
-    blob = make_serverdata(ppse, c2c_pb2.NFCData.READER)
+        ppse = bytes.fromhex("00A404000E325041592E5359532E444446303100")
+        blob = make_serverdata(ppse, c2c_pb2.NFCData.READER)
 
-    split = 0
-    gaps, totals = [], []
-    for i in range(args.rounds):
-        first_len, gap_ms, total_ms, payload = relay_once(reader, card, blob, session)
-        if payload != blob:
-            raise RelayMismatch(
-                "The relayed payload differs from what was sent — this server is "
-                "not relaying correctly, so its latency cannot be judged."
+        split = 0
+        gaps, totals = [], []
+        for i in range(args.rounds):
+            first_len, gap_ms, total_ms, payload = relay_once(
+                reader, card, blob, session
             )
-        whole = first_len >= HEADER_LEN + len(blob)
-        if not whole:
-            split += 1
-        gaps.append(gap_ms)
-        totals.append(total_ms)
-        rep.round(i + 1, args.rounds, first_len, whole, gap_ms, total_ms)
+            if payload != blob:
+                raise RelayMismatch(
+                    "The relayed payload differs from what was sent — this "
+                    "server is not relaying correctly, so its latency cannot "
+                    "be judged."
+                )
+            whole = first_len >= HEADER_LEN + len(blob)
+            if not whole:
+                split += 1
+            gaps.append(gap_ms)
+            totals.append(total_ms)
+            rep.round(i + 1, args.rounds, first_len, whole, gap_ms, total_ms)
 
-    median_gap = statistics.median(gaps)
-    median_total = statistics.median(totals)
+        median_gap = statistics.median(gaps)
+        median_total = statistics.median(totals)
 
-    # The verdict rests on the SPLIT, not on the timing. Frame splitting is
-    # structural: it is what the two unpatched wfile.write() calls do, and it
-    # shows up on any path. The delayed-ACK stall is what that splitting COSTS,
-    # and it only materialises where ACKs are actually delayed -- over loopback
-    # or a Docker bridge the kernel ACKs instantly and the gap reads ~0 ms even
-    # on a thoroughly unpatched server. Judging by time alone would clear a slow
-    # server just because you tested it from the same machine.
-    if split > args.rounds // 2:
-        notes = [SPLIT_WHY]
-        notes.append(
-            STALL_VISIBLE % median_gap if median_gap > STALL_MS else STALL_HIDDEN
-        )
+        # The verdict rests on the SPLIT, not on the timing. Frame splitting is
+        # structural: it is what the two unpatched wfile.write() calls do, and
+        # it shows up on any path. The delayed-ACK stall is what that
+        # splitting COSTS, and it only materialises where ACKs are actually
+        # delayed -- over loopback or a Docker bridge the kernel ACKs
+        # instantly and the gap reads ~0 ms even on a thoroughly unpatched
+        # server. Judging by time alone would clear a slow server just
+        # because you tested it from the same machine.
+        if split > args.rounds // 2:
+            notes = [SPLIT_WHY]
+            notes.append(
+                STALL_VISIBLE % median_gap if median_gap > STALL_MS else STALL_HIDDEN
+            )
+            rep.result(
+                "missing",
+                "PATCH MISSING (or an old build is still running)",
+                split,
+                args.rounds,
+                median_gap,
+                median_total,
+                notes,
+                SPLIT_FIX,
+            )
+            return 1
+
+        notes = [PATCH_OK]
+        if median_gap > STALL_MS:
+            notes.append(ODD_NOTE % median_gap)
+        if median_total > SLOW_RTT_MS:
+            notes.append(SLOW_NOTE % median_total)
         rep.result(
-            "missing",
-            "PATCH MISSING (or an old build is still running)",
+            "active",
+            "PATCH ACTIVE",
             split,
             args.rounds,
             median_gap,
             median_total,
             notes,
-            SPLIT_FIX,
+            [],
         )
-        return 1
-
-    notes = [PATCH_OK]
-    if median_gap > STALL_MS:
-        notes.append(ODD_NOTE % median_gap)
-    if median_total > SLOW_RTT_MS:
-        notes.append(SLOW_NOTE % median_total)
-    rep.result(
-        "active",
-        "PATCH ACTIVE",
-        split,
-        args.rounds,
-        median_gap,
-        median_total,
-        notes,
-        [],
-    )
-    return 0
+        return 0
 
 
 def main():

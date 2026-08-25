@@ -22,6 +22,7 @@ from .firmwares import (
     INFERRED,
     NONE,
     USB,
+    CAP_MAGSPOOF,
     CAP_MONITOR,
     CAP_PASSTHROUGH,
     CAP_READERS,
@@ -41,6 +42,7 @@ from ..nfcgate.cli import (
 )
 from ..capture.cli import capture as _capture
 from ..firmware.cli import flash as _flash
+from ..magspoof.cli import magspoof as _magspoof
 from ..proto.cli import proto as _proto
 from ..readers.cli import readers as _readers
 from ..tags.cli import tags as _tags
@@ -227,6 +229,9 @@ def _next_steps(detection):
     elif fw.can(CAP_READERS):
         steps.append("bombercat readers read       — catch one reader probing the card")
         steps.append("bombercat readers watch      — stream reader detections")
+    elif fw.can(CAP_MAGSPOOF):
+        steps.append("bombercat magspoof play      — emulate the loaded card now")
+        steps.append("bombercat magspoof set/show  — load or inspect the tracks")
     elif fw.can(CAP_MONITOR):
         steps.append("watch its serial output with a terminal (screen/minicom), or")
         steps.append("bombercat flash NFCGate   — switch to the relay firmware")
@@ -605,6 +610,7 @@ def main_cli() -> None:
     cli.add_command(_flash)
     cli.add_command(_tags)
     cli.add_command(_readers)
+    cli.add_command(_magspoof)
 
     # Deprecated compatibility aliases (hidden): old root spellings still work
     # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).

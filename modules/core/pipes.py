@@ -308,8 +308,11 @@ class WindowsPipe:
             if e.winerror in (109, 232):  # broken pipe / no data
                 logger.warning("[!] Wireshark disconnected")
                 self.close()
-            else:
-                show_generic_error("Writing Pipeline", e)
+                # Mirror UnixPipe: surface the disconnect so the capture loop
+                # can react (drop the pipe, keep writing to a file if any)
+                # instead of silently discarding subsequent frames.
+                raise BrokenPipeError(str(e)) from e
+            show_generic_error("Writing Pipeline", e)
 
 
 class Wireshark(threading.Thread):

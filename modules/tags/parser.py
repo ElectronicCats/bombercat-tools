@@ -93,13 +93,18 @@ class TagParser:
     def __init__(self):
         self.structured = False
         self._pending = Tag()
+        self._pending_id_seen = False
 
     def feed(self, line: str) -> Optional[Tag]:
         m = _TAG_EVENT.match(line)
         if m:
             self.structured = True
             ts, tech, proto, uid, rest = m.groups()
-            extra = dict(kv.split("=", 1) for kv in rest.split() if "=" in kv)
+            extra = dict(
+                kv.split("=", 1)
+                for kv in rest.split()
+                if "=" in kv and not kv.startswith("=")
+            )
             uid = None if uid == "-" else uid.upper()
             return Tag(
                 uid=_validated_uid(uid, extra),
@@ -117,26 +122,39 @@ class TagParser:
             self._pending = Tag(
                 protocol=_PROTOCOL_BY_NUM.get(int(m.group(1)), f"proto {m.group(1)}")
             )
+            self._pending_id_seen = False
             return None
         m = _LEGACY_PROTO_NAMED.search(line)
         if m:
             self._pending = Tag(protocol=m.group(1).upper())
+            self._pending_id_seen = False
             return None
         m = _LEGACY_TECH.match(line)
         if m:
             self._pending.tech = m.group(1)
+            if self._pending_id_seen:
+                done, self._pending = self._pending, Tag()
+                self._pending_id_seen = False
+                return done
             return None
         m = _LEGACY_ID.match(line)
-        if m and self._pending.tech:
+        if m:
+            # Buffer the UID even if Technology hasn't arrived yet - lines
+            # can appear in either order. Finalize only once both are known.
             self._pending.uid = _validated_uid(
                 _hex_compact(m.group(1)), self._pending.extra
             )
-            done, self._pending = self._pending, Tag()
-            return done
+            self._pending_id_seen = True
+            if self._pending.tech:
+                done, self._pending = self._pending, Tag()
+                self._pending_id_seen = False
+                return done
+            return None
         if _LEGACY_CLOSE.match(line) and self._pending.tech in ("NFC-B", "NFC-F"):
             # No PUPI/IDm line ever came (firmware predates the extraction) -
             # close with uid=None rather than hang waiting for a line that
             # will never arrive.
             done, self._pending = self._pending, Tag()
+            self._pending_id_seen = False
             return done
         return None

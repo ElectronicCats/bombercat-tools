@@ -11,6 +11,7 @@
 # (FLASH_PLAN §2.3.1). A local .uf2 path never consults it at all.
 # Distributed as-is; no warranty is given.
 
+import os
 from pathlib import Path
 
 import click
@@ -314,7 +315,11 @@ def flash(firmware, list_only, refresh, full, yes, port, device_id):
         print_error(str(e))
         raise SystemExit(1)
     except Exception as e:  # serial/OS errors we did not anticipate
-        print_error(f"{type(e).__name__}: {e}")
+        if os.environ.get("BOMBERCAT_DEBUG"):
+            raise
+        print_error(
+            f"{type(e).__name__}: {e} (set BOMBERCAT_DEBUG=1 for a full traceback)"
+        )
         raise SystemExit(1)
 
     print_success(f"{image.name} written to {outcome.drive}")

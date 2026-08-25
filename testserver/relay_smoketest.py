@@ -34,8 +34,19 @@ _REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, os.path.join(_REPO, "server"))
 from plugins import c2c_pb2, c2s_pb2  # noqa: E402
 
+
+def _parse_port(raw):
+    try:
+        port = int(raw)
+    except ValueError:
+        sys.exit(f"invalid port {raw!r}: must be an integer")
+    if not (1 <= port <= 65535):
+        sys.exit(f"invalid port {port}: must be between 1 and 65535")
+    return port
+
+
 HOST = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
-PORT = int(sys.argv[2]) if len(sys.argv) > 2 else 5566
+PORT = _parse_port(sys.argv[2]) if len(sys.argv) > 2 else 5566
 # Any non-zero byte; both peers must match. Picked at random rather than fixed
 # because the server relays every frame to *all* clients in the session: a real
 # BomberCat on the same server (firmware default RELAY_SESSION 42 == 0x2A) would

@@ -380,17 +380,39 @@ def run(args, rep):
         return 0
 
 
+def _port_type(value):
+    try:
+        port = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid port {value!r}: must be an integer")
+    if not (1 <= port <= 65535):
+        raise argparse.ArgumentTypeError(
+            f"port must be between 1 and 65535 (got {port})"
+        )
+    return port
+
+
+def _positive_int(value):
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"invalid value {value!r}: must be an integer")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1 (got {n})")
+    return n
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Check that a running nfcgate-server has the latency patch."
     )
     ap.add_argument("host", nargs="?", default="127.0.0.1")
-    ap.add_argument("port", nargs="?", default=5566, type=int)
+    ap.add_argument("port", nargs="?", default=5566, type=_port_type)
     ap.add_argument(
         "-n",
         "--rounds",
         default=8,
-        type=int,
+        type=_positive_int,
         help="relayed frames to measure (default: 8)",
     )
     ap.add_argument(

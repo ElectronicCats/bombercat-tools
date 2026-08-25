@@ -50,8 +50,9 @@ class _CaptureSink:
         if self.fileobj is not None:
             self.fileobj.write(data)
             self.fileobj.flush()
-        if self.pipe is not None:
-            self.pipe.write_packet(data)
+        pipe = self.pipe  # snapshot: _watch_wireshark can clear self.pipe concurrently
+        if pipe is not None:
+            pipe.write_packet(data)
 
     def file_header(self) -> None:
         """Write the pcap global header to the FILE only (the FIFO gets it later,
@@ -195,8 +196,24 @@ def capture_start(output, wireshark, profile, force, port, device_id):
                 # read end, so do it in the background and wait on ready_event.
                 threading.Thread(target=pipe.open, daemon=True).start()
                 print_info("waiting for Wireshark to attach…")
-                if not pipe.ready_event.wait(timeout=_WIRESHARK_PIPE_TIMEOUT):
-                    print_error("Wireshark did not attach to the pipe in time.")
+                deadline = time.monotonic() + _WIRESHARK_PIPE_TIMEOUT
+                attached = False
+                spawn_error = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if pipe.ready_event.wait(timeout=min(0.2, remaining)):
+                        attached = True
+                        break
+                    spawn_error = getattr(ws_thread, "spawn_error", None)
+                    if spawn_error is not None:
+                        break
+                if not attached:
+                    if spawn_error is not None:
+                        print_error(f"failed to start Wireshark: {spawn_error}")
+                    else:
+                        print_error("Wireshark did not attach to the pipe in time.")
                     if not fileobj:
                         raise SystemExit(1)
                     print_warning("continuing with the file only.")

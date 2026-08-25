@@ -265,6 +265,18 @@ def _write_json(path: str, rows: List[Dict[str, object]]) -> None:
         f.write("\n")
 
 
+_CSV_FORMULA_PREFIXES = ("=", "+", "-", "@")
+
+
+def _csv_safe(value: object) -> object:
+    """Neutralize CSV/formula injection (device-controlled fields like `tech`,
+    `protocol`, and `extra` are free text): a cell starting with =/+/-/@ is
+    interpreted as a formula by Excel/LibreOffice on open."""
+    if isinstance(value, str) and value.startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
     fieldnames = ["uid", "tech", "protocol", "count", "first_s", "last_s"]
     for row in rows:
@@ -274,7 +286,8 @@ def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        for row in rows:
+            writer.writerow({k: _csv_safe(v) for k, v in row.items()})
 
 
 def _refuse_overwrite(path: str, force: bool) -> None:

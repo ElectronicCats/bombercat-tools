@@ -325,6 +325,11 @@ class Wireshark(threading.Thread):
         self.profile = profile
         self.running = True
         self.wireshark_process: subprocess.Popen | None = None
+        # Set by run() when the launch itself fails (binary vanished after the
+        # caller's find_wireshark_path() check, exec failure, ...), so a caller
+        # blocked waiting on the FIFO can report the real cause instead of a
+        # generic "did not attach in time" timeout.
+        self.spawn_error: str | None = None
 
     def get_wireshark_path(self):
         """The Wireshark executable (Path), or None when it is not installed."""
@@ -352,11 +357,13 @@ class Wireshark(threading.Thread):
     def run(self):
         cmd = self.get_wireshark_cmd()
         if cmd is None:
-            show_generic_error("Can't start Wireshark", "executable not found")
+            self.spawn_error = "executable not found"
+            show_generic_error("Can't start Wireshark", self.spawn_error)
             return
         try:
             self.wireshark_process = subprocess.Popen(cmd)
             # Wait for the process to finish, otherwise the thread exits immediately
             self.wireshark_process.wait()
         except Exception as e:
+            self.spawn_error = str(e)
             show_generic_error("Can't start Wireshark", e)

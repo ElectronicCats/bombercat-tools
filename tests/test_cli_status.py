@@ -102,6 +102,18 @@ def test_status_suggests_readers_commands_for_detectreaders(runner, detect):
     assert "bombercat relay run" not in out
 
 
+def test_status_suggests_magspoof_commands_for_magspoof(runner, detect):
+    detect(_result("magspoof", fw.HANDSHAKE, version="1.1.1.0"))
+    result = runner.invoke(firmware_status_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "bombercat magspoof play" in out
+    assert "bombercat magspoof set/show" in out
+    # honest: a REPL-less-for-relay board is never pointed at the relay controls
+    assert "bombercat relay run" not in out
+
+
 def test_status_reports_an_unidentified_but_present_board(runner, detect):
     detect(_result("unknown", fw.USB))
     result = runner.invoke(firmware_status_cmd, [])

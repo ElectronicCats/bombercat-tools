@@ -30,28 +30,22 @@ TRACK2 = ";4111111111111111=26120000000000?"
 # ── play ─────────────────────────────────────────────────────────────────────
 
 
-def test_play_with_no_track_reports_alternated_track(runner, use_link):
-    use_link(magspoofcli, FakeLink(responses={"magplay": ok("played 2")}))
+def test_play_always_sends_magplay_1_for_a_full_swipe(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magplay 1": ok("played 1")}))
     result = runner.invoke(play_cmd, [])
     out = flat(result.stdout)
 
     assert result.exit_code == 0
-    assert "played track 2" in out
+    # Never a bare `magplay` (the firmware would alternate) nor `magplay 2`
+    # (track 2 alone): only `magplay 1` also replays track 2 in reverse.
+    assert fake.sent == ["magplay 1"]
+    assert "played both tracks" in out
 
 
-def test_play_with_explicit_track_sends_it(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink(responses={"magplay 1": ok("played 1")}))
-    result = runner.invoke(play_cmd, ["1"])
-
-    assert result.exit_code == 0
-    assert "magplay 1" in fake.sent
-
-
-def test_play_rejects_a_track_outside_1_or_2():
-    from click.testing import CliRunner
-
-    result = CliRunner().invoke(play_cmd, ["3"])
-    assert result.exit_code != 0
+def test_play_takes_no_track_argument(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magplay 1": ok("played 1")}))
+    for track in ("1", "2", "3"):
+        assert runner.invoke(play_cmd, [track]).exit_code != 0
 
 
 def test_play_reports_a_firmware_error(runner, use_link):
@@ -209,53 +203,33 @@ def test_show_hints_reflash_on_unknown_command(runner, use_link):
 # ── button ───────────────────────────────────────────────────────────────────
 
 
-def test_button_with_no_mode_queries_the_firmware(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink(responses={"magbtn": ok("", btn="alt")}))
+def test_button_always_sets_track_1(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magbtn 1": ok("", btn="1")}))
     result = runner.invoke(button_cmd, [])
     out = flat(result.stdout)
 
     assert result.exit_code == 0
-    assert fake.sent == ["magbtn"]
-    assert "alternating 1 and 2" in out
+    assert fake.sent == ["magbtn 1"]
+    assert "button plays both tracks" in out
 
 
-def test_button_pins_the_press_to_one_track(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink(responses={"magbtn": ok("", btn="2")}))
-    result = runner.invoke(button_cmd, ["2"])
-
-    assert result.exit_code == 0
-    assert fake.sent == ["magbtn 2"]
-    assert "button plays track 2" in flat(result.stdout)
-
-
-def test_button_restores_the_alternating_default(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink(responses={"magbtn": ok("", btn="alt")}))
-    result = runner.invoke(button_cmd, ["alt"])
+def test_button_reports_success_even_when_the_reply_omits_btn(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magbtn 1": ok("")}))
+    result = runner.invoke(button_cmd, [])
 
     assert result.exit_code == 0
-    assert fake.sent == ["magbtn alt"]
+    assert "button plays both tracks" in flat(result.stdout)
 
 
-def test_button_rejects_a_mode_the_firmware_does_not_know():
-    from click.testing import CliRunner
-
-    result = CliRunner().invoke(button_cmd, ["3"])
-    assert result.exit_code != 0
-
-
-def test_button_reports_the_mode_it_asked_for_when_the_reply_omits_btn(
-    runner, use_link
-):
-    use_link(magspoofcli, FakeLink(responses={"magbtn": ok("")}))
-    result = runner.invoke(button_cmd, ["1"])
-
-    assert result.exit_code == 0
-    assert "button plays track 1" in flat(result.stdout)
+def test_button_takes_no_mode_argument(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magbtn 1": ok("", btn="1")}))
+    for mode in ("1", "2", "alt"):
+        assert runner.invoke(button_cmd, [mode]).exit_code != 0
 
 
 def test_button_reports_a_firmware_error(runner, use_link):
     use_link(magspoofcli, FakeLink(responses={"magbtn": err("bad mode")}))
-    result = runner.invoke(button_cmd, ["1"])
+    result = runner.invoke(button_cmd, [])
 
     assert result.exit_code == 1
     assert "button failed" in flat(result.output)
@@ -263,7 +237,7 @@ def test_button_reports_a_firmware_error(runner, use_link):
 
 def test_button_hints_reflash_on_unknown_command(runner, use_link):
     use_link(magspoofcli, FakeLink(responses={"magbtn": err("unknown command")}))
-    result = runner.invoke(button_cmd, ["1"])
+    result = runner.invoke(button_cmd, [])
 
     assert result.exit_code == 1
     assert "bombercat flash magspoof" in flat(result.output)

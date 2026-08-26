@@ -123,6 +123,20 @@ def play_cmd(ctx, verbose, port, device_id):
 # ── set ──────────────────────────────────────────────────────────────────────
 
 
+def _validate_card_name(name: str) -> Optional[str]:
+    """Mirror the firmware's `validName` (CardDatabase): non-empty, at most 31
+    chars, no spaces or control characters so the space-separated `magcard`
+    parser can round-trip it. Returns an error message, or None if valid."""
+    if not name:
+        return "card name cannot be empty"
+    if len(name) > 31:
+        return f"card name too long ({len(name)} chars, max 31)"
+    for ch in name:
+        if ch <= " " or ch == "\x7f":
+            return "card name cannot contain spaces or control characters"
+    return None
+
+
 def _validate_track_data(track: int, data: str) -> Optional[str]:
     """Mirror the firmware's `magset` validation locally so bad input never
     makes the serial round trip. Returns an error message, or None if valid."""
@@ -333,4 +347,246 @@ def info_cmd(ctx, verbose, port, device_id):
         events = "no ':mag' events seen yet"
     table.add_row("events", events)
     table.add_row("state", r.data.get("state") or "[dim]—[/dim]")
+    console.print(table)
+
+
+# ── card (persistent multi-card store) ────────────────────────────────────────
+#
+# The `magcard` verb (firmware Phase 3, IMPLEMENTATION_PLAN_MagSpoof_Flash.md)
+# manages a flash-resident database of named cards. Each list row arrives as one
+# ':cardN <name>\t<track1>\t<track2>' line — indexed keys so DeviceLink.command()
+# keeps every card (a plain ':card' repeat would collapse in its by-key dict),
+# tab-delimited because neither the name nor either track charset contains a tab.
+# One track fits a `magcard set` line but two full tracks would blow the REPL's
+# input buffer, so `card add` composes an atomic add out of `add` + two `set`s.
+
+
+def _iter_cards(data: Dict[str, str]) -> Iterator[Tuple[str, str, str]]:
+    """Yield (name, track1, track2) for each ':cardN' line, in index order."""
+    i = 0
+    while f"card{i}" in data:
+        parts = data[f"card{i}"].split("\t")
+        parts += ["", "", ""]
+        yield parts[0], parts[1], parts[2]
+        i += 1
+
+
+@magspoof.group("card", context_settings={"help_option_names": ["-h", "--help"]})
+def card():
+    """Manage the persistent multi-card store (requires flash-storage firmware).
+
+    Cards live in flash and survive a reset or reflash. The active card is what
+    `magspoof play`/`show` and the physical button use; `card select` switches
+    it. Older firmware without the store answers `-ERR unknown command` — reflash
+    with `bombercat flash magspoof`.
+    """
+
+
+@card.command("list", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per card.")
+@device_options
+@click.pass_context
+def card_list_cmd(ctx, as_json, verbose, port, device_id):
+    """List every stored card, marking the active one."""
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("magcard list")
+
+    if not r.ok:
+        _report_error("card list", r)
+        raise SystemExit(1)
+
+    active = r.data.get("active", "")
+    cards = list(_iter_cards(r.data))
+    if as_json:
+        for name, t1, t2 in cards:
+            print(
+                json.dumps({"name": name, "t1": t1, "t2": t2, "active": name == active})
+            )
+        return
+
+    if not cards:
+        print_info("no cards stored")
+        return
+
+    table = Table(title=f"magspoof cards @ {target}", header_style="cyan bold")
+    table.add_column("", width=1)  # active marker
+    table.add_column("name", style="cyan")
+    table.add_column("track 1")
+    table.add_column("track 2")
+    for name, t1, t2 in cards:
+        marker = "[green]●[/green]" if name == active else ""
+        table.add_row(marker, name, t1 or "[dim]—[/dim]", t2 or "[dim]—[/dim]")
+    console.print(table)
+
+
+@card.command("add", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name")
+@click.argument("track1")
+@click.argument("track2")
+@device_options
+@click.pass_context
+def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
+    """Add a new card NAME carrying TRACK1 and TRACK2.
+
+    Both tracks are validated locally (same rules as `magspoof set`) before
+    anything reaches the device. The card is created and its two tracks written
+    in one go; if a track write fails the empty card is rolled back.
+    """
+    for msg in (
+        _validate_card_name(name),
+        _validate_track_data(1, track1),
+        _validate_track_data(2, track2),
+    ):
+        if msg:
+            print_error(msg)
+            raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(f"magcard add {name}")
+        if not r.ok:
+            _report_error("card add", r)
+            raise SystemExit(1)
+        # Two full tracks won't fit one REPL line, so fill them one per command.
+        # Roll the empty card back on failure so a partial add leaves no trace.
+        for tk, data in ((1, track1), (2, track2)):
+            rt = link.command(f"magcard set {name} {tk} {data}")
+            if not rt.ok:
+                link.command(f"magcard del {name}")
+                _report_error("card add", rt)
+                raise SystemExit(1)
+
+    print_success(f"added card {name}")
+
+
+@card.command("del", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name")
+@device_options
+@click.pass_context
+def card_del_cmd(ctx, name, verbose, port, device_id):
+    """Delete the card called NAME."""
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(f"magcard del {name}")
+
+    if not r.ok:
+        _report_error("card del", r)
+        raise SystemExit(1)
+    print_success(f"deleted card {name}")
+
+
+@card.command("set", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name")
+@click.option("--t1", "track1", help="New track 1 (starts with '%', ends with '?').")
+@click.option("--t2", "track2", help="New track 2 (starts with ';', ends with '?').")
+@device_options
+@click.pass_context
+def card_set_cmd(ctx, name, track1, track2, verbose, port, device_id):
+    """Update one or both tracks of the existing card NAME.
+
+    Pass --t1 and/or --t2; at least one is required. Each is validated locally
+    before it makes the serial round trip.
+    """
+    if track1 is None and track2 is None:
+        print_error("nothing to set — pass --t1 and/or --t2")
+        raise SystemExit(1)
+
+    updates = []
+    for tk, data in ((1, track1), (2, track2)):
+        if data is None:
+            continue
+        err = _validate_track_data(tk, data)
+        if err:
+            print_error(err)
+            raise SystemExit(1)
+        updates.append((tk, data))
+
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        for tk, data in updates:
+            r = link.command(f"magcard set {name} {tk} {data}")
+            if not r.ok:
+                _report_error("card set", r)
+                raise SystemExit(1)
+
+    tracks = " and ".join(f"track {tk}" for tk, _ in updates)
+    print_success(f"updated {tracks} on {name}")
+
+
+@card.command("select", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name")
+@device_options
+@click.pass_context
+def card_select_cmd(ctx, name, verbose, port, device_id):
+    """Make NAME the active card (persisted across resets)."""
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(f"magcard select {name}")
+
+    if not r.ok:
+        _report_error("card select", r)
+        raise SystemExit(1)
+    print_success(f"active card is now {r.data.get('active', name)}")
+
+
+@card.command("get", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name", required=False)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help='Emit {"name": ..., "t1": ..., "t2": ..., "active": ...}.',
+)
+@device_options
+@click.pass_context
+def card_get_cmd(ctx, name, as_json, verbose, port, device_id):
+    """Show a card's tracks (the active card when NAME is omitted)."""
+    level = _verbosity(ctx, verbose)
+    cmd = f"magcard get {name}" if name else "magcard get"
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(cmd)
+
+    if not r.ok:
+        _report_error("card get", r)
+        raise SystemExit(1)
+
+    card_name = r.data.get("name", "")
+    t1 = r.data.get("t1", "")
+    t2 = r.data.get("t2", "")
+    is_active = r.data.get("active", "") == "1"
+    if as_json:
+        print(json.dumps({"name": card_name, "t1": t1, "t2": t2, "active": is_active}))
+        return
+
+    _print_field("name", card_name or "[dim]—[/dim]")
+    _print_field("active", "yes" if is_active else "no")
+    _print_field("track 1", t1 or "[dim]—[/dim]")
+    _print_field("track 2", t2 or "[dim]—[/dim]")
+
+
+@card.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@device_options
+@click.pass_context
+def card_info_cmd(ctx, verbose, port, device_id):
+    """Show store stats: card count, capacity, active card and button mode."""
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("magcard info")
+
+    if not r.ok:
+        _report_error("card info", r)
+        raise SystemExit(1)
+
+    count = r.data.get("count", "?")
+    capacity = r.data.get("capacity", "?")
+    btn = r.data.get("btn", "")
+    table = Table(
+        title=f"magspoof store @ {target}", header_style="cyan bold", show_header=False
+    )
+    table.add_column("field", style="cyan")
+    table.add_column("value")
+    table.add_row("cards", f"{count} / {capacity}")
+    table.add_row("active", r.data.get("active") or "[dim]—[/dim]")
+    table.add_row("button", _button_label(btn) if btn else "[dim]—[/dim]")
     console.print(table)

@@ -29,16 +29,24 @@ TRACK2 = ";4111111111111111=26120000000000?"
 # ── play ─────────────────────────────────────────────────────────────────────
 
 
-def test_play_always_sends_magplay_1_for_a_full_swipe(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink(responses={"magplay 1": ok("played 1")}))
+def test_play_sends_bare_magplay_for_the_active_card(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magplay": ok("played 1")}))
     result = runner.invoke(play_cmd, [])
     out = flat(result.stdout)
 
     assert result.exit_code == 0
-    # Never a bare `magplay` (the firmware would alternate) nor `magplay 2`
-    # (track 2 alone): only `magplay 1` also replays track 2 in reverse.
-    assert fake.sent == ["magplay 1"]
-    assert "played both tracks" in out
+    # Bare `magplay` lets the firmware pick the track(s) the active card holds —
+    # a full swipe for a two-track card, the lone track for a single-track one.
+    assert fake.sent == ["magplay"]
+    assert "played track 1" in out
+
+
+def test_play_reports_the_played_track_for_a_single_track_card(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magplay": ok("played 2")}))
+    result = runner.invoke(play_cmd, [])
+
+    assert result.exit_code == 0
+    assert "played track 2" in flat(result.stdout)
 
 
 def test_play_takes_no_track_argument(runner, use_link):
@@ -131,7 +139,7 @@ def test_button_always_sets_track_1(runner, use_link):
 
     assert result.exit_code == 0
     assert fake.sent == ["magbtn 1"]
-    assert "button plays both tracks" in out
+    assert "button plays the active card" in out
 
 
 def test_button_reports_success_even_when_the_reply_omits_btn(runner, use_link):
@@ -139,7 +147,7 @@ def test_button_reports_success_even_when_the_reply_omits_btn(runner, use_link):
     result = runner.invoke(button_cmd, [])
 
     assert result.exit_code == 0
-    assert "button plays both tracks" in flat(result.stdout)
+    assert "button plays the active card" in flat(result.stdout)
 
 
 def test_button_takes_no_mode_argument(runner, use_link):
@@ -389,7 +397,9 @@ def test_card_list_reports_an_empty_store(runner, use_link):
 
 def test_card_add_validates_the_name_locally_without_a_round_trip(runner, use_link):
     fake = use_link(magspoofcli, FakeLink())
-    result = runner.invoke(_card_cmd("add"), ["bad name", TRACK1, TRACK2])
+    result = runner.invoke(
+        _card_cmd("add"), ["bad name", "--t1", TRACK1, "--t2", TRACK2]
+    )
 
     assert result.exit_code == 1
     assert "card name cannot contain spaces" in flat(result.output)
@@ -398,16 +408,25 @@ def test_card_add_validates_the_name_locally_without_a_round_trip(runner, use_li
 
 def test_card_add_validates_tracks_locally(runner, use_link):
     fake = use_link(magspoofcli, FakeLink())
-    result = runner.invoke(_card_cmd("add"), ["BBVA", "garbage", TRACK2])
+    result = runner.invoke(_card_cmd("add"), ["BBVA", "--t1", "garbage"])
 
     assert result.exit_code == 1
     assert "bad track 1 format" in flat(result.output)
     assert fake.sent == []
 
 
+def test_card_add_requires_at_least_one_track(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(_card_cmd("add"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "at least one track" in flat(result.output)
+    assert fake.sent == []
+
+
 def test_card_add_creates_the_card_then_writes_both_tracks(runner, use_link):
     fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
-    result = runner.invoke(_card_cmd("add"), ["BBVA", TRACK1, TRACK2])
+    result = runner.invoke(_card_cmd("add"), ["BBVA", "--t1", TRACK1, "--t2", TRACK2])
 
     assert result.exit_code == 0
     assert fake.sent == [
@@ -415,7 +434,26 @@ def test_card_add_creates_the_card_then_writes_both_tracks(runner, use_link):
         f"magcard set BBVA 1 {TRACK1}",
         f"magcard set BBVA 2 {TRACK2}",
     ]
-    assert "added card BBVA" in flat(result.stdout)
+    assert "added 2-track card BBVA" in flat(result.stdout)
+
+
+def test_card_add_stores_a_single_track_1_membership_card(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(_card_cmd("add"), ["CINEMA", "--t1", TRACK1])
+
+    assert result.exit_code == 0
+    # Only track 1 is written — no empty track 2 command.
+    assert fake.sent == ["magcard add CINEMA", f"magcard set CINEMA 1 {TRACK1}"]
+    assert "added 1-track card CINEMA" in flat(result.stdout)
+
+
+def test_card_add_stores_a_single_track_2_card(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(_card_cmd("add"), ["LOYAL", "--t2", TRACK2])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard add LOYAL", f"magcard set LOYAL 2 {TRACK2}"]
+    assert "added 1-track card LOYAL" in flat(result.stdout)
 
 
 def test_card_add_rolls_back_the_empty_card_when_a_track_write_fails(runner, use_link):
@@ -429,7 +467,7 @@ def test_card_add_rolls_back_the_empty_card_when_a_track_write_fails(runner, use
             }
         ),
     )
-    result = runner.invoke(_card_cmd("add"), ["BBVA", TRACK1, TRACK2])
+    result = runner.invoke(_card_cmd("add"), ["BBVA", "--t1", TRACK1, "--t2", TRACK2])
 
     assert result.exit_code == 1
     assert "magcard del BBVA" in fake.sent  # the empty card was cleaned up

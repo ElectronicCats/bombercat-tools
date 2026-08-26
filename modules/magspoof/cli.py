@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# `bombercat magspoof play|set|show|watch|info` — magstripe emulation control
+# `bombercat magspoof play|set|show|button|watch|info` — magstripe emulation control
 # over the magspoof REPL. Unlike tags/readers (passive observers), play/set
 # actively drive the board. No aggregator/scan: `:mag` events are discrete
 # and just get counted. docs/IMPLEMENTATION_PLAN_MagSpoof_CLI.md §3.2.
@@ -38,6 +38,17 @@ _NOISE_RE = re.compile(
 )
 
 
+# How the firmware's ':btn' modes read in human output. "alt" is the firmware
+# default: the button walks 1, 2, 1, 2… on successive presses.
+_BUTTON_MODES = {"1": "track 1", "2": "track 2", "alt": "alternating 1 and 2"}
+
+
+def _button_label(mode: str) -> str:
+    """Human name for a ':btn' value, passing anything unexpected through
+    rather than inventing a mode the firmware never claimed."""
+    return _BUTTON_MODES.get(mode, mode)
+
+
 @click.group("magspoof", context_settings={"help_option_names": ["-h", "--help"]})
 def magspoof():
     """Magstripe emulation commands (requires the magspoof firmware)."""
@@ -65,7 +76,7 @@ def _report_error(verb: str, r: Response) -> None:
         # Same version (1.1.1.0) before and after the FW-4 hook, so `info`
         # can't tell old/new apart — this reply is the only tell.
         print_info(
-            "this firmware predates magplay/magset/magget — reflash the "
+            "this firmware predates magplay/magset/magget/magbtn — reflash the "
             "magspoof image (bombercat flash magspoof) to use it."
         )
 
@@ -149,7 +160,12 @@ def set_cmd(ctx, track, data, verbose, port, device_id):
 
 
 @magspoof.command("show", context_settings={"help_option_names": ["-h", "--help"]})
-@click.option("--json", "as_json", is_flag=True, help='Emit {"t1": ..., "t2": ...}.')
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help='Emit {"t1": ..., "t2": ..., "btn": ...}.',
+)
 @device_options
 @click.pass_context
 def show_cmd(ctx, as_json, verbose, port, device_id):
@@ -164,11 +180,42 @@ def show_cmd(ctx, as_json, verbose, port, device_id):
 
     t1 = r.data.get("t1", "")
     t2 = r.data.get("t2", "")
+    # Firmware older than the magbtn hook answers magget without ':btn'.
+    btn = r.data.get("btn", "")
     if as_json:
-        print(json.dumps({"t1": t1, "t2": t2}))
+        print(json.dumps({"t1": t1, "t2": t2, "btn": btn}))
         return
     _print_field("track 1", t1 or "[dim]—[/dim]")
     _print_field("track 2", t2 or "[dim]—[/dim]")
+    _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
+
+
+# ── button ───────────────────────────────────────────────────────────────────
+
+
+@magspoof.command("button", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("mode", required=False, type=click.Choice(["1", "2", "alt"]))
+@device_options
+@click.pass_context
+def button_cmd(ctx, mode, verbose, port, device_id):
+    """Show or set which track the physical button plays.
+
+    With no MODE, reports the current setting. `1` or `2` pin the button to
+    that track — useful when the reader you swipe past only decodes one of
+    them — and `alt` restores the firmware default of alternating on every
+    press. Like the tracks themselves the setting lives in RAM, so a reset
+    or a reflash brings `alt` back.
+    """
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        # Both forms answer ':btn <mode>' + '+OK', so query and set read alike.
+        r = link.command("magbtn" if mode is None else f"magbtn {mode}")
+
+    if not r.ok:
+        _report_error("button", r)
+        raise SystemExit(1)
+    current = r.data.get("btn") or mode or "?"
+    print_success(f"button plays {_button_label(current)}")
 
 
 # ── watch ────────────────────────────────────────────────────────────────────

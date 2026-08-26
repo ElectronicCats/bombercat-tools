@@ -42,12 +42,13 @@ _NOISE_RE = re.compile(
 )
 
 
-# How the firmware's ':btn' modes read in human output. Only "1" is a valid
-# swipe — playTrack(1) replays track 2 in reverse right after track 1, while
-# the other two modes can leave a reader with track 2 alone. "alt" is the
-# firmware default: the button walks 1, 2, 1, 2… on successive presses.
+# How the firmware's ':btn' modes read in human output. "1" is the "play the
+# active card" mode — a full track-1-then-2 swipe for a two-track card, or the
+# lone track of a single-track card. "2" pins to track 2; "alt" is the firmware
+# default, walking 1, 2, 1, 2… on successive presses (skipping a track the card
+# doesn't have).
 _BUTTON_MODES = {
-    "1": "both tracks",
+    "1": "active card",
     "2": "track 2 only",
     "alt": "alternating 1 and 2",
 }
@@ -98,28 +99,33 @@ def _report_error(verb: str, r: Response) -> None:
 @device_options
 @click.pass_context
 def play_cmd(ctx, verbose, port, device_id):
-    """Emulate a full card swipe — both tracks, back to back.
+    """Emulate a swipe of the active card.
 
-    Same effect as pressing the physical button. Reproduction blocks the
-    device for ~0.6-1.5s before the reply arrives (worst case); that delay
-    is normal, not a stall.
+    Same effect as pressing the physical button. A two-track card plays track 1
+    forward then track 2 in reverse (what a reader sees on a real swipe); a
+    single-track membership card plays just the track it carries. Reproduction
+    blocks the device for ~0.6-1.5s before the reply arrives (worst case); that
+    delay is normal, not a stall.
 
     Exit code: 0 played, 1 error (including old firmware without magplay).
     """
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        # Always `magplay 1`, never a bare `magplay` or `magplay 2`:
-        # playTrack(1) plays track 1 forward and then track 2 in reverse,
-        # which is what a reader sees on a real swipe. The other two forms
-        # can put track 2 on the wire alone — an incomplete read.
-        # DEFAULT_TIMEOUT*4 (8s) already covers the ~1.5s worst case; no
-        # explicit read_timeout needed unless DEFAULT_TIMEOUT is shortened.
-        r = link.command("magplay 1")
+        # Bare `magplay` lets the firmware pick the track(s) the active card
+        # actually holds: a full 1-then-2 swipe for a two-track card, or the
+        # lone track of a single-track card. DEFAULT_TIMEOUT*4 (8s) already
+        # covers the ~1.5s worst case; no explicit read_timeout needed.
+        r = link.command("magplay")
 
     if not r.ok:
         _report_error("play", r)
         raise SystemExit(1)
-    print_success("played both tracks")
+    # Firmware answers "+OK played <track>"; render it as a sentence.
+    msg = r.message or ""
+    if msg.startswith("played "):
+        print_success(f"played track {msg.split()[-1]}")
+    else:
+        print_success(msg or "played card")
 
 
 # ── validation helpers ───────────────────────────────────────────────────────
@@ -197,13 +203,12 @@ def show_cmd(ctx, as_json, verbose, port, device_id):
 @device_options
 @click.pass_context
 def button_cmd(ctx, verbose, port, device_id):
-    """Make the physical button play both tracks.
+    """Make the physical button play the active card.
 
-    Sends `magbtn 1`, the one mode that produces a full swipe: track 1
-    followed by track 2 in reverse. Like the tracks themselves the setting
-    lives in RAM, so a reset or a reflash brings the firmware's alternating
-    default back — run this again after either. `magspoof show` reports the
-    mode currently in force.
+    Sends `magbtn 1`, the "play the card" mode: a full track-1-then-2 swipe for
+    a two-track card, or the lone track of a single-track membership card. The
+    setting is persisted with the card store, so it survives a reset or reflash.
+    `magspoof show` reports the mode currently in force.
     """
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
@@ -212,7 +217,7 @@ def button_cmd(ctx, verbose, port, device_id):
     if not r.ok:
         _report_error("button", r)
         raise SystemExit(1)
-    print_success("button plays both tracks")
+    print_success("button plays the active card")
 
 
 # ── watch ────────────────────────────────────────────────────────────────────
@@ -399,25 +404,36 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
 
 @card.command("add", context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument("name")
-@click.argument("track1")
-@click.argument("track2")
+@click.option("--t1", "track1", help="Track 1 data (starts with '%', ends with '?').")
+@click.option("--t2", "track2", help="Track 2 data (starts with ';', ends with '?').")
 @device_options
 @click.pass_context
 def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
-    """Add a new card NAME carrying TRACK1 and TRACK2.
+    """Add a new card NAME with one or both tracks.
 
-    Both tracks are validated locally (ISO sentinels, length, charset) before
-    anything reaches the device. The card is created and its two tracks written
-    in one go; if a track write fails the empty card is rolled back.
+    Pass --t1 and/or --t2; at least one is required. Two-track financial cards
+    give both; single-track membership/loyalty cards give just the one they
+    carry. Each track is validated locally (ISO sentinels, length, charset)
+    before anything reaches the device; the card is created and its track(s)
+    written in one go, and a failed track write rolls the empty card back.
     """
-    for msg in (
-        _validate_card_name(name),
-        _validate_track_data(1, track1),
-        _validate_track_data(2, track2),
-    ):
-        if msg:
-            print_error(msg)
+    name_err = _validate_card_name(name)
+    if name_err:
+        print_error(name_err)
+        raise SystemExit(1)
+    if track1 is None and track2 is None:
+        print_error("a card needs at least one track — pass --t1 and/or --t2")
+        raise SystemExit(1)
+
+    writes = []
+    for tk, data in ((1, track1), (2, track2)):
+        if data is None:
+            continue
+        data_err = _validate_track_data(tk, data)
+        if data_err:
+            print_error(data_err)
             raise SystemExit(1)
+        writes.append((tk, data))
 
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
@@ -425,16 +441,18 @@ def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
         if not r.ok:
             _report_error("card add", r)
             raise SystemExit(1)
-        # Two full tracks won't fit one REPL line, so fill them one per command.
-        # Roll the empty card back on failure so a partial add leaves no trace.
-        for tk, data in ((1, track1), (2, track2)):
+        # A full track won't share a REPL line with another, so fill them one per
+        # command. Roll the empty card back on failure so a partial add leaves
+        # no trace.
+        for tk, data in writes:
             rt = link.command(f"magcard set {name} {tk} {data}")
             if not rt.ok:
                 link.command(f"magcard del {name}")
                 _report_error("card add", rt)
                 raise SystemExit(1)
 
-    print_success(f"added card {name}")
+    kind = "1-track" if len(writes) == 1 else "2-track"
+    print_success(f"added {kind} card {name}")
 
 
 @card.command("del", context_settings={"help_option_names": ["-h", "--help"]})

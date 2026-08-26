@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# `bombercat magspoof play|show|button|watch|info|card` — magstripe emulation
+# `bombercat magspoof play|show|watch|info|card` — magstripe emulation
 # control over the magspoof REPL. Unlike tags/readers (passive observers), play
 # and card edits actively drive the board. Tracks now live in a persistent
-# multi-card store (the `card` subgroup); play/show/button act on the active
+# multi-card store (the `card` subgroup); play/show act on the active
 # card. No aggregator/scan: `:mag` events are discrete
 # and just get counted. docs/IMPLEMENTATION_PLAN_MagSpoof_CLI.md §3.2;
-# play/button always drive the full two-track swipe — see
+# play drives the swipe the active card actually needs — both tracks for a
+# financial card, the lone one for a membership card — see
 # docs/PLAN_UNIFIED_TRACK_PLAYBACK.md.
 # Distributed as-is; no warranty is given.
 
@@ -42,11 +43,11 @@ _NOISE_RE = re.compile(
 )
 
 
-# How the firmware's ':btn' modes read in human output. "1" is the "play the
-# active card" mode — a full track-1-then-2 swipe for a two-track card, or the
-# lone track of a single-track card. "2" pins to track 2; "alt" is the firmware
-# default, walking 1, 2, 1, 2… on successive presses (skipping a track the card
-# doesn't have).
+# How the firmware's ':btn' modes read in `show`/`card info`. Report-only: no
+# command writes the mode, because the firmware's default ("alt") already makes
+# the physical button swipe whatever the active card carries — modes "alt" and
+# "1" both run playActiveCard(). "2" is the one mode that diverges, pinning the
+# button to track 2, and only raw serial (`magbtn 2`) can get a board there.
 _BUTTON_MODES = {
     "1": "active card",
     "2": "track 2 only",
@@ -194,30 +195,6 @@ def show_cmd(ctx, as_json, verbose, port, device_id):
     _print_field("track 1", t1 or "[dim]—[/dim]")
     _print_field("track 2", t2 or "[dim]—[/dim]")
     _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
-
-
-# ── button ───────────────────────────────────────────────────────────────────
-
-
-@magspoof.command("button", context_settings={"help_option_names": ["-h", "--help"]})
-@device_options
-@click.pass_context
-def button_cmd(ctx, verbose, port, device_id):
-    """Make the physical button play the active card.
-
-    Sends `magbtn 1`, the "play the card" mode: a full track-1-then-2 swipe for
-    a two-track card, or the lone track of a single-track membership card. The
-    setting is persisted with the card store, so it survives a reset or reflash.
-    `magspoof show` reports the mode currently in force.
-    """
-    level = _verbosity(ctx, verbose)
-    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        r = link.command("magbtn 1")
-
-    if not r.ok:
-        _report_error("button", r)
-        raise SystemExit(1)
-    print_success("button plays the active card")
 
 
 # ── watch ────────────────────────────────────────────────────────────────────

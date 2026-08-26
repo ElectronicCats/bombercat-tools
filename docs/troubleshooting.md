@@ -15,6 +15,7 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [Capture: Wireshark doesn't open / no frames](#capture-issues)
 - [`tags`: no tags detected](#no-tags-detected)
 - [`tags`: UID shows "unavailable" for NFC-B/NFC-F](#tags-uid-unavailable)
+- [`magspoof`: the physical button only plays track 2](#magspoof-button-track-2)
 - [`testserver` errors](#testserver-issues)
 
 ---
@@ -275,6 +276,34 @@ board built from the updated sketch reports the real UID (plus `attrib=`/
 `bitrate=` extras) instead of `unavailable`. It isn't in a published release
 yet, so boards running today's `.uf2` still show this message until
 reflashed.
+
+<a id="magspoof-button-track-2"></a>
+## `magspoof`: the physical button only plays track 2
+
+```
+$ bombercat magspoof show
+button        track 2 only
+```
+
+The button mode is a store-wide setting in the firmware, and `track 2 only`
+pins every press to track 2 — so a two-track financial card gets swiped
+half-way and a track-1-only membership card does nothing at all.
+
+The CLI never sets this. The firmware default is `alternating 1 and 2`, which
+on current images means "play whatever the active card carries" — both tracks
+for a financial card, the lone track for a membership one — so a board only
+reaches `track 2 only` if someone sent `magbtn 2` over a raw serial console.
+
+There is no `magspoof` command to undo it (that is deliberate: nothing in the
+CLI can push a board into the pinned mode either). Send the reset from the same
+raw console — screen, minicom, the Arduino IDE monitor, 115200 baud:
+
+```
+magbtn alt
+```
+
+`bombercat magspoof show` should then report `alternating 1 and 2`, and the
+button follows the active card again. A firmware factory reset clears it too.
 
 <a id="testserver-issues"></a>
 ## `testserver` errors

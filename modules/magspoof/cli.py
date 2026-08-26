@@ -4,7 +4,9 @@
 # `bombercat magspoof play|set|show|button|watch|info` — magstripe emulation control
 # over the magspoof REPL. Unlike tags/readers (passive observers), play/set
 # actively drive the board. No aggregator/scan: `:mag` events are discrete
-# and just get counted. docs/IMPLEMENTATION_PLAN_MagSpoof_CLI.md §3.2.
+# and just get counted. docs/IMPLEMENTATION_PLAN_MagSpoof_CLI.md §3.2;
+# play/button always drive the full two-track swipe — see
+# docs/PLAN_UNIFIED_TRACK_PLAYBACK.md.
 # Distributed as-is; no warranty is given.
 
 import json
@@ -38,9 +40,15 @@ _NOISE_RE = re.compile(
 )
 
 
-# How the firmware's ':btn' modes read in human output. "alt" is the firmware
-# default: the button walks 1, 2, 1, 2… on successive presses.
-_BUTTON_MODES = {"1": "track 1", "2": "track 2", "alt": "alternating 1 and 2"}
+# How the firmware's ':btn' modes read in human output. Only "1" is a valid
+# swipe — playTrack(1) replays track 2 in reverse right after track 1, while
+# the other two modes can leave a reader with track 2 alone. "alt" is the
+# firmware default: the button walks 1, 2, 1, 2… on successive presses.
+_BUTTON_MODES = {
+    "1": "both tracks",
+    "2": "track 2 only",
+    "alt": "alternating 1 and 2",
+}
 
 
 def _button_label(mode: str) -> str:
@@ -85,30 +93,31 @@ def _report_error(verb: str, r: Response) -> None:
 
 
 @magspoof.command("play", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("track", required=False, type=click.Choice(["1", "2"]))
 @device_options
 @click.pass_context
-def play_cmd(ctx, track, verbose, port, device_id):
-    """Emulate a track now — same effect as pressing the physical button.
+def play_cmd(ctx, verbose, port, device_id):
+    """Emulate a full card swipe — both tracks, back to back.
 
-    With no TRACK, the firmware alternates between 1 and 2, just like the
-    button. Reproduction blocks the device for ~0.6-1.5s before the reply
-    arrives (worst case); that delay is normal, not a stall.
+    Same effect as pressing the physical button. Reproduction blocks the
+    device for ~0.6-1.5s before the reply arrives (worst case); that delay
+    is normal, not a stall.
 
     Exit code: 0 played, 1 error (including old firmware without magplay).
     """
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        cmd = "magplay" if track is None else f"magplay {track}"
+        # Always `magplay 1`, never a bare `magplay` or `magplay 2`:
+        # playTrack(1) plays track 1 forward and then track 2 in reverse,
+        # which is what a reader sees on a real swipe. The other two forms
+        # can put track 2 on the wire alone — an incomplete read.
         # DEFAULT_TIMEOUT*4 (8s) already covers the ~1.5s worst case; no
         # explicit read_timeout needed unless DEFAULT_TIMEOUT is shortened.
-        r = link.command(cmd)
+        r = link.command("magplay 1")
 
     if not r.ok:
         _report_error("play", r)
         raise SystemExit(1)
-    played = r.message.split()[-1] if r.message else "?"
-    print_success(f"played track {played}")
+    print_success("played both tracks")
 
 
 # ── set ──────────────────────────────────────────────────────────────────────
@@ -194,28 +203,25 @@ def show_cmd(ctx, as_json, verbose, port, device_id):
 
 
 @magspoof.command("button", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("mode", required=False, type=click.Choice(["1", "2", "alt"]))
 @device_options
 @click.pass_context
-def button_cmd(ctx, mode, verbose, port, device_id):
-    """Show or set which track the physical button plays.
+def button_cmd(ctx, verbose, port, device_id):
+    """Make the physical button play both tracks.
 
-    With no MODE, reports the current setting. `1` or `2` pin the button to
-    that track — useful when the reader you swipe past only decodes one of
-    them — and `alt` restores the firmware default of alternating on every
-    press. Like the tracks themselves the setting lives in RAM, so a reset
-    or a reflash brings `alt` back.
+    Sends `magbtn 1`, the one mode that produces a full swipe: track 1
+    followed by track 2 in reverse. Like the tracks themselves the setting
+    lives in RAM, so a reset or a reflash brings the firmware's alternating
+    default back — run this again after either. `magspoof show` reports the
+    mode currently in force.
     """
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        # Both forms answer ':btn <mode>' + '+OK', so query and set read alike.
-        r = link.command("magbtn" if mode is None else f"magbtn {mode}")
+        r = link.command("magbtn 1")
 
     if not r.ok:
         _report_error("button", r)
         raise SystemExit(1)
-    current = r.data.get("btn") or mode or "?"
-    print_success(f"button plays {_button_label(current)}")
+    print_success("button plays both tracks")
 
 
 # ── watch ────────────────────────────────────────────────────────────────────

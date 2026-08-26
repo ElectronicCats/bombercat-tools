@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_cli_magspoof.py — `bombercat magspoof play|set|show|watch|info`
+# test_cli_magspoof.py — `bombercat magspoof play|show|button|watch|info|card`
 # (modules/magspoof/cli.py). Same pattern as test_cli_readers.py: CliRunner +
 # FakeLink, driving each command's real logic against scripted `command()`
 # responses and a scripted `stream()`.
@@ -18,7 +18,6 @@ from modules.magspoof.cli import (
     info_cmd,
     magspoof,
     play_cmd,
-    set_cmd,
     show_cmd,
     watch_cmd,
 )
@@ -72,84 +71,6 @@ def test_play_reports_a_board_that_will_not_handshake(runner, use_link):
     assert result.exit_code == 1
     assert "did not answer the handshake" in flat(result.output)
     assert link.closed
-
-
-# ── set ──────────────────────────────────────────────────────────────────────
-
-
-def test_set_sends_valid_track_1_and_reports_success(runner, use_link):
-    fake = use_link(
-        magspoofcli,
-        FakeLink(responses={"magset": ok("track 1 set (44 chars)")}),
-    )
-    result = runner.invoke(set_cmd, ["1", TRACK1])
-    out = flat(result.stdout)
-
-    assert result.exit_code == 0
-    assert "track 1 set (44 chars)" in out
-    assert fake.sent == [f"magset 1 {TRACK1}"]
-
-
-def test_set_sends_valid_track_2(runner, use_link):
-    fake = use_link(
-        magspoofcli,
-        FakeLink(responses={"magset": ok("track 2 set (34 chars)")}),
-    )
-    result = runner.invoke(set_cmd, ["2", TRACK2])
-
-    assert result.exit_code == 0
-    assert fake.sent == [f"magset 2 {TRACK2}"]
-
-
-def test_set_rejects_bad_sentinel_locally_without_a_serial_round_trip(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink())
-    result = runner.invoke(set_cmd, ["1", "basura"])
-
-    assert result.exit_code == 1
-    assert "bad track 1 format" in flat(result.output)
-    assert fake.sent == []  # never left the CLI
-
-
-def test_set_rejects_wrong_sentinel_for_track_2(runner, use_link):
-    use_link(magspoofcli, FakeLink())
-    result = runner.invoke(set_cmd, ["2", "%Bshouldbesemicolon?"])
-
-    assert result.exit_code == 1
-    assert "bad track 2 format" in flat(result.output)
-
-
-def test_set_rejects_data_over_126_chars(runner, use_link):
-    use_link(magspoofcli, FakeLink())
-    data = "%" + "1" * 125 + "?"  # 127 chars
-    result = runner.invoke(set_cmd, ["1", data])
-
-    assert result.exit_code == 1
-    assert "too long" in flat(result.output)
-
-
-def test_set_rejects_data_containing_a_newline(runner, use_link):
-    fake = use_link(magspoofcli, FakeLink())
-    result = runner.invoke(set_cmd, ["1", "%B1234?\n?"])
-
-    assert result.exit_code == 1
-    assert "newline" in flat(result.output)
-    assert fake.sent == []
-
-
-def test_set_reports_a_firmware_error(runner, use_link):
-    use_link(magspoofcli, FakeLink(responses={"magset": err("bad track")}))
-    result = runner.invoke(set_cmd, ["1", TRACK1])
-
-    assert result.exit_code == 1
-    assert "set failed" in flat(result.output)
-
-
-def test_set_hints_reflash_on_unknown_command(runner, use_link):
-    use_link(magspoofcli, FakeLink(responses={"magset": err("unknown command")}))
-    result = runner.invoke(set_cmd, ["1", TRACK1])
-
-    assert result.exit_code == 1
-    assert "bombercat flash magspoof" in flat(result.output)
 
 
 # ── show ─────────────────────────────────────────────────────────────────────
@@ -372,7 +293,6 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
 def test_magspoof_group_exposes_all_subcommands():
     assert set(magspoof.commands) == {
         "play",
-        "set",
         "show",
         "button",
         "watch",

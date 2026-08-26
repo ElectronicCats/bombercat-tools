@@ -109,7 +109,7 @@ def test_status_suggests_magspoof_commands_for_magspoof(runner, detect):
 
     assert result.exit_code == 0
     assert "bombercat magspoof play" in out
-    assert "bombercat magspoof set/show" in out
+    assert "bombercat magspoof card list" in out
     # honest: a REPL-less-for-relay board is never pointed at the relay controls
     assert "bombercat relay run" not in out
 

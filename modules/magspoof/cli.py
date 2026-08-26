@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# `bombercat magspoof play|set|show|button|watch|info` — magstripe emulation control
-# over the magspoof REPL. Unlike tags/readers (passive observers), play/set
-# actively drive the board. No aggregator/scan: `:mag` events are discrete
+# `bombercat magspoof play|show|button|watch|info|card` — magstripe emulation
+# control over the magspoof REPL. Unlike tags/readers (passive observers), play
+# and card edits actively drive the board. Tracks now live in a persistent
+# multi-card store (the `card` subgroup); play/show/button act on the active
+# card. No aggregator/scan: `:mag` events are discrete
 # and just get counted. docs/IMPLEMENTATION_PLAN_MagSpoof_CLI.md §3.2;
 # play/button always drive the full two-track swipe — see
 # docs/PLAN_UNIFIED_TRACK_PLAYBACK.md.
@@ -120,7 +122,7 @@ def play_cmd(ctx, verbose, port, device_id):
     print_success("played both tracks")
 
 
-# ── set ──────────────────────────────────────────────────────────────────────
+# ── validation helpers ───────────────────────────────────────────────────────
 
 
 def _validate_card_name(name: str) -> Optional[str]:
@@ -138,8 +140,9 @@ def _validate_card_name(name: str) -> Optional[str]:
 
 
 def _validate_track_data(track: int, data: str) -> Optional[str]:
-    """Mirror the firmware's `magset` validation locally so bad input never
-    makes the serial round trip. Returns an error message, or None if valid."""
+    """Mirror the firmware's track validation (validateTrack, shared by
+    `magcard set`) locally so bad input never makes the serial round trip.
+    Returns an error message, or None if valid."""
     if "\n" in data or "\r" in data:
         return "DATA cannot contain a newline"
     if len(data) > 126:
@@ -151,32 +154,6 @@ def _validate_track_data(track: int, data: str) -> Optional[str]:
             f"{expected_start!r} and ending with '?'"
         )
     return None
-
-
-@magspoof.command("set", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("track", type=click.Choice(["1", "2"]))
-@click.argument("data")
-@device_options
-@click.pass_context
-def set_cmd(ctx, track, data, verbose, port, device_id):
-    """Load DATA onto TRACK (1 or 2).
-
-    Quote DATA in the shell: the protocol preserves internal spaces, but a
-    literal newline breaks the serial line and is rejected locally.
-    """
-    error = _validate_track_data(int(track), data)
-    if error:
-        print_error(error)
-        raise SystemExit(1)
-
-    level = _verbosity(ctx, verbose)
-    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        r = link.command(f"magset {track} {data}")
-
-    if not r.ok:
-        _report_error("set", r)
-        raise SystemExit(1)
-    print_success(r.message or f"track {track} set")
 
 
 # ── show ─────────────────────────────────────────────────────────────────────
@@ -429,7 +406,7 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
 def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
     """Add a new card NAME carrying TRACK1 and TRACK2.
 
-    Both tracks are validated locally (same rules as `magspoof set`) before
+    Both tracks are validated locally (ISO sentinels, length, charset) before
     anything reaches the device. The card is created and its two tracks written
     in one go; if a track write fails the empty card is rolled back.
     """

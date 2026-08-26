@@ -230,8 +230,8 @@ def _next_steps(detection):
         steps.append("bombercat readers read       — catch one reader probing the card")
         steps.append("bombercat readers watch      — stream reader detections")
     elif fw.can(CAP_MAGSPOOF):
-        steps.append("bombercat magspoof play      — emulate the loaded card now")
-        steps.append("bombercat magspoof set/show  — load or inspect the tracks")
+        steps.append("bombercat magspoof play        — emulate the active card now")
+        steps.append("bombercat magspoof card list   — manage the stored cards")
     elif fw.can(CAP_MONITOR):
         steps.append("watch its serial output with a terminal (screen/minicom), or")
         steps.append("bombercat flash NFCGate   — switch to the relay firmware")

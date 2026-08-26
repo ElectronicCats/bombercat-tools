@@ -377,4 +377,277 @@ def test_magspoof_group_exposes_all_subcommands():
         "button",
         "watch",
         "info",
+        "card",
     }
+
+
+def test_card_group_exposes_all_subcommands():
+    assert set(magspoof.commands["card"].commands) == {
+        "list",
+        "add",
+        "del",
+        "set",
+        "select",
+        "get",
+        "info",
+    }
+
+
+# ── card ─────────────────────────────────────────────────────────────────────
+
+
+def _card_cmd(name):
+    """Reach a `card` subcommand by name for CliRunner.invoke."""
+    return magspoof.commands["card"].commands[name]
+
+
+NAME2 = "AMEX"
+TRACK1B = "%B378282246310005^TEST/AMEX^261200000000000?"
+TRACK2B = ";378282246310005=26120000000000?"
+
+
+def test_card_list_renders_cards_and_marks_the_active_one(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard list": ok(
+                    "2 cards",
+                    count="2",
+                    active="BBVA",
+                    card0=f"BBVA\t{TRACK1}\t{TRACK2}",
+                    card1=f"{NAME2}\t{TRACK1B}\t{TRACK2B}",
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("list"), [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "BBVA" in out and NAME2 in out
+    # The table truncates long tracks to fit the terminal (full data is in
+    # --json); a distinctive prefix of each still survives.
+    assert "%B41111111" in out and "%B37828224" in out
+    # The active card carries a marker the inactive one does not.
+    assert "●" in result.stdout
+
+
+def test_card_list_json_emits_one_object_per_card(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard list": ok(
+                    "",
+                    count="2",
+                    active="BBVA",
+                    card0=f"BBVA\t{TRACK1}\t{TRACK2}",
+                    card1=f"{NAME2}\t{TRACK1B}\t{TRACK2B}",
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("list"), ["--json"])
+    rows = [json.loads(ln) for ln in result.stdout.strip().splitlines()]
+
+    assert result.exit_code == 0
+    assert rows[0] == {"name": "BBVA", "t1": TRACK1, "t2": TRACK2, "active": True}
+    assert rows[1]["active"] is False
+
+
+def test_card_list_reports_an_empty_store(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard list": ok("0 cards", count="0", active="")}),
+    )
+    result = runner.invoke(_card_cmd("list"), [])
+
+    assert result.exit_code == 0
+    assert "no cards" in flat(result.stdout)
+
+
+def test_card_add_validates_the_name_locally_without_a_round_trip(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(_card_cmd("add"), ["bad name", TRACK1, TRACK2])
+
+    assert result.exit_code == 1
+    assert "card name cannot contain spaces" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_card_add_validates_tracks_locally(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(_card_cmd("add"), ["BBVA", "garbage", TRACK2])
+
+    assert result.exit_code == 1
+    assert "bad track 1 format" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_card_add_creates_the_card_then_writes_both_tracks(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(_card_cmd("add"), ["BBVA", TRACK1, TRACK2])
+
+    assert result.exit_code == 0
+    assert fake.sent == [
+        "magcard add BBVA",
+        f"magcard set BBVA 1 {TRACK1}",
+        f"magcard set BBVA 2 {TRACK2}",
+    ]
+    assert "added card BBVA" in flat(result.stdout)
+
+
+def test_card_add_rolls_back_the_empty_card_when_a_track_write_fails(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard add BBVA": ok(""),
+                f"magcard set BBVA 1 {TRACK1}": err("flash error"),
+                "magcard": ok(""),  # del rollback (matched by first word)
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("add"), ["BBVA", TRACK1, TRACK2])
+
+    assert result.exit_code == 1
+    assert "magcard del BBVA" in fake.sent  # the empty card was cleaned up
+    assert "card add failed" in flat(result.output)
+
+
+def test_card_del_sends_the_delete(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard del BBVA": ok("")}))
+    result = runner.invoke(_card_cmd("del"), ["BBVA"])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard del BBVA"]
+    assert "deleted card BBVA" in flat(result.stdout)
+
+
+def test_card_del_reports_a_missing_card(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magcard del NOPE": err("not found")}))
+    result = runner.invoke(_card_cmd("del"), ["NOPE"])
+
+    assert result.exit_code == 1
+    assert "card del failed" in flat(result.output)
+
+
+def test_card_set_requires_at_least_one_track(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(_card_cmd("set"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "nothing to set" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_card_set_updates_only_the_given_tracks(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(_card_cmd("set"), ["BBVA", "--t2", TRACK2])
+
+    assert result.exit_code == 0
+    assert fake.sent == [f"magcard set BBVA 2 {TRACK2}"]
+    assert "track 2" in flat(result.stdout)
+
+
+def test_card_set_validates_before_sending(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(_card_cmd("set"), ["BBVA", "--t1", "nope"])
+
+    assert result.exit_code == 1
+    assert "bad track 1 format" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_card_select_sends_select_and_reports_active(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard select BBVA": ok("", active="BBVA")}),
+    )
+    result = runner.invoke(_card_cmd("select"), ["BBVA"])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard select BBVA"]
+    assert "active card is now BBVA" in flat(result.stdout)
+
+
+def test_card_get_active_sends_bare_get(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get": ok("", name="BBVA", t1=TRACK1, t2=TRACK2, active="1")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("get"), [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get"]
+    assert "BBVA" in out and TRACK1 in out
+    assert "yes" in out  # active
+
+
+def test_card_get_by_name_passes_the_name(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                f"magcard get {NAME2}": ok(
+                    "", name=NAME2, t1=TRACK1B, t2=TRACK2B, active="0"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("get"), [NAME2])
+
+    assert result.exit_code == 0
+    assert fake.sent == [f"magcard get {NAME2}"]
+    assert "no" in flat(result.stdout).split("active")[-1]
+
+
+def test_card_get_json(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get": ok("", name="BBVA", t1=TRACK1, t2=TRACK2, active="1")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("get"), ["--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "name": "BBVA",
+        "t1": TRACK1,
+        "t2": TRACK2,
+        "active": True,
+    }
+
+
+def test_card_info_shows_count_and_capacity(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard info": ok("", count="3", capacity="50", active="BBVA", btn="1")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("info"), [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "3 / 50" in out
+    assert "BBVA" in out
+
+
+def test_card_hints_reflash_on_unknown_command(runner, use_link):
+    use_link(magspoofcli, FakeLink(responses={"magcard": err("unknown command")}))
+    result = runner.invoke(_card_cmd("list"), [])
+
+    assert result.exit_code == 1
+    assert "bombercat flash magspoof" in flat(result.output)

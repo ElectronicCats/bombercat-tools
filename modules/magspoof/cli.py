@@ -19,9 +19,11 @@ from contextlib import contextmanager
 from typing import Dict, Iterator, Optional, Tuple
 
 import click
+from click.shell_completion import CompletionItem
 from rich.table import Table
 
 from ..core.bombercat import DeviceLink, Response, resolve_port
+from ..core.usb_connection import find_device
 from ..utils.cli_options import device_options
 from ..utils.detection_cli import (
     device_session,
@@ -34,6 +36,10 @@ from .parser import MagEvent, MagEventParser
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.
 _INFO_PROBE_SECONDS = 2.0
+
+# Ceiling on the `magcard list` a <TAB> fires to complete a card name. Short so
+# a stalled/wrong board makes the shell hesitate briefly, not hang.
+_COMPLETION_READ_TIMEOUT = 1.5
 
 # Firmware chatter the CLI's own (non -v) output hides by default in `watch`:
 # boot/idle noise, not a reproduction event.
@@ -330,6 +336,52 @@ def _iter_cards(data: Dict[str, str]) -> Iterator[Tuple[str, str, str]]:
         i += 1
 
 
+def _completion_target(port: Optional[str], device_id: Optional[int]) -> Optional[str]:
+    """The port a <TAB> should query, or None. Unlike `resolve_port`, this never
+    handshakes: `--port` wins, otherwise the board is numbered by USB id and we
+    take the requested `-d` (or #1 by default — the same default `-d` itself
+    uses). Only the one port we return is ever opened, so completing a card name
+    can't reset a neighbouring board."""
+    if port:
+        return port
+    dev = find_device(device_id)
+    return dev.port if dev else None
+
+
+def _stored_card_names(port: Optional[str], device_id: Optional[int]) -> list:
+    """Names in the board's flash store, for shell completion — best-effort.
+    The board itself is the only source of these names, so this opens the
+    resolved port and asks `magcard list`. Old firmware without the store just
+    answers `-ERR`, which reads here as an empty list."""
+    target = _completion_target(port, device_id)
+    if not target:
+        return []
+    link = DeviceLink(target)
+    try:
+        link.open()
+        r = link.command("magcard list", read_timeout=_COMPLETION_READ_TIMEOUT)
+    finally:
+        link.close()
+    if not r.ok:
+        return []
+    return [name for name, _t1, _t2 in _iter_cards(r.data) if name]
+
+
+def complete_card_name(ctx, param, incomplete):
+    """`shell_complete` for a NAME that must be an existing stored card
+    (`card del/set/select/get`). Reads the already-typed `--port`/`-d` off the
+    command's context so `card select -p /dev/ttyACM0 <TAB>` targets that board.
+    Any failure — no board, wrong firmware, timeout — yields no suggestions
+    rather than breaking the user's <TAB>."""
+    params = ctx.params if ctx is not None else {}
+    try:
+        names = _stored_card_names(params.get("port"), params.get("device_id"))
+    except Exception:
+        return []
+    wanted = incomplete.lower()
+    return [CompletionItem(name) for name in names if name.lower().startswith(wanted)]
+
+
 @magspoof.group("card", context_settings={"help_option_names": ["-h", "--help"]})
 def card():
     """Manage the persistent multi-card store (requires flash-storage firmware).
@@ -433,7 +485,7 @@ def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
 
 
 @card.command("del", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("name")
+@click.argument("name", shell_complete=complete_card_name)
 @device_options
 @click.pass_context
 def card_del_cmd(ctx, name, verbose, port, device_id):
@@ -449,7 +501,7 @@ def card_del_cmd(ctx, name, verbose, port, device_id):
 
 
 @card.command("set", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("name")
+@click.argument("name", shell_complete=complete_card_name)
 @click.option("--t1", "track1", help="New track 1 (starts with '%', ends with '?').")
 @click.option("--t2", "track2", help="New track 2 (starts with ';', ends with '?').")
 @device_options
@@ -487,7 +539,7 @@ def card_set_cmd(ctx, name, track1, track2, verbose, port, device_id):
 
 
 @card.command("select", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("name")
+@click.argument("name", shell_complete=complete_card_name)
 @device_options
 @click.pass_context
 def card_select_cmd(ctx, name, verbose, port, device_id):
@@ -503,7 +555,7 @@ def card_select_cmd(ctx, name, verbose, port, device_id):
 
 
 @card.command("get", context_settings={"help_option_names": ["-h", "--help"]})
-@click.argument("name", required=False)
+@click.argument("name", required=False, shell_complete=complete_card_name)
 @click.option(
     "--json",
     "as_json",

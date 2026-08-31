@@ -385,25 +385,36 @@ def nfc_visa_cmd(ctx, verbose, port, device_id):
 
 
 @nfc.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name")
 @device_options
 @click.pass_context
-def nfc_read_cmd(ctx, verbose, port, device_id):
-    """Read a physical EMV/Visa card's Track 2 over NFC and store it.
+def nfc_read_cmd(ctx, name, verbose, port, device_id):
+    """Read a physical EMV/Visa card's Track 2 over NFC and store it on NAME.
 
     Switches the PN7150 into reader mode, waits up to 8s for a card to enter
-    the field, then runs the PPSE/VISA-AID/GPO/READ-RECORD sequence once and
-    writes the extracted Track 2 onto the active card (Track 1, if any, is
-    left untouched). Present the card once this starts.
+    the field, then runs the PPSE/VISA-AID/GPO/READ-RECORD sequence once.
+    NAME picks new-vs-existing: an existing card gets its Track 2 updated
+    (Track 1, if any, is left untouched); a name not yet in the store is
+    created fresh and the scanned Track 2 written onto it. Present the card
+    once this starts.
     """
+    name_err = _validate_card_name(name)
+    if name_err:
+        print_error(name_err)
+        raise SystemExit(1)
+
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
         print_info("waiting for a card (up to 8s)...")
-        r = link.command("nfcread", read_timeout=_NFC_READ_READ_TIMEOUT)
+        r = link.command(f"nfcread {name}", read_timeout=_NFC_READ_READ_TIMEOUT)
 
     if not r.ok:
         _report_error("nfc read", r)
         raise SystemExit(1)
-    print_success(f"stored track 2: {r.data.get('t2', '')}")
+    stored_name = r.data.get("name", name)
+    is_new = "new card" in (r.message or "")
+    verb = "created" if is_new else "updated"
+    print_success(f"{verb} {stored_name} — stored track 2: {r.data.get('t2', '')}")
 
 
 @nfc.command("info", context_settings={"help_option_names": ["-h", "--help"]})

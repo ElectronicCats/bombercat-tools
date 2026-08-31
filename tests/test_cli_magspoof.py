@@ -9,9 +9,10 @@
 
 import json
 
+import click
 import pytest
 
-from conftest import FakeLink, err, flat, ok
+from conftest import FakeLink, err, flat, make_device, ok
 from modules.magspoof import cli as magspoofcli
 from modules.magspoof.cli import (
     info_cmd,
@@ -555,3 +556,127 @@ def test_card_hints_reflash_on_unknown_command(runner, use_link):
 
     assert result.exit_code == 1
     assert "bombercat flash magspoof" in flat(result.output)
+
+
+# ── card-name tab completion ─────────────────────────────────────────────────
+# `complete_card_name` runs on every <TAB> against `card del/set/select/get`.
+# The board is the only source of these names, so unlike the firmware completer
+# it opens a port — but only the one it resolves, and never at the cost of a
+# broken <TAB>: any failure yields no suggestions.
+
+
+class _CompletionCtx:
+    """Minimal stand-in for the click context a completer is handed: it only
+    ever reads the already-parsed `--port`/`-d` off `ctx.params`."""
+
+    def __init__(self, port=None, device_id=None):
+        self.params = {"port": port, "device_id": device_id}
+
+
+def _card_list_link(*names, active=""):
+    """A FakeLink whose `magcard list` reports NAMES as stored cards."""
+    data = {"count": str(len(names)), "active": active}
+    for i, name in enumerate(names):
+        data[f"card{i}"] = f"{name}\t{TRACK1}\t{TRACK2}"
+    return FakeLink(responses={"magcard list": ok(f"{len(names)} cards", **data)})
+
+
+def _names(items):
+    return [item.value for item in items]
+
+
+def test_completion_lists_stored_card_names(use_link):
+    fake = use_link(magspoofcli, _card_list_link("NU", "Cine", "BBVA"))
+    items = magspoofcli.complete_card_name(_CompletionCtx(port="/dev/fake0"), None, "")
+
+    assert _names(items) == ["NU", "Cine", "BBVA"]
+    # An explicit --port is used as-is: no `magcard` beyond the one list query.
+    assert fake.sent == ["magcard list"]
+
+
+def test_completion_filters_by_prefix_case_insensitively(use_link):
+    use_link(magspoofcli, _card_list_link("NU", "Cine", "Ahorro"))
+    ctx = _CompletionCtx(port="/dev/fake0")
+
+    assert _names(magspoofcli.complete_card_name(ctx, None, "a")) == ["Ahorro"]
+    assert _names(magspoofcli.complete_card_name(ctx, None, "C")) == ["Cine"]
+    assert _names(magspoofcli.complete_card_name(ctx, None, "z")) == []
+
+
+def test_completion_resolves_the_board_by_usb_id_when_no_port_is_given(
+    monkeypatch, use_link
+):
+    use_link(magspoofcli, _card_list_link("NU", "BBVA"))
+    seen = {}
+
+    def fake_find_device(device_id=None):
+        seen["device_id"] = device_id
+        return make_device(device_id=device_id or 1, port="/dev/ttyACM0")
+
+    monkeypatch.setattr(magspoofcli, "find_device", fake_find_device)
+    items = magspoofcli.complete_card_name(_CompletionCtx(), None, "")
+
+    # No --port/-d: the board is numbered by USB id (no handshake sweep), and a
+    # bare `find_device(None)` yields #1 — the same default `-d` itself uses.
+    assert seen["device_id"] is None
+    assert _names(items) == ["NU", "BBVA"]
+
+
+def test_completion_passes_the_requested_device_id_through(monkeypatch, use_link):
+    use_link(magspoofcli, _card_list_link("NU"))
+    seen = {}
+
+    def fake_find_device(device_id=None):
+        seen["device_id"] = device_id
+        return make_device(device_id=device_id or 1, port="/dev/ttyACM1")
+
+    monkeypatch.setattr(magspoofcli, "find_device", fake_find_device)
+    magspoofcli.complete_card_name(_CompletionCtx(device_id=2), None, "")
+
+    assert seen["device_id"] == 2
+
+
+def test_completion_is_empty_when_no_board_is_attached(monkeypatch):
+    monkeypatch.setattr(magspoofcli, "find_device", lambda device_id=None: None)
+    assert magspoofcli.complete_card_name(_CompletionCtx(), None, "") == []
+
+
+def test_completion_swallows_a_dead_board_rather_than_breaking_tab(monkeypatch):
+    class Boom:
+        def __init__(self, *a, **k):
+            pass
+
+        def open(self):
+            raise OSError("port vanished")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(magspoofcli, "DeviceLink", Boom)
+    assert magspoofcli.complete_card_name(_CompletionCtx(port="/dev/x"), None, "") == []
+
+
+def test_completion_is_empty_on_old_firmware_without_the_store(use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard list": err("unknown command")}),
+    )
+    ctx = _CompletionCtx(port="/dev/fake0")
+    assert magspoofcli.complete_card_name(ctx, None, "") == []
+
+
+def test_the_existing_card_arguments_are_wired_to_the_completer(monkeypatch, use_link):
+    use_link(magspoofcli, _card_list_link("NU", "BBVA"))
+    monkeypatch.setattr(
+        magspoofcli, "find_device", lambda device_id=None: make_device()
+    )
+
+    # del/set/select/get take a NAME that must already exist -> completed.
+    for verb in ("del", "set", "select", "get"):
+        argument = next(p for p in _card_cmd(verb).params if p.name == "name")
+        items = argument.shell_complete(click.Context(_card_cmd(verb)), "")
+        assert _names(items) == ["NU", "BBVA"], verb
+
+    # `card add` names a *new* card, so its NAME must not offer existing ones.
+    add_name = next(p for p in _card_cmd("add").params if p.name == "name")
+    assert add_name.shell_complete(click.Context(_card_cmd("add")), "") == []

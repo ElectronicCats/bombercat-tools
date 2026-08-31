@@ -318,23 +318,29 @@ def info_cmd(ctx, verbose, port, device_id):
 # ── nfc (PN7150) ─────────────────────────────────────────────────────────────
 #
 # NFC commands for the PN7150 side of magspoof (IMPLEMENTATION_PLAN_NFC_
-# VISA_MAGSPOOF.md). `nfcselres` (Phase 2) and `nfcvisa` (Phase 3) are wired
-# up in firmware; `nfcread`/`nfcinfo` (Phases 4/6) are still ☐ there, so this
-# group is missing those two until the firmware side lands.
+# VISA_MAGSPOOF.md). `nfcselres` (Phase 2), `nfcvisa` (Phase 3) and `nfcread`
+# (Phase 4) are wired up in firmware; `nfcinfo` (Phase 6) is still ☐ there,
+# so this group is missing just that one until the firmware side lands.
 
 # Ceiling matching the firmware's own VISA_MSD_TIMEOUT_MS (15s, see
 # emulateVisaMSD() in magspoof.ino) plus margin, so the client doesn't time
 # out first while `nfcvisa` blocks the REPL waiting for a terminal tap.
 _NFC_VISA_READ_TIMEOUT = 17.0
 
+# Ceiling covering the firmware's own NFC_READ_WAIT_TAG_MS (8s tag-wait, see
+# handleCommand()'s "nfcread" branch in magspoof.ino) plus the
+# PPSE/VISA-AID/GPO/READ-RECORD transceive sequence that follows it, so the
+# client doesn't time out first while `nfcread` blocks the REPL.
+_NFC_READ_READ_TIMEOUT = 12.0
+
 
 @magspoof.group("nfc", context_settings={"help_option_names": ["-h", "--help"]})
 def nfc():
     """NFC (PN7150) commands (requires the magspoof firmware).
 
-    `selres` and `visa` are implemented today — `read`/`info` await firmware
-    Phases 4/6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will return
-    `-ERR unknown command` until then.
+    `selres`, `visa` and `read` are implemented today — `info` awaits
+    firmware Phase 6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will
+    return `-ERR unknown command` until then.
     """
 
 
@@ -382,6 +388,28 @@ def nfc_visa_cmd(ctx, verbose, port, device_id):
         _report_error("nfc visa", r)
         raise SystemExit(1)
     print_success("VISA MSD emulation complete")
+
+
+@nfc.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@device_options
+@click.pass_context
+def nfc_read_cmd(ctx, verbose, port, device_id):
+    """Read a physical EMV/Visa card's Track 2 over NFC and store it.
+
+    Switches the PN7150 into reader mode, waits up to 8s for a card to enter
+    the field, then runs the PPSE/VISA-AID/GPO/READ-RECORD sequence once and
+    writes the extracted Track 2 onto the active card (Track 1, if any, is
+    left untouched). Present the card once this starts.
+    """
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        print_info("waiting for a card (up to 8s)...")
+        r = link.command("nfcread", read_timeout=_NFC_READ_READ_TIMEOUT)
+
+    if not r.ok:
+        _report_error("nfc read", r)
+        raise SystemExit(1)
+    print_success(f"stored track 2: {r.data.get('t2', '')}")
 
 
 # ── card (persistent multi-card store) ────────────────────────────────────────

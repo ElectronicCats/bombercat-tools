@@ -315,6 +315,46 @@ def info_cmd(ctx, verbose, port, device_id):
     console.print(table)
 
 
+# ── nfc (PN7150) ─────────────────────────────────────────────────────────────
+#
+# NFC commands for the PN7150 side of magspoof (IMPLEMENTATION_PLAN_NFC_
+# VISA_MAGSPOOF.md). Only `nfcselres` (Phase 2) is wired up in firmware today;
+# `nfcread`/`nfcvisa`/`nfcinfo` (Phases 3/4/6) are still ☐ there, so this
+# group has just the one command until the firmware side lands.
+
+
+@magspoof.group("nfc", context_settings={"help_option_names": ["-h", "--help"]})
+def nfc():
+    """NFC (PN7150) commands (requires the magspoof firmware).
+
+    Only `selres` is implemented today — `read`/`visa`/`info` await firmware
+    Phases 3/4/6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will return
+    `-ERR unknown command` until then.
+    """
+
+
+@nfc.command("selres", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("mode", type=click.Choice(["chip", "nochip"]))
+@device_options
+@click.pass_context
+def nfc_selres_cmd(ctx, mode, verbose, port, device_id):
+    """Set the PN7150's SEL_RES chip bit.
+
+    'chip' (0x33) advertises ISO-DEP/EMV support; 'nochip' (0x13) forces MSD
+    (magstripe) fallback. This is a manual override — it applies immediately
+    but is reset back to the current mode's default (chip for reader, nochip
+    for emulation) the next time resetNfc() runs on the device.
+    """
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(f"nfcselres {mode}")
+
+    if not r.ok:
+        _report_error("nfc selres", r)
+        raise SystemExit(1)
+    print_success(f"SEL_RES set to {mode}")
+
+
 # ── card (persistent multi-card store) ────────────────────────────────────────
 #
 # The `magcard` verb (firmware Phase 3, IMPLEMENTATION_PLAN_MagSpoof_Flash.md)

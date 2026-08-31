@@ -318,17 +318,22 @@ def info_cmd(ctx, verbose, port, device_id):
 # ── nfc (PN7150) ─────────────────────────────────────────────────────────────
 #
 # NFC commands for the PN7150 side of magspoof (IMPLEMENTATION_PLAN_NFC_
-# VISA_MAGSPOOF.md). Only `nfcselres` (Phase 2) is wired up in firmware today;
-# `nfcread`/`nfcvisa`/`nfcinfo` (Phases 3/4/6) are still ☐ there, so this
-# group has just the one command until the firmware side lands.
+# VISA_MAGSPOOF.md). `nfcselres` (Phase 2) and `nfcvisa` (Phase 3) are wired
+# up in firmware; `nfcread`/`nfcinfo` (Phases 4/6) are still ☐ there, so this
+# group is missing those two until the firmware side lands.
+
+# Ceiling matching the firmware's own VISA_MSD_TIMEOUT_MS (15s, see
+# emulateVisaMSD() in magspoof.ino) plus margin, so the client doesn't time
+# out first while `nfcvisa` blocks the REPL waiting for a terminal tap.
+_NFC_VISA_READ_TIMEOUT = 17.0
 
 
 @magspoof.group("nfc", context_settings={"help_option_names": ["-h", "--help"]})
 def nfc():
     """NFC (PN7150) commands (requires the magspoof firmware).
 
-    Only `selres` is implemented today — `read`/`visa`/`info` await firmware
-    Phases 3/4/6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will return
+    `selres` and `visa` are implemented today — `read`/`info` await firmware
+    Phases 4/6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will return
     `-ERR unknown command` until then.
     """
 
@@ -353,6 +358,30 @@ def nfc_selres_cmd(ctx, mode, verbose, port, device_id):
         _report_error("nfc selres", r)
         raise SystemExit(1)
     print_success(f"SEL_RES set to {mode}")
+
+
+@nfc.command("visa", context_settings={"help_option_names": ["-h", "--help"]})
+@device_options
+@click.pass_context
+def nfc_visa_cmd(ctx, verbose, port, device_id):
+    """Start a VISA MSD contactless emulation session.
+
+    Switches the PN7150 into emulation mode (SEL_RES nochip, so the terminal
+    falls back to magstripe instead of attempting EMV crypto) and emulates
+    the active card's Track 2 — or a built-in fallback token if the active
+    card has none — through the PPSE/VISA-AID/GPO/READ-RECORD exchange.
+    Blocks up to 15s waiting for a terminal tap; tap the BomberCat to a
+    contactless reader once this starts.
+    """
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        print_info("waiting for a contactless tap (up to 15s)...")
+        r = link.command("nfcvisa", read_timeout=_NFC_VISA_READ_TIMEOUT)
+
+    if not r.ok:
+        _report_error("nfc visa", r)
+        raise SystemExit(1)
+    print_success("VISA MSD emulation complete")
 
 
 # ── card (persistent multi-card store) ────────────────────────────────────────

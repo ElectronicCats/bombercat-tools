@@ -253,6 +253,15 @@ def test_magspoof_group_exposes_all_subcommands():
         "watch",
         "info",
         "card",
+        "nfc",
+    }
+
+
+def test_nfc_group_exposes_all_subcommands():
+    assert set(magspoof.commands["nfc"].commands) == {
+        "selres",
+        "visa",
+        "read",
     }
 
 

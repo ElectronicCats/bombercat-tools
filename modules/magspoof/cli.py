@@ -318,9 +318,8 @@ def info_cmd(ctx, verbose, port, device_id):
 # ── nfc (PN7150) ─────────────────────────────────────────────────────────────
 #
 # NFC commands for the PN7150 side of magspoof (IMPLEMENTATION_PLAN_NFC_
-# VISA_MAGSPOOF.md). `nfcselres` (Phase 2), `nfcvisa` (Phase 3) and `nfcread`
-# (Phase 4) are wired up in firmware; `nfcinfo` (Phase 6) is still ☐ there,
-# so this group is missing just that one until the firmware side lands.
+# VISA_MAGSPOOF.md). `nfcselres` (Phase 2), `nfcvisa` (Phase 3), `nfcread`
+# (Phase 4) and `nfcinfo` (Phase 6) are all wired up in firmware.
 
 # Ceiling matching the firmware's own VISA_MSD_TIMEOUT_MS (15s, see
 # emulateVisaMSD() in magspoof.ino) plus margin, so the client doesn't time
@@ -336,12 +335,7 @@ _NFC_READ_READ_TIMEOUT = 12.0
 
 @magspoof.group("nfc", context_settings={"help_option_names": ["-h", "--help"]})
 def nfc():
-    """NFC (PN7150) commands (requires the magspoof firmware).
-
-    `selres`, `visa` and `read` are implemented today — `info` awaits
-    firmware Phase 6 of IMPLEMENTATION_PLAN_NFC_VISA_MAGSPOOF.md and will
-    return `-ERR unknown command` until then.
-    """
+    """NFC (PN7150) commands (requires the magspoof firmware)."""
 
 
 @nfc.command("selres", context_settings={"help_option_names": ["-h", "--help"]})
@@ -410,6 +404,40 @@ def nfc_read_cmd(ctx, verbose, port, device_id):
         _report_error("nfc read", r)
         raise SystemExit(1)
     print_success(f"stored track 2: {r.data.get('t2', '')}")
+
+
+@nfc.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@device_options
+@click.pass_context
+def nfc_info_cmd(ctx, verbose, port, device_id):
+    """Report the PN7150's firmware version, current RF role, SEL_RES state
+    and whatever tag was last detected.
+
+    A pure status read — unlike `nfc visa`/`nfc read` it never switches mode
+    or waits for a tag, so "tag" reflects the last detection (from `nfc
+    read`, or the reader-mode bring-up at boot), not a fresh probe.
+    """
+    level = _verbosity(ctx, verbose)
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("nfcinfo")
+
+    if not r.ok:
+        _report_error("nfc info", r)
+        raise SystemExit(1)
+
+    table = Table(
+        title=f"magspoof NFC @ {target}", header_style="cyan bold", show_header=False
+    )
+    table.add_column("field", style="cyan")
+    table.add_column("value")
+    table.add_row("PN7150 firmware", r.data.get("fw") or "[dim]—[/dim]")
+    table.add_row("mode", r.data.get("mode") or "[dim]—[/dim]")
+    table.add_row("SEL_RES", r.data.get("selres") or "[dim]—[/dim]")
+    tag_seen = r.data.get("tag") == "yes"
+    table.add_row("last tag seen", "yes" if tag_seen else "no")
+    if tag_seen:
+        table.add_row("UID", r.data.get("uid") or "[dim]—[/dim]")
+    console.print(table)
 
 
 # ── card (persistent multi-card store) ────────────────────────────────────────
@@ -601,16 +629,30 @@ def card_del_cmd(ctx, name, verbose, port, device_id):
 @click.argument("name", shell_complete=complete_card_name)
 @click.option("--t1", "track1", help="New track 1 (starts with '%', ends with '?').")
 @click.option("--t2", "track2", help="New track 2 (starts with ';', ends with '?').")
+@click.option(
+    "--nfc",
+    "nfc_mode",
+    type=click.Choice(["chip", "nochip"]),
+    help=(
+        "SEL_RES preference for this card (IMPLEMENTATION_PLAN_NFC_VISA_"
+        "MAGSPOOF.md Phase 5.3): 'chip' advertises ISO-DEP/EMV support during "
+        "'nfc visa'/'nfc read', 'nochip' forces MSD fallback. Consulted "
+        "whenever this card is active; a card with no preference set falls "
+        "back to the mode's own default (chip for reader, nochip for "
+        "emulation)."
+    ),
+)
 @device_options
 @click.pass_context
-def card_set_cmd(ctx, name, track1, track2, verbose, port, device_id):
-    """Update one or both tracks of the existing card NAME.
+def card_set_cmd(ctx, name, track1, track2, nfc_mode, verbose, port, device_id):
+    """Update one or both tracks, and/or the SEL_RES preference, of the
+    existing card NAME.
 
-    Pass --t1 and/or --t2; at least one is required. Each is validated locally
-    before it makes the serial round trip.
+    Pass --t1, --t2 and/or --nfc; at least one is required. Track data is
+    validated locally before it makes the serial round trip.
     """
-    if track1 is None and track2 is None:
-        print_error("nothing to set — pass --t1 and/or --t2")
+    if track1 is None and track2 is None and nfc_mode is None:
+        print_error("nothing to set — pass --t1, --t2 and/or --nfc")
         raise SystemExit(1)
 
     updates = []
@@ -630,9 +672,16 @@ def card_set_cmd(ctx, name, track1, track2, verbose, port, device_id):
             if not r.ok:
                 _report_error("card set", r)
                 raise SystemExit(1)
+        if nfc_mode is not None:
+            r = link.command(f"magcard set {name} nfc {nfc_mode}")
+            if not r.ok:
+                _report_error("card set", r)
+                raise SystemExit(1)
 
-    tracks = " and ".join(f"track {tk}" for tk, _ in updates)
-    print_success(f"updated {tracks} on {name}")
+    changed = [f"track {tk}" for tk, _ in updates]
+    if nfc_mode is not None:
+        changed.append(f"nfc {nfc_mode}")
+    print_success(f"updated {' and '.join(changed)} on {name}")
 
 
 @card.command("select", context_settings={"help_option_names": ["-h", "--help"]})
@@ -657,7 +706,7 @@ def card_select_cmd(ctx, name, verbose, port, device_id):
     "--json",
     "as_json",
     is_flag=True,
-    help='Emit {"name": ..., "t1": ..., "t2": ..., "active": ...}.',
+    help='Emit {"name": ..., "t1": ..., "t2": ..., "nfc": ..., "active": ...}.',
 )
 @device_options
 @click.pass_context
@@ -675,15 +724,29 @@ def card_get_cmd(ctx, name, as_json, verbose, port, device_id):
     card_name = r.data.get("name", "")
     t1 = r.data.get("t1", "")
     t2 = r.data.get("t2", "")
+    # Firmware older than the Phase 5 CardEntry extension answers `get`
+    # without ':nfc'.
+    nfc_mode = r.data.get("nfc", "")
     is_active = r.data.get("active", "") == "1"
     if as_json:
-        print(json.dumps({"name": card_name, "t1": t1, "t2": t2, "active": is_active}))
+        print(
+            json.dumps(
+                {
+                    "name": card_name,
+                    "t1": t1,
+                    "t2": t2,
+                    "nfc": nfc_mode,
+                    "active": is_active,
+                }
+            )
+        )
         return
 
     _print_field("name", card_name or "[dim]—[/dim]")
     _print_field("active", "yes" if is_active else "no")
     _print_field("track 1", t1 or "[dim]—[/dim]")
     _print_field("track 2", t2 or "[dim]—[/dim]")
+    _print_field("nfc selres", nfc_mode or "[dim]—[/dim]")
 
 
 @card.command("info", context_settings={"help_option_names": ["-h", "--help"]})

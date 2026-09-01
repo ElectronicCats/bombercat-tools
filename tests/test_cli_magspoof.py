@@ -262,6 +262,7 @@ def test_nfc_group_exposes_all_subcommands():
         "selres",
         "visa",
         "read",
+        "info",
     }
 
 
@@ -274,6 +275,7 @@ def test_card_group_exposes_all_subcommands():
         "select",
         "get",
         "info",
+        "normalize-sc",
     }
 
 
@@ -430,6 +432,39 @@ def test_card_add_rolls_back_the_empty_card_when_a_track_write_fails(runner, use
     assert "card add failed" in flat(result.output)
 
 
+def test_card_add_normalize_sc_rewrites_t2_before_writing(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(
+        _card_cmd("add"), ["BBVA", "--t2", T2_CHIP_PIN, "--normalize-sc"]
+    )
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard add BBVA", f"magcard set BBVA 2 {T2_NORMALIZED}"]
+    assert "service code normalized" in out
+
+
+def test_card_add_normalize_sc_is_a_noop_when_already_normalized(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(
+        _card_cmd("add"), ["BBVA", "--t2", T2_NORMALIZED, "--normalize-sc"]
+    )
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard add BBVA", f"magcard set BBVA 2 {T2_NORMALIZED}"]
+    assert "already normalized" in out
+
+
+def test_card_add_without_normalize_sc_writes_t2_verbatim(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink(responses={"magcard": ok("")}))
+    result = runner.invoke(_card_cmd("add"), ["BBVA", "--t2", T2_CHIP_PIN])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard add BBVA", f"magcard set BBVA 2 {T2_CHIP_PIN}"]
+    assert "normalized" not in flat(result.stdout)
+
+
 def test_card_del_sends_the_delete(runner, use_link):
     fake = use_link(magspoofcli, FakeLink(responses={"magcard del BBVA": ok("")}))
     result = runner.invoke(_card_cmd("del"), ["BBVA"])
@@ -471,6 +506,32 @@ def test_card_set_validates_before_sending(runner, use_link):
 
     assert result.exit_code == 1
     assert "bad track 1 format" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_card_set_normalize_sc_rewrites_t2_before_sending(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(responses={f"magcard set BBVA 2 {T2_NORMALIZED}": ok("")}),
+    )
+    result = runner.invoke(
+        _card_cmd("set"), ["BBVA", "--t2", T2_CHIP_PIN, "--normalize-sc"]
+    )
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == [f"magcard set BBVA 2 {T2_NORMALIZED}"]
+    assert "service code normalized" in out
+
+
+def test_card_set_normalize_sc_rejects_an_unparsable_t2_locally(runner, use_link):
+    fake = use_link(magspoofcli, FakeLink())
+    result = runner.invoke(
+        _card_cmd("set"), ["BBVA", "--t2", ";not-a-track?", "--normalize-sc"]
+    )
+
+    assert result.exit_code == 1
+    assert "cannot normalize" in flat(result.output)
     assert fake.sent == []
 
 
@@ -538,6 +599,7 @@ def test_card_get_json(runner, use_link):
         "name": "BBVA",
         "t1": TRACK1,
         "t2": TRACK2,
+        "nfc": "",
         "active": True,
     }
 
@@ -557,6 +619,148 @@ def test_card_info_shows_count_and_capacity(runner, use_link):
     assert result.exit_code == 0
     assert "3 / 50" in out
     assert "BBVA" in out
+
+
+# ── card normalize-sc ────────────────────────────────────────────────────────
+
+T2_CHIP_PIN = ";4111111111111111=28032060000094600000?"
+T2_NORMALIZED = ";4111111111111111=28031010000094600000?"
+
+
+def test_card_normalize_sc_previews_without_apply(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA"]  # no write without --apply
+    assert "206 → 101" in out
+    assert "use --apply" in out
+
+
+def test_card_normalize_sc_targets_the_active_card_when_name_omitted(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get": ok("", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), [])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get"]
+
+
+def test_card_normalize_sc_applies_and_writes_back(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1"
+                ),
+                f"magcard set BBVA 2 {T2_NORMALIZED}": ok(""),
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA", "--apply"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA", f"magcard set BBVA 2 {T2_NORMALIZED}"]
+    assert "206 → 101" in out
+
+
+def test_card_normalize_sc_apply_is_a_noop_when_already_normalized(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NORMALIZED, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA", "--apply"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA"]  # no write — already correct
+    assert "already normalized" in out
+
+
+def test_card_normalize_sc_json(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "name": "BBVA",
+        "service_code": "206",
+        "service_code_normalized": "101",
+        "track2": T2_CHIP_PIN,
+        "track2_normalized": T2_NORMALIZED,
+        "is_ic_card": True,
+        "requires_pin": True,
+    }
+
+
+def test_card_normalize_sc_reports_missing_track2(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard get BBVA": ok("", name="BBVA", t1="", t2="")}),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "has no track 2" in flat(result.output)
+
+
+def test_card_normalize_sc_reports_invalid_track2(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok("", name="BBVA", t1="", t2=";not-a-track?")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "not valid ISO 7813" in flat(result.output)
+
+
+def test_card_normalize_sc_reports_a_missing_card(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard get NOPE": err("not found")}),
+    )
+    result = runner.invoke(_card_cmd("normalize-sc"), ["NOPE"])
+
+    assert result.exit_code == 1
+    assert "card normalize-sc failed" in flat(result.output)
 
 
 def test_card_hints_reflash_on_unknown_command(runner, use_link):

@@ -207,10 +207,35 @@ _SC_STATUS_BADGE = {
 }
 
 
+# Compact type labels for the `card list` column, where the full
+# `_STANDARD_LABELS` phrase would blow the row width. (style, text): financial
+# kinds read cyan like the name, non-payment kinds stay dim so a wallet full of
+# cards still shows the payment ones at a glance.
+_STANDARD_SHORT = {
+    TrackStandard.ISO_7813_FINANCIAL: ("cyan", "financial"),
+    TrackStandard.PBOC_UNIONPAY: ("cyan", "UnionPay"),
+    TrackStandard.AAMVA_DL: ("white", "driver's license"),
+    TrackStandard.LOYALTY_GENERIC: ("dim", "loyalty"),
+    TrackStandard.UNKNOWN: ("dim", "unknown"),
+}
+
+
 def _standard_label(std: TrackStandard) -> str:
     """Human name for a detected TrackStandard, passing an unmapped one through
     as its raw value rather than rendering nothing."""
     return _STANDARD_LABELS.get(std, std.value)
+
+
+def _standard_short(std: TrackStandard) -> Tuple[str, str]:
+    """(style, compact label) for a TrackStandard in the `card list` column."""
+    return _STANDARD_SHORT.get(std, ("dim", std.value))
+
+
+def _ellipsize(text: str, width: int) -> str:
+    """Clip TEXT to WIDTH with a trailing ellipsis, so a long raw track fits its
+    `card list` column deterministically instead of leaving Rich to crop it at a
+    console-width that varies. Full data still lives in `--json`/`card get`."""
+    return text if len(text) <= width else text[: width - 1] + "…"
 
 
 def _format_expiry(yymm: str) -> str:
@@ -671,8 +696,17 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
     cards = list(_iter_cards(r.data))
     if as_json:
         for name, t1, t2 in cards:
+            std = analyze_card(t1, t2).primary_standard
             print(
-                json.dumps({"name": name, "t1": t1, "t2": t2, "active": name == active})
+                json.dumps(
+                    {
+                        "name": name,
+                        "t1": t1,
+                        "t2": t2,
+                        "type": std.value,
+                        "active": name == active,
+                    }
+                )
             )
         return
 
@@ -683,11 +717,18 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
     table = Table(title=f"magspoof cards @ {target}", header_style="cyan bold")
     table.add_column("", width=1)  # active marker
     table.add_column("name", style="cyan")
+    table.add_column("type")
     table.add_column("track 1")
     table.add_column("track 2")
     for name, t1, t2 in cards:
         marker = "[green]●[/green]" if name == active else ""
-        table.add_row(marker, name, t1 or "[dim]—[/dim]", t2 or "[dim]—[/dim]")
+        style, label = _standard_short(analyze_card(t1, t2).primary_standard)
+        type_cell = f"[{style}]{label}[/{style}]"
+        # Pre-clip the raw tracks so the extra `type` column never squeezes them
+        # to an unreadable stub; the untruncated data is in `--json`/`card get`.
+        t1_cell = _ellipsize(t1, 24) if t1 else "[dim]—[/dim]"
+        t2_cell = _ellipsize(t2, 24) if t2 else "[dim]—[/dim]"
+        table.add_row(marker, name, type_cell, t1_cell, t2_cell)
     console.print(table)
 
 

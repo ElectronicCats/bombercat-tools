@@ -18,6 +18,30 @@ _TRACK2_RE = re.compile(
 )
 
 
+def service_code_requires_chip(sc: str) -> bool:
+    """True if a 3-digit Service Code's 1st digit (2 or 6) demands a chip.
+    Shared with track_parser.py so both Track 1 and Track 2 analysis apply
+    the same ISO 7813 rule."""
+    return sc[0] in ("2", "6")
+
+
+def service_code_requires_pin(sc: str) -> bool:
+    """True if a 3-digit Service Code's 3rd digit (6) demands a PIN."""
+    return sc[2] == "6"
+
+
+def normalize_service_code(sc: str) -> str:
+    """Rewrite a 3-digit Service Code for magstripe fallback + no PIN: 1st
+    digit 2/6 -> 1 (chip-required -> magstripe-only; 5 is left as-is, it
+    already allows fallback), 3rd digit 6 -> 1 (PIN-required -> none)."""
+    first, second, third = sc
+    if first in ("2", "6"):
+        first = "1"
+    if third == "6":
+        third = "1"
+    return f"{first}{second}{third}"
+
+
 @dataclass
 class Track2Data:
     """Parsed ISO 7813 Track 2 components."""
@@ -30,23 +54,17 @@ class Track2Data:
     @property
     def is_ic_card(self) -> bool:
         """True if the Service Code's 1st digit (2 or 6) demands a chip."""
-        return self.service_code[0] in ("2", "6")
+        return service_code_requires_chip(self.service_code)
 
     @property
     def requires_pin(self) -> bool:
         """True if the Service Code's 3rd digit (6) demands a PIN."""
-        return self.service_code[2] == "6"
+        return service_code_requires_pin(self.service_code)
 
     def normalized_service_code(self) -> str:
-        """Service Code rewritten for magstripe fallback + no PIN: 1st digit
-        2/6 -> 1 (chip-required -> magstripe-only; 5 is left as-is, it
-        already allows fallback), 3rd digit 6 -> 1 (PIN-required -> none)."""
-        first, second, third = self.service_code
-        if first in ("2", "6"):
-            first = "1"
-        if third == "6":
-            third = "1"
-        return f"{first}{second}{third}"
+        """Service Code rewritten for magstripe fallback + no PIN (see
+        `normalize_service_code`)."""
+        return normalize_service_code(self.service_code)
 
     def to_track2(self, service_code: Optional[str] = None) -> str:
         """Reconstruct the Track 2 string, optionally with a substitute

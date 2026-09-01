@@ -33,6 +33,7 @@ from ..utils.detection_cli import (
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
 from .track2 import normalize_track2, parse_track2
+from .track_parser import analyze_card, card_analysis_to_dict
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.
@@ -173,16 +174,33 @@ def _validate_track_data(track: int, data: str) -> Optional[str]:
 # ── show ─────────────────────────────────────────────────────────────────────
 
 
+_SC_STATUS_STYLE = {
+    "OK_FALLBACK": "green",
+    "REQUIRES_CHIP": "red",
+    "REQUIRES_PIN": "yellow",
+    "REQUIRES_CHIP_AND_PIN": "red bold",
+}
+
+
 @magspoof.command("show", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--json",
     "as_json",
     is_flag=True,
-    help='Emit {"t1": ..., "t2": ..., "btn": ...}.',
+    help='Emit {"t1": ..., "t2": ..., "btn": ..., "analysis": {...}}.',
+)
+@click.option(
+    "--verbose-analysis/--no-verbose-analysis",
+    default=True,
+    show_default=True,
+    help=(
+        "Show detected standard + Service Code analysis (chip/PIN/fallback) "
+        "for ISO 7813 financial cards."
+    ),
 )
 @device_options
 @click.pass_context
-def show_cmd(ctx, as_json, verbose, port, device_id):
+def show_cmd(ctx, as_json, verbose_analysis, verbose, port, device_id):
     """Print the tracks currently loaded on the device."""
     level = _verbosity(ctx, verbose)
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
@@ -196,12 +214,52 @@ def show_cmd(ctx, as_json, verbose, port, device_id):
     t2 = r.data.get("t2", "")
     # Firmware older than the magbtn hook answers magget without ':btn'.
     btn = r.data.get("btn", "")
-    if as_json:
-        print(json.dumps({"t1": t1, "t2": t2, "btn": btn}))
+
+    if not verbose_analysis:
+        if as_json:
+            print(json.dumps({"t1": t1, "t2": t2, "btn": btn}))
+            return
+        _print_field("track 1", t1 or "[dim]—[/dim]")
+        _print_field("track 2", t2 or "[dim]—[/dim]")
+        _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
         return
+
+    analysis = analyze_card(t1, t2)
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "t1": t1,
+                    "t2": t2,
+                    "btn": btn,
+                    "analysis": card_analysis_to_dict(analysis),
+                }
+            )
+        )
+        return
+
     _print_field("track 1", t1 or "[dim]—[/dim]")
     _print_field("track 2", t2 or "[dim]—[/dim]")
     _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
+    _print_field("standard", analysis.primary_standard.value)
+
+    sca = analysis.track2.service_code_analysis if analysis.track2 else None
+    if sca is None and analysis.track1:
+        sca = analysis.track1.service_code_analysis
+    if sca:
+        style = _SC_STATUS_STYLE.get(sca.status, "white")
+        sc_display = (
+            f"[{style}]{sca.original}[/{style}] → {sca.normalized}"
+            if sca.original != sca.normalized
+            else f"[{style}]{sca.original}[/{style}] (already normalized)"
+        )
+        _print_field("service code", sc_display)
+        _print_field("chip required", "yes" if sca.requires_chip else "no")
+        _print_field("PIN required", "yes" if sca.requires_pin else "no")
+
+    for rec in analysis.recommendations:
+        print_info(f"use: {rec}")
 
 
 # ── watch ────────────────────────────────────────────────────────────────────

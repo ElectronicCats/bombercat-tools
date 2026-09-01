@@ -17,6 +17,12 @@ TRACK1 = "%B4111111111111111^TEST/CARD^261200000000000?"
 TRACK2_CHIP_PIN = ";4111111111111111=28032060000094600000?"  # sc=206
 TRACK2_FALLBACK = ";4111111111111111=28031010000094600000?"  # sc=101
 
+TRACK2_UNIONPAY = ";6225881234567890=28032010000000000?"
+TRACK1_AAMVA = "%CA12345678^DOE^LASTNAME^FIRSTNAME^M^?"
+TRACK2_AAMVA = ";6360260123456789=2512201?"
+TRACK1_LOYALTY = "%1234567890123456?"
+TRACK2_LOYALTY = ";9991234567890123?"
+
 
 def test_detect_iso7813_financial_track1():
     std = detect_track_standard(TRACK1, 1)
@@ -31,6 +37,59 @@ def test_detect_iso7813_financial_track2():
 def test_detect_unknown_for_garbage():
     assert detect_track_standard("garbage", 2) == TrackStandard.UNKNOWN
     assert detect_track_standard("", 2) == TrackStandard.UNKNOWN
+
+
+def test_detect_pboc_unionpay_track2():
+    std = detect_track_standard(TRACK2_UNIONPAY, 2)
+    assert std == TrackStandard.PBOC_UNIONPAY
+
+
+def test_pboc_unionpay_gets_service_code_analysis():
+    analysis = analyze_card("", TRACK2_UNIONPAY)
+    assert analysis.primary_standard == TrackStandard.PBOC_UNIONPAY
+    assert analysis.is_financial is True
+    assert analysis.track2.service_code_analysis is not None
+    assert analysis.track2.service_code_analysis.original == "201"
+
+
+def test_detect_aamva_track1():
+    std = detect_track_standard(TRACK1_AAMVA, 1)
+    assert std == TrackStandard.AAMVA_DL
+
+
+def test_detect_aamva_track2_by_iin():
+    std = detect_track_standard(TRACK2_AAMVA, 2)
+    assert std == TrackStandard.AAMVA_DL
+
+
+def test_aamva_track2_is_not_treated_as_financial():
+    # TRACK2_AAMVA structurally matches the ISO 7813 Track 2 shape too
+    # (digits '=' digits '?'), so the AAMVA/636-IIN check must win before
+    # the financial detector ever sees it — otherwise a DL gets analyzed
+    # (and could get "recommended" a Service Code normalization) as if it
+    # were a payment card.
+    analysis = analyze_card(TRACK1_AAMVA, TRACK2_AAMVA)
+    assert analysis.primary_standard == TrackStandard.AAMVA_DL
+    assert analysis.is_financial is False
+    assert analysis.track2.parsed is None
+    assert analysis.track2.service_code_analysis is None
+    assert analysis.recommendations == []
+
+
+def test_detect_loyalty_generic_track1():
+    assert detect_track_standard(TRACK1_LOYALTY, 1) == TrackStandard.LOYALTY_GENERIC
+
+
+def test_detect_loyalty_generic_track2():
+    assert detect_track_standard(TRACK2_LOYALTY, 2) == TrackStandard.LOYALTY_GENERIC
+
+
+def test_loyalty_generic_card_has_no_service_code_analysis():
+    analysis = analyze_card(TRACK1_LOYALTY, TRACK2_LOYALTY)
+    assert analysis.primary_standard == TrackStandard.LOYALTY_GENERIC
+    assert analysis.is_financial is False
+    assert analysis.service_code_status is None
+    assert analysis.recommendations == []
 
 
 def test_parse_track1_financial():

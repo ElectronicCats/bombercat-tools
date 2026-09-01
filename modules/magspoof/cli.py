@@ -33,7 +33,7 @@ from ..utils.detection_cli import (
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
 from .track2 import normalize_track2, parse_track2
-from .track_parser import analyze_card, card_analysis_to_dict
+from .track_parser import TrackStandard, analyze_card, card_analysis_to_dict
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.
@@ -181,6 +181,46 @@ _SC_STATUS_STYLE = {
     "REQUIRES_CHIP_AND_PIN": "red bold",
 }
 
+# Raw TrackStandard enum values read like machine keys ("iso7813_financial");
+# `show` prints these human names instead. Anything unmapped falls back to the
+# enum's own value so a new standard never renders as a blank.
+_STANDARD_LABELS = {
+    TrackStandard.ISO_7813_FINANCIAL: "ISO 7813 financial (payment card)",
+    TrackStandard.PBOC_UNIONPAY: "PBOC / UnionPay (financial)",
+    TrackStandard.AAMVA_DL: "AAMVA driver's license / ID",
+    TrackStandard.LOYALTY_GENERIC: "loyalty / transit / generic",
+    TrackStandard.UNKNOWN: "unknown",
+}
+
+# One-glance security verdict for a financial card's Service Code: (style,
+# icon+label). Mirrors _SC_STATUS_STYLE's colours but spells out what the swipe
+# will face, so the reader doesn't have to decode chip/PIN rows themselves.
+_SC_STATUS_BADGE = {
+    "OK_FALLBACK": ("green", "✓ magstripe fallback allowed"),
+    "REQUIRES_CHIP": ("red", "⚠ chip required — swipe may be refused"),
+    "REQUIRES_PIN": ("yellow", "⚠ PIN required"),
+    "REQUIRES_CHIP_AND_PIN": ("red bold", "⚠ chip + PIN required — swipe may be refused"),
+    "UNKNOWN": ("dim", "? non-standard service code"),
+}
+
+
+def _standard_label(std: TrackStandard) -> str:
+    """Human name for a detected TrackStandard, passing an unmapped one through
+    as its raw value rather than rendering nothing."""
+    return _STANDARD_LABELS.get(std, std.value)
+
+
+def _format_expiry(yymm: str) -> str:
+    """A 4-digit ISO YYMM expiry as friendly MM/YY; anything else unchanged."""
+    if len(yymm) == 4 and yymm.isdigit():
+        return f"{yymm[2:]}/{yymm[:2]}"
+    return yymm
+
+
+def _group_pan(pan: str) -> str:
+    """Space a PAN into 4-digit groups the way it reads on the card face."""
+    return " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
+
 
 @magspoof.command("show", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
@@ -216,39 +256,51 @@ def show_cmd(ctx, as_json, verbose_analysis, verbose, port, device_id):
     # Firmware older than the magbtn hook answers magget without ':btn'.
     btn = r.data.get("btn", "")
 
-    if not verbose_analysis:
-        if as_json:
-            print(json.dumps({"t1": t1, "t2": t2, "btn": btn}))
-            return
-        _print_field("track 1", t1 or "[dim]—[/dim]")
-        _print_field("track 2", t2 or "[dim]—[/dim]")
-        _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
-        return
-
-    analysis = analyze_card(t1, t2)
+    analysis = analyze_card(t1, t2) if verbose_analysis else None
 
     if as_json:
-        print(
-            json.dumps(
-                {
-                    "t1": t1,
-                    "t2": t2,
-                    "btn": btn,
-                    "analysis": card_analysis_to_dict(analysis),
-                }
-            )
-        )
+        payload: Dict[str, object] = {"t1": t1, "t2": t2, "btn": btn}
+        if analysis is not None:
+            payload["analysis"] = card_analysis_to_dict(analysis)
+        print(json.dumps(payload))
         return
 
+    # ── device state ─────────────────────────────────────────────
+    console.print(f"[cyan bold]magspoof card[/cyan bold] [dim]@ {target}[/dim]")
+    console.print("")
     _print_field("track 1", t1 or "[dim]—[/dim]")
     _print_field("track 2", t2 or "[dim]—[/dim]")
     _print_field("button", _button_label(btn) if btn else "[dim]—[/dim]")
-    _print_field("standard", analysis.primary_standard.value)
+
+    if analysis is None:
+        return
+
+    # ── decoded analysis ─────────────────────────────────────────
+    console.print("")
+    console.print(f"  [dim]── analysis {'─' * 30}[/dim]")
+    _print_field("standard", _standard_label(analysis.primary_standard))
+
+    # Decode the raw track into card-face fields: the cardholder name only
+    # rides Track 1, PAN/expiry sit on both — prefer whichever track parsed.
+    parsed1 = analysis.track1.parsed if analysis.track1 else None
+    parsed2 = analysis.track2.parsed if analysis.track2 else None
+    name = getattr(parsed1, "name", "")
+    pan = getattr(parsed2, "pan", "") or getattr(parsed1, "pan", "")
+    expiry = getattr(parsed2, "expiration", "") or getattr(parsed1, "expiration", "")
+    if name:
+        _print_field("cardholder", name)
+    if pan:
+        _print_field("PAN", _group_pan(pan))
+    if expiry:
+        _print_field("expires", _format_expiry(expiry))
 
     sca = analysis.track2.service_code_analysis if analysis.track2 else None
     if sca is None and analysis.track1:
         sca = analysis.track1.service_code_analysis
     if sca:
+        badge_style, badge_text = _SC_STATUS_BADGE.get(
+            sca.status, ("white", sca.status)
+        )
         style = _SC_STATUS_STYLE.get(sca.status, "white")
         sc_display = (
             f"[{style}]{sca.original}[/{style}] → {sca.normalized}"
@@ -256,9 +308,18 @@ def show_cmd(ctx, as_json, verbose_analysis, verbose, port, device_id):
             else f"[{style}]{sca.original}[/{style}] (already normalized)"
         )
         _print_field("service code", sc_display)
-        _print_field("chip required", "yes" if sca.requires_chip else "no")
-        _print_field("PIN required", "yes" if sca.requires_pin else "no")
+        _print_field("security", f"[{badge_style}]{badge_text}[/{badge_style}]")
+        _print_field(
+            "chip required",
+            "[yellow]yes[/yellow]" if sca.requires_chip else "[green]no[/green]",
+        )
+        _print_field(
+            "PIN required",
+            "[yellow]yes[/yellow]" if sca.requires_pin else "[green]no[/green]",
+        )
 
+    if analysis.recommendations:
+        console.print("")
     for rec in analysis.recommendations:
         print_info(f"use: {rec}")
 

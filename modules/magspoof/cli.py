@@ -199,7 +199,10 @@ _SC_STATUS_BADGE = {
     "OK_FALLBACK": ("green", "✓ magstripe fallback allowed"),
     "REQUIRES_CHIP": ("red", "⚠ chip required — swipe may be refused"),
     "REQUIRES_PIN": ("yellow", "⚠ PIN required"),
-    "REQUIRES_CHIP_AND_PIN": ("red bold", "⚠ chip + PIN required — swipe may be refused"),
+    "REQUIRES_CHIP_AND_PIN": (
+        "red bold",
+        "⚠ chip + PIN required — swipe may be refused",
+    ),
     "UNKNOWN": ("dim", "? non-standard service code"),
 }
 

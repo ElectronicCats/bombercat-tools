@@ -393,7 +393,13 @@ def test_card_list_json_emits_one_object_per_card(runner, use_link):
     rows = [json.loads(ln) for ln in result.stdout.strip().splitlines()]
 
     assert result.exit_code == 0
-    assert rows[0] == {"name": "BBVA", "t1": TRACK1, "t2": TRACK2, "active": True}
+    assert rows[0] == {
+        "name": "BBVA",
+        "t1": TRACK1,
+        "t2": TRACK2,
+        "type": "iso7813_financial",
+        "active": True,
+    }
     assert rows[1]["active"] is False
 
 

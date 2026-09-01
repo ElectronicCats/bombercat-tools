@@ -109,16 +109,71 @@ def test_show_leaves_the_button_row_blank_on_firmware_without_magbtn(runner, use
     assert "—" in flat(result.stdout).split("button")[-1]
 
 
-def test_show_json_emits_a_clean_object(runner, use_link):
+def test_show_json_no_verbose_analysis_matches_the_old_shape(runner, use_link):
     use_link(
         magspoofcli,
         FakeLink(responses={"magget": ok("", t1=TRACK1, t2=TRACK2, btn="alt")}),
+    )
+    result = runner.invoke(show_cmd, ["--json", "--no-verbose-analysis"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload == {"t1": TRACK1, "t2": TRACK2, "btn": "alt"}
+
+
+def test_show_json_adds_an_analysis_key_by_default(runner, use_link):
+    t2 = ";4111111111111111=28032060000094600000?"  # sc=206: chip + PIN
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magget": ok("", t1=TRACK1, t2=t2, btn="alt")}),
     )
     result = runner.invoke(show_cmd, ["--json"])
 
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
-    assert payload == {"t1": TRACK1, "t2": TRACK2, "btn": "alt"}
+    assert payload["t1"] == TRACK1
+    assert payload["t2"] == t2
+    assert payload["btn"] == "alt"
+    analysis = payload["analysis"]
+    assert analysis["primary_standard"] == "iso7813_financial"
+    assert analysis["is_financial"] is True
+    assert analysis["service_code_status"] == "REQUIRES_CHIP_AND_PIN"
+    assert analysis["track2"]["parsed"]["pan"] == "4111111111111111"
+    assert analysis["track2"]["service_code_analysis"]["requires_chip"] is True
+    assert analysis["track2"]["service_code_analysis"]["requires_pin"] is True
+    assert analysis["track2"]["service_code_analysis"]["normalized"] == "101"
+    assert "normalize-sc" in analysis["recommendations"][0]
+
+
+def test_show_prints_service_code_analysis_by_default(runner, use_link):
+    t2 = ";4111111111111111=28032060000094600000?"  # sc=206: chip + PIN
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magget": ok("", t1=TRACK1, t2=t2, btn="alt")}),
+    )
+    result = runner.invoke(show_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "standard" in out
+    assert "service code" in out
+    assert "chip required" in out and "yes" in out.split("chip required")[-1]
+    assert "PIN required" in out and "yes" in out.split("PIN required")[-1]
+    assert "normalize-sc" in out
+
+
+def test_show_no_verbose_analysis_omits_the_analysis_fields(runner, use_link):
+    t2 = ";4111111111111111=28032060000094600000?"
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magget": ok("", t1=TRACK1, t2=t2, btn="alt")}),
+    )
+    result = runner.invoke(show_cmd, ["--no-verbose-analysis"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "standard" not in out
+    assert "service code" not in out
 
 
 def test_show_hints_reflash_on_unknown_command(runner, use_link):

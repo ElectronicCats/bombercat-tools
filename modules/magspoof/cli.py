@@ -32,6 +32,7 @@ from ..utils.detection_cli import (
 )
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
+from .track2 import parse_track2
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.
@@ -785,3 +786,97 @@ def card_info_cmd(ctx, verbose, port, device_id):
     table.add_row("active", r.data.get("active") or "[dim]—[/dim]")
     table.add_row("button", _button_label(btn) if btn else "[dim]—[/dim]")
     console.print(table)
+
+
+@card.command("normalize-sc", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name", required=False, shell_complete=complete_card_name)
+@click.option(
+    "--apply", is_flag=True, help="Write the normalized Track 2 back to the card."
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help=(
+        'Emit {"name", "service_code", "service_code_normalized", "track2", '
+        '"track2_normalized", "is_ic_card", "requires_pin"}.'
+    ),
+)
+@device_options
+@click.pass_context
+def card_normalize_sc_cmd(ctx, name, apply, as_json, verbose, port, device_id):
+    """Normalize a stored card's Track 2 Service Code for magstripe fallback.
+
+    Rewrites the Service Code so a terminal can swipe the card without
+    demanding a chip or a PIN (the active card when NAME is omitted). Without
+    --apply this only previews the change; pass --apply to write it back via
+    `card set`. FOR AUTHORIZED TESTING ONLY — this deliberately weakens the
+    card's stated security requirements.
+    """
+    level = _verbosity(ctx, verbose)
+    cmd = f"magcard get {name}" if name else "magcard get"
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(cmd)
+        if not r.ok:
+            _report_error("card normalize-sc", r)
+            raise SystemExit(1)
+
+        card_name = r.data.get("name", "")
+        t2 = r.data.get("t2", "")
+        if not t2:
+            print_error(f"card {card_name or name} has no track 2")
+            raise SystemExit(1)
+
+        parsed = parse_track2(t2)
+        if parsed is None:
+            print_error("stored track 2 is not valid ISO 7813 — cannot normalize")
+            raise SystemExit(1)
+
+        sc = parsed.service_code
+        sc_norm = parsed.normalized_service_code()
+        t2_norm = parsed.to_track2(sc_norm)
+
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "name": card_name,
+                        "service_code": sc,
+                        "service_code_normalized": sc_norm,
+                        "track2": t2,
+                        "track2_normalized": t2_norm,
+                        "is_ic_card": parsed.is_ic_card,
+                        "requires_pin": parsed.requires_pin,
+                    }
+                )
+            )
+            return
+
+        sc_display = (
+            f"{sc} → {sc_norm}" if sc != sc_norm else f"{sc} (already normalized)"
+        )
+        _print_field("name", card_name or "[dim]—[/dim]")
+        _print_field("service code", sc_display)
+        _print_field("chip required", "yes" if parsed.is_ic_card else "no")
+        _print_field("PIN required", "yes" if parsed.requires_pin else "no")
+
+        if not apply:
+            if sc != sc_norm:
+                print_info("use --apply to write the normalized track 2 to the card")
+            return
+
+        if sc == sc_norm:
+            print_info(f"{card_name or name} already normalized — nothing to write")
+            return
+
+        err = _validate_track_data(2, t2_norm)
+        if err:
+            print_error(f"normalized track 2 failed local validation: {err}")
+            raise SystemExit(1)
+
+        rt = link.command(f"magcard set {card_name or name} 2 {t2_norm}")
+        if not rt.ok:
+            _report_error("card normalize-sc", rt)
+            raise SystemExit(1)
+
+    print_success(f"service code normalized on {card_name or name}: {sc} → {sc_norm}")

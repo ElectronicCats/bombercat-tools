@@ -48,6 +48,34 @@ _UNIONPAY_PAN_PREFIX = "62"
 # track but never a real payment PAN.
 _AAMVA_IIN_PREFIX = "636"
 
+# Registered ISO/IEC 7812 IIN ranges for payment networks other than
+# UnionPay (checked separately above). A store/membership card can be
+# magstripe-encoded in the exact same "%B PAN^NAME^YYMMSCdisc?" / ";PAN=
+# YYMMSCdisc?" wire shape as a real payment card (see FarmaciasAhorro's
+# absent case aside, Cinepolis/Costco/Soriana in the field) — matching that
+# shape alone isn't enough to call a PAN financial. Only a PAN whose prefix
+# falls in one of these registered network blocks gets classified as
+# ISO_7813_FINANCIAL; anything else that's structurally well-formed but
+# unrecognized falls through to LOYALTY_GENERIC instead of being guessed.
+_FINANCIAL_IIN_RE = re.compile(
+    r"^("
+    r"4"  # Visa
+    r"|5[1-5]"  # Mastercard (old range)
+    r"|22(2[1-9]|[3-9][0-9])|2[3-6][0-9]{2}|27[01][0-9]|2720"  # Mastercard (2017+ range)
+    r"|3[47]"  # American Express
+    r"|6011|65|64[4-9]"  # Discover
+    r"|3(0[0-5]|[689])"  # Diners Club
+    r"|35(2[89]|[3-8][0-9])"  # JCB
+    r")"
+)
+
+
+def _has_recognized_financial_iin(pan: str) -> bool:
+    """True if PAN's prefix falls in a registered payment-network IIN
+    range (Visa/Mastercard/Amex/Discover/Diners/JCB). UnionPay is checked
+    separately since it gets its own TrackStandard."""
+    return bool(_FINANCIAL_IIN_RE.match(pan))
+
 
 # %B{PAN}^{NAME}^{YYMM}{service code}{discretionary}?  (IATA / ISO 7813 Track 1)
 _TRACK1_FINANCIAL_RE = re.compile(
@@ -127,7 +155,12 @@ def _detect_iso7813_financial(track: str, track_num: int) -> Optional[TrackStand
         return None
     if parsed.pan.startswith(_UNIONPAY_PAN_PREFIX):
         return TrackStandard.PBOC_UNIONPAY
-    return TrackStandard.ISO_7813_FINANCIAL
+    if _has_recognized_financial_iin(parsed.pan):
+        return TrackStandard.ISO_7813_FINANCIAL
+    # Structurally ISO 7813-shaped but no registered network IIN — a store
+    # or membership card reusing the financial wire format, not a real
+    # payment card. Fall through so _detect_loyalty_generic picks it up.
+    return None
 
 
 @register_detector

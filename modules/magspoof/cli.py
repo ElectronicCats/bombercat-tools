@@ -32,7 +32,7 @@ from ..utils.detection_cli import (
 )
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
-from .track2 import parse_track2
+from .track2 import normalize_track2, parse_track2
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.
@@ -572,9 +572,18 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
 @click.argument("name")
 @click.option("--t1", "track1", help="Track 1 data (starts with '%', ends with '?').")
 @click.option("--t2", "track2", help="Track 2 data (starts with ';', ends with '?').")
+@click.option(
+    "--normalize-sc/--no-normalize-sc",
+    "normalize_sc",
+    default=False,
+    help=(
+        "Auto-normalize --t2's Service Code for magstripe fallback (no "
+        "chip/PIN) before writing it. FOR AUTHORIZED TESTING ONLY."
+    ),
+)
 @device_options
 @click.pass_context
-def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
+def card_add_cmd(ctx, name, track1, track2, normalize_sc, verbose, port, device_id):
     """Add a new card NAME with one or both tracks.
 
     Pass --t1 and/or --t2; at least one is required. Two-track financial cards
@@ -582,6 +591,8 @@ def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
     carry. Each track is validated locally (ISO sentinels, length, charset)
     before anything reaches the device; the card is created and its track(s)
     written in one go, and a failed track write rolls the empty card back.
+    --normalize-sc rewrites --t2's Service Code first (see `card
+    normalize-sc`), so the card is stored already-normalized.
     """
     name_err = _validate_card_name(name)
     if name_err:
@@ -592,9 +603,19 @@ def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
         raise SystemExit(1)
 
     writes = []
+    sc_normalized = False
     for tk, data in ((1, track1), (2, track2)):
         if data is None:
             continue
+        if tk == 2 and normalize_sc:
+            norm = normalize_track2(data)
+            if norm is None:
+                print_error(
+                    "--normalize-sc: track 2 is not valid ISO 7813 — cannot normalize"
+                )
+                raise SystemExit(1)
+            sc_normalized = norm != data
+            data = norm
         data_err = _validate_track_data(tk, data)
         if data_err:
             print_error(data_err)
@@ -618,7 +639,14 @@ def card_add_cmd(ctx, name, track1, track2, verbose, port, device_id):
                 raise SystemExit(1)
 
     kind = "1-track" if len(writes) == 1 else "2-track"
-    print_success(f"added {kind} card {name}")
+    msg = f"added {kind} card {name}"
+    if normalize_sc and track2 is not None:
+        msg += (
+            " (service code normalized)"
+            if sc_normalized
+            else " (service code already normalized)"
+        )
+    print_success(msg)
 
 
 @card.command("del", context_settings={"help_option_names": ["-h", "--help"]})
@@ -654,23 +682,47 @@ def card_del_cmd(ctx, name, verbose, port, device_id):
         "emulation)."
     ),
 )
+@click.option(
+    "--normalize-sc/--no-normalize-sc",
+    "normalize_sc",
+    default=False,
+    help=(
+        "Auto-normalize --t2's Service Code for magstripe fallback (no "
+        "chip/PIN) before writing it. FOR AUTHORIZED TESTING ONLY. To "
+        "normalize a card's *already-stored* track 2 instead, use `card "
+        "normalize-sc --apply`."
+    ),
+)
 @device_options
 @click.pass_context
-def card_set_cmd(ctx, name, track1, track2, nfc_mode, verbose, port, device_id):
+def card_set_cmd(
+    ctx, name, track1, track2, nfc_mode, normalize_sc, verbose, port, device_id
+):
     """Update one or both tracks, and/or the SEL_RES preference, of the
     existing card NAME.
 
     Pass --t1, --t2 and/or --nfc; at least one is required. Track data is
-    validated locally before it makes the serial round trip.
+    validated locally before it makes the serial round trip. --normalize-sc
+    rewrites --t2's Service Code first (see `card normalize-sc`).
     """
     if track1 is None and track2 is None and nfc_mode is None:
         print_error("nothing to set — pass --t1, --t2 and/or --nfc")
         raise SystemExit(1)
 
     updates = []
+    sc_normalized = False
     for tk, data in ((1, track1), (2, track2)):
         if data is None:
             continue
+        if tk == 2 and normalize_sc:
+            norm = normalize_track2(data)
+            if norm is None:
+                print_error(
+                    "--normalize-sc: track 2 is not valid ISO 7813 — cannot normalize"
+                )
+                raise SystemExit(1)
+            sc_normalized = norm != data
+            data = norm
         err = _validate_track_data(tk, data)
         if err:
             print_error(err)
@@ -693,7 +745,14 @@ def card_set_cmd(ctx, name, track1, track2, nfc_mode, verbose, port, device_id):
     changed = [f"track {tk}" for tk, _ in updates]
     if nfc_mode is not None:
         changed.append(f"nfc {nfc_mode}")
-    print_success(f"updated {' and '.join(changed)} on {name}")
+    msg = f"updated {' and '.join(changed)} on {name}"
+    if normalize_sc and track2 is not None:
+        msg += (
+            " (service code normalized)"
+            if sc_normalized
+            else " (service code already normalized)"
+        )
+    print_success(msg)
 
 
 @card.command("select", context_settings={"help_option_names": ["-h", "--help"]})

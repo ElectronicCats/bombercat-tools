@@ -2,11 +2,17 @@
 
 # Electronic Cats
 # track_parser.py — card-standard detection + enriched Service Code analysis
-# for `magspoof show`. Only ISO 7813 (financial magstripe) is implemented
-# today; `_DETECTORS` is a registry so a future standard (AAMVA driver's
-# licenses, PBOC/UnionPay, transit, ...) is added by registering one more
-# detector function here, not by rewriting `detect_track_standard` or the
-# CLI. docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
+# for `magspoof show`. `_DETECTORS` is an ordered registry: a future standard
+# is added by registering one more detector function here, not by rewriting
+# `detect_track_standard` or the CLI. docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
+#
+# Only ISO 7813 (financial) and PBOC/UnionPay have a full field parse +
+# Service Code analysis, because they share one well-documented wire format.
+# AAMVA (driver's licenses) and the LOYALTY_GENERIC catch-all are detection
+# only (no field decode): AAMVA's per-jurisdiction field layout isn't
+# uniform across US states, and "loyalty" vs. "transit" cards have no
+# registered IIN scheme to tell them apart from a raw magstripe string, so
+# both are intentionally bucketed as LOYALTY_GENERIC rather than guessed.
 # Distributed as-is; no warranty is given.
 
 import re
@@ -25,7 +31,22 @@ from .track2 import (
 
 class TrackStandard(str, Enum):
     ISO_7813_FINANCIAL = "iso7813_financial"
+    PBOC_UNIONPAY = "pboc_unionpay"
+    AAMVA_DL = "aamva_dl"
+    LOYALTY_GENERIC = "loyalty_generic"
     UNKNOWN = "unknown"
+
+
+# ISO/IEC 7812 IIN range registered to China UnionPay. Payment PANs never
+# start with 636 (that block is registered to AAMVA, see below), so this and
+# the AAMVA check can't collide.
+_UNIONPAY_PAN_PREFIX = "62"
+
+# ISO/IEC 7812 IIN block registered to AAMVA for driver's license / ID cards
+# (issuer 636026 and neighboring jurisdiction-specific IINs). Track 2 for
+# these encodes as ";636...=...?", structurally identical to a financial
+# track but never a real payment PAN.
+_AAMVA_IIN_PREFIX = "636"
 
 
 # %B{PAN}^{NAME}^{YYMM}{service code}{discretionary}?  (IATA / ISO 7813 Track 1)
@@ -75,11 +96,51 @@ def register_detector(fn: _Detector) -> _Detector:
 
 
 @register_detector
+def _detect_aamva(track: str, track_num: int) -> Optional[TrackStandard]:
+    """AAMVA driver's license / ID card. Detection only — field layout
+    (name, DOB, address...) varies per US jurisdiction, so we don't attempt
+    to decode it, only to recognize it so it isn't mistaken for a payment
+    card or left as UNKNOWN."""
+    if track_num == 1:
+        # Financial Track 1 always starts with '%B'; AAMVA never does. The
+        # '^' field separator (jurisdiction ^ name ^ ...) rules out a bare
+        # numeric loyalty/transit track.
+        if track.startswith("%") and not track.startswith("%B") and "^" in track:
+            return TrackStandard.AAMVA_DL
+        return None
+    if (
+        track.startswith(";" + _AAMVA_IIN_PREFIX)
+        and "=" in track
+        and track.endswith("?")
+    ):
+        return TrackStandard.AAMVA_DL
+    return None
+
+
+@register_detector
 def _detect_iso7813_financial(track: str, track_num: int) -> Optional[TrackStandard]:
-    if track_num == 1 and parse_track1_financial(track) is not None:
-        return TrackStandard.ISO_7813_FINANCIAL
-    if track_num == 2 and parse_track2(track) is not None:
-        return TrackStandard.ISO_7813_FINANCIAL
+    if track_num == 1:
+        parsed = parse_track1_financial(track)
+    else:
+        parsed = parse_track2(track)
+    if parsed is None:
+        return None
+    if parsed.pan.startswith(_UNIONPAY_PAN_PREFIX):
+        return TrackStandard.PBOC_UNIONPAY
+    return TrackStandard.ISO_7813_FINANCIAL
+
+
+@register_detector
+def _detect_loyalty_generic(track: str, track_num: int) -> Optional[TrackStandard]:
+    """Catch-all for a well-formed but non-financial, non-AAMVA track (store
+    loyalty cards, gift cards, transit passes, ...). These have no
+    registered IIN scheme, so we can't reliably tell "loyalty" from
+    "transit" apart from a raw magstripe string — both land here rather
+    than being guessed."""
+    if track_num == 1 and track.startswith("%") and track.endswith("?"):
+        return TrackStandard.LOYALTY_GENERIC
+    if track_num == 2 and track.startswith(";") and track.endswith("?"):
+        return TrackStandard.LOYALTY_GENERIC
     return None
 
 
@@ -169,10 +230,18 @@ class CardAnalysis:
     recommendations: List[str]
 
 
+# PBOC/UnionPay magstripe cards follow the exact same ISO 7813 wire format
+# as other financial cards, so they get the same field parse + Service Code
+# analysis — only the reported `standard` differs.
+_FINANCIAL_STANDARDS = frozenset(
+    (TrackStandard.ISO_7813_FINANCIAL, TrackStandard.PBOC_UNIONPAY)
+)
+
+
 def _analyze_track(track: str, track_num: int) -> TrackAnalysis:
     standard = detect_track_standard(track, track_num)
     parsed: Optional[object] = None
-    if standard == TrackStandard.ISO_7813_FINANCIAL:
+    if standard in _FINANCIAL_STANDARDS:
         parsed = (
             parse_track1_financial(track) if track_num == 1 else parse_track2(track)
         )
@@ -181,8 +250,9 @@ def _analyze_track(track: str, track_num: int) -> TrackAnalysis:
 
 
 def analyze_card(t1: str, t2: str) -> CardAnalysis:
-    """Analyze the active card's tracks: detect the standard and, for ISO
-    7813 financial cards, decode the Service Code (chip/PIN/fallback)."""
+    """Analyze the active card's tracks: detect the standard and, for
+    ISO 7813 / PBOC financial cards, decode the Service Code
+    (chip/PIN/fallback)."""
     t1_analysis = _analyze_track(t1, 1) if t1 else None
     t2_analysis = _analyze_track(t2, 2) if t2 else None
 
@@ -192,7 +262,7 @@ def analyze_card(t1: str, t2: str) -> CardAnalysis:
     elif t1_analysis and t1_analysis.standard != TrackStandard.UNKNOWN:
         primary_standard = t1_analysis.standard
 
-    is_financial = primary_standard == TrackStandard.ISO_7813_FINANCIAL
+    is_financial = primary_standard in _FINANCIAL_STANDARDS
 
     # Track 2 is authoritative (it's the only track `card normalize-sc`
     # rewrites), fall back to Track 1's if Track 2 has none.

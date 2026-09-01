@@ -194,8 +194,9 @@ _SC_STATUS_STYLE = {
     default=True,
     show_default=True,
     help=(
-        "Show detected standard + Service Code analysis (chip/PIN/fallback) "
-        "for ISO 7813 financial cards."
+        "Show detected standard (ISO 7813 financial, PBOC/UnionPay, AAMVA "
+        "driver's license, loyalty/transit) + Service Code analysis "
+        "(chip/PIN/fallback) for financial cards."
     ),
 )
 @device_options

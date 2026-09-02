@@ -1019,16 +1019,22 @@ def card_info_cmd(ctx, verbose, port, device_id):
 @click.option(
     "--remove-chip/--no-remove-chip",
     "remove_chip",
-    default=True,
-    show_default=True,
-    help="Clear the chip requirement (Service Code 1st digit 2/6 -> 1).",
+    default=None,
+    help=(
+        "Clear the chip requirement (Service Code 1st digit 2/6 -> 1). "
+        "Passed alone (with --remove-pin omitted), only the chip "
+        "requirement is cleared."
+    ),
 )
 @click.option(
     "--remove-pin/--no-remove-pin",
     "remove_pin",
-    default=True,
-    show_default=True,
-    help="Clear the PIN requirement (Service Code 3rd digit 6 -> 1).",
+    default=None,
+    help=(
+        "Clear the PIN requirement (Service Code 3rd digit 6 -> 1). "
+        "Passed alone (with --remove-chip omitted), only the PIN "
+        "requirement is cleared."
+    ),
 )
 @click.option(
     "--json",
@@ -1047,13 +1053,28 @@ def card_normalize_sc_cmd(
     """Normalize a stored card's Track 2 Service Code for magstripe fallback.
 
     Rewrites the Service Code so a terminal can swipe the card without
-    demanding a chip or a PIN (the active card when NAME is omitted). By
-    default both the chip and PIN requirements are cleared; pass
-    --no-remove-chip or --no-remove-pin to clear only one of the two. Without
-    --apply this only previews the change; pass --apply to write it back via
-    `card set`. FOR AUTHORIZED TESTING ONLY — this deliberately weakens the
-    card's stated security requirements.
+    demanding a chip or a PIN (the active card when NAME is omitted).
+    Passing neither flag clears both requirements; passing exactly one of
+    --remove-chip/--remove-pin clears only that one (the other is left
+    alone); --no-remove-chip or --no-remove-pin, passed alone, clears only
+    the other one. Without --apply this only previews the change; pass
+    --apply to write it back via `card set`. FOR AUTHORIZED TESTING ONLY —
+    this deliberately weakens the card's stated security requirements.
     """
+    # Neither passed: clear both (previous default). One passed and the
+    # other omitted: an explicit --remove-* means "just this one" (the
+    # omitted side defaults to False), while an explicit --no-remove-*
+    # leaves the omitted side at its True default — so `--no-remove-chip`
+    # alone still clears the PIN requirement, matching the option's own
+    # help text.
+    if remove_chip is None and remove_pin is None:
+        remove_chip = True
+        remove_pin = True
+    elif remove_chip is None:
+        remove_chip = not remove_pin
+    elif remove_pin is None:
+        remove_pin = not remove_chip
+
     level = _verbosity(ctx, verbose)
     cmd = f"magcard get {name}" if name else "magcard get"
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
@@ -1137,16 +1158,22 @@ def card_normalize_sc_cmd(
 @click.option(
     "--require-chip/--no-require-chip",
     "require_chip",
-    default=True,
-    show_default=True,
-    help="Set the chip requirement (Service Code 1st digit 1/5 -> 2/6).",
+    default=None,
+    help=(
+        "Set the chip requirement (Service Code 1st digit 1/5 -> 2/6). "
+        "Passed alone (with --require-pin omitted), only the chip "
+        "requirement is set."
+    ),
 )
 @click.option(
     "--require-pin/--no-require-pin",
     "require_pin",
-    default=True,
-    show_default=True,
-    help="Set the PIN requirement (Service Code 3rd digit -> 6).",
+    default=None,
+    help=(
+        "Set the PIN requirement (Service Code 3rd digit -> 6). "
+        "Passed alone (with --require-chip omitted), only the PIN "
+        "requirement is set."
+    ),
 )
 @click.option(
     "--json",
@@ -1167,12 +1194,28 @@ def card_require_sc_cmd(
 
     Rewrites the Service Code so a terminal requires a chip transaction and/or
     a PIN instead of accepting a bare magstripe swipe (the active card when
-    NAME is omitted). By default both requirements are set; pass
-    --no-require-chip or --no-require-pin to set only one of the two. Without
-    --apply this only previews the change; pass --apply to write it back via
-    `card set`. Useful to restore a card `normalize-sc` weakened earlier, or
-    to test how a terminal reacts to a stricter service code.
+    NAME is omitted). Passing neither flag sets both requirements; passing
+    exactly one of --require-chip/--require-pin sets only that one (the other
+    is left alone); --no-require-chip or --no-require-pin, passed alone, sets
+    only the other one. Without --apply this only previews the change; pass
+    --apply to write it back via `card set`. Useful to restore a card
+    `normalize-sc` weakened earlier, or to test how a terminal reacts to a
+    stricter service code.
     """
+    # Neither passed: harden both (previous default). One passed and the
+    # other omitted: an explicit --require-* means "just this one" (the
+    # omitted side defaults to False), while an explicit --no-require-*
+    # leaves the omitted side at its True default — so `--no-require-chip`
+    # alone still sets the PIN requirement, matching the option's own help
+    # text ("pass --no-require-chip ... to set only one of the two").
+    if require_chip is None and require_pin is None:
+        require_chip = True
+        require_pin = True
+    elif require_chip is None:
+        require_chip = not require_pin
+    elif require_pin is None:
+        require_pin = not require_chip
+
     level = _verbosity(ctx, verbose)
     cmd = f"magcard get {name}" if name else "magcard get"
     with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):

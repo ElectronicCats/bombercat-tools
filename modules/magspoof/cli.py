@@ -1017,6 +1017,20 @@ def card_info_cmd(ctx, verbose, port, device_id):
     "--apply", is_flag=True, help="Write the normalized Track 2 back to the card."
 )
 @click.option(
+    "--remove-chip/--no-remove-chip",
+    "remove_chip",
+    default=True,
+    show_default=True,
+    help="Clear the chip requirement (Service Code 1st digit 2/6 -> 1).",
+)
+@click.option(
+    "--remove-pin/--no-remove-pin",
+    "remove_pin",
+    default=True,
+    show_default=True,
+    help="Clear the PIN requirement (Service Code 3rd digit 6 -> 1).",
+)
+@click.option(
     "--json",
     "as_json",
     is_flag=True,
@@ -1027,11 +1041,15 @@ def card_info_cmd(ctx, verbose, port, device_id):
 )
 @device_options
 @click.pass_context
-def card_normalize_sc_cmd(ctx, name, apply, as_json, verbose, port, device_id):
+def card_normalize_sc_cmd(
+    ctx, name, apply, remove_chip, remove_pin, as_json, verbose, port, device_id
+):
     """Normalize a stored card's Track 2 Service Code for magstripe fallback.
 
     Rewrites the Service Code so a terminal can swipe the card without
-    demanding a chip or a PIN (the active card when NAME is omitted). Without
+    demanding a chip or a PIN (the active card when NAME is omitted). By
+    default both the chip and PIN requirements are cleared; pass
+    --no-remove-chip or --no-remove-pin to clear only one of the two. Without
     --apply this only previews the change; pass --apply to write it back via
     `card set`. FOR AUTHORIZED TESTING ONLY — this deliberately weakens the
     card's stated security requirements.
@@ -1056,7 +1074,9 @@ def card_normalize_sc_cmd(ctx, name, apply, as_json, verbose, port, device_id):
             raise SystemExit(1)
 
         sc = parsed.service_code
-        sc_norm = parsed.normalized_service_code()
+        sc_norm = parsed.normalized_service_code(
+            remove_chip=remove_chip, remove_pin=remove_pin
+        )
         t2_norm = parsed.to_track2(sc_norm)
 
         if as_json:
@@ -1070,6 +1090,8 @@ def card_normalize_sc_cmd(ctx, name, apply, as_json, verbose, port, device_id):
                         "track2_normalized": t2_norm,
                         "is_ic_card": parsed.is_ic_card,
                         "requires_pin": parsed.requires_pin,
+                        "remove_chip": remove_chip,
+                        "remove_pin": remove_pin,
                     }
                 )
             )
@@ -1082,6 +1104,8 @@ def card_normalize_sc_cmd(ctx, name, apply, as_json, verbose, port, device_id):
         _print_field("service code", sc_display)
         _print_field("chip required", "yes" if parsed.is_ic_card else "no")
         _print_field("PIN required", "yes" if parsed.requires_pin else "no")
+        _print_field("remove chip", "yes" if remove_chip else "no")
+        _print_field("remove pin", "yes" if remove_pin else "no")
 
         if not apply:
             if sc != sc_norm:

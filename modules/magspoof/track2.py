@@ -30,14 +30,22 @@ def service_code_requires_pin(sc: str) -> bool:
     return sc[2] == "6"
 
 
-def normalize_service_code(sc: str) -> str:
+def normalize_service_code(
+    sc: str, *, remove_chip: bool = True, remove_pin: bool = True
+) -> str:
     """Rewrite a 3-digit Service Code for magstripe fallback + no PIN: 1st
     digit 2/6 -> 1 (chip-required -> magstripe-only; 5 is left as-is, it
-    already allows fallback), 3rd digit 6 -> 1 (PIN-required -> none)."""
+    already allows fallback), 3rd digit 6 -> 1 (PIN-required -> none).
+
+    Args:
+        sc: The 3-digit service code
+        remove_chip: If True, change first digit 2/6 -> 1 (default True)
+        remove_pin: If True, change third digit 6 -> 1 (default True)
+    """
     first, second, third = sc
-    if first in ("2", "6"):
+    if remove_chip and first in ("2", "6"):
         first = "1"
-    if third == "6":
+    if remove_pin and third == "6":
         third = "1"
     return f"{first}{second}{third}"
 
@@ -61,10 +69,14 @@ class Track2Data:
         """True if the Service Code's 3rd digit (6) demands a PIN."""
         return service_code_requires_pin(self.service_code)
 
-    def normalized_service_code(self) -> str:
+    def normalized_service_code(
+        self, *, remove_chip: bool = True, remove_pin: bool = True
+    ) -> str:
         """Service Code rewritten for magstripe fallback + no PIN (see
         `normalize_service_code`)."""
-        return normalize_service_code(self.service_code)
+        return normalize_service_code(
+            self.service_code, remove_chip=remove_chip, remove_pin=remove_pin
+        )
 
     def to_track2(self, service_code: Optional[str] = None) -> str:
         """Reconstruct the Track 2 string, optionally with a substitute
@@ -84,10 +96,20 @@ def parse_track2(track2: str) -> Optional[Track2Data]:
     )
 
 
-def normalize_track2(track2: str) -> Optional[str]:
+def normalize_track2(
+    track2: str, *, remove_chip: bool = True, remove_pin: bool = True
+) -> Optional[str]:
     """Parse TRACK2 and rewrite its Service Code for magstripe fallback (no
-    chip, no PIN required). Returns None if TRACK2 isn't valid Track 2."""
+    chip, no PIN required). Returns None if TRACK2 isn't valid Track 2.
+
+    Args:
+        track2: The track 2 string
+        remove_chip: If True, remove chip requirement (default True)
+        remove_pin: If True, remove PIN requirement (default True)
+    """
     parsed = parse_track2(track2)
     if parsed is None:
         return None
-    return parsed.to_track2(parsed.normalized_service_code())
+    return parsed.to_track2(
+        parsed.normalized_service_code(remove_chip=remove_chip, remove_pin=remove_pin)
+    )

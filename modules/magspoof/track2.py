@@ -50,6 +50,30 @@ def normalize_service_code(
     return f"{first}{second}{third}"
 
 
+def harden_service_code(
+    sc: str, *, require_chip: bool = True, require_pin: bool = True
+) -> str:
+    """Rewrite a 3-digit Service Code to demand a chip and/or a PIN — the
+    inverse of `normalize_service_code`. 1st digit 1 -> 2 / 5 -> 6
+    (international/national interchange preserved, chip now required; 2 and 6
+    are already chip-required and left as-is), 3rd digit -> 6 (PIN required).
+
+    Args:
+        sc: The 3-digit service code
+        require_chip: If True, change first digit 1 -> 2 / 5 -> 6 (default True)
+        require_pin: If True, change third digit to 6 (default True)
+    """
+    first, second, third = sc
+    if require_chip:
+        if first == "1":
+            first = "2"
+        elif first == "5":
+            first = "6"
+    if require_pin and third != "6":
+        third = "6"
+    return f"{first}{second}{third}"
+
+
 @dataclass
 class Track2Data:
     """Parsed ISO 7813 Track 2 components."""
@@ -76,6 +100,15 @@ class Track2Data:
         `normalize_service_code`)."""
         return normalize_service_code(
             self.service_code, remove_chip=remove_chip, remove_pin=remove_pin
+        )
+
+    def hardened_service_code(
+        self, *, require_chip: bool = True, require_pin: bool = True
+    ) -> str:
+        """Service Code rewritten to demand a chip and/or a PIN (see
+        `harden_service_code`)."""
+        return harden_service_code(
+            self.service_code, require_chip=require_chip, require_pin=require_pin
         )
 
     def to_track2(self, service_code: Optional[str] = None) -> str:
@@ -112,4 +145,24 @@ def normalize_track2(
         return None
     return parsed.to_track2(
         parsed.normalized_service_code(remove_chip=remove_chip, remove_pin=remove_pin)
+    )
+
+
+def harden_track2(
+    track2: str, *, require_chip: bool = True, require_pin: bool = True
+) -> Optional[str]:
+    """Parse TRACK2 and rewrite its Service Code to demand a chip and/or a
+    PIN — the inverse of `normalize_track2`. Returns None if TRACK2 isn't
+    valid Track 2.
+
+    Args:
+        track2: The track 2 string
+        require_chip: If True, add the chip requirement (default True)
+        require_pin: If True, add the PIN requirement (default True)
+    """
+    parsed = parse_track2(track2)
+    if parsed is None:
+        return None
+    return parsed.to_track2(
+        parsed.hardened_service_code(require_chip=require_chip, require_pin=require_pin)
     )

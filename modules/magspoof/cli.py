@@ -1127,3 +1127,120 @@ def card_normalize_sc_cmd(
             raise SystemExit(1)
 
     print_success(f"service code normalized on {card_name or name}: {sc} → {sc_norm}")
+
+
+@card.command("require-sc", context_settings={"help_option_names": ["-h", "--help"]})
+@click.argument("name", required=False, shell_complete=complete_card_name)
+@click.option(
+    "--apply", is_flag=True, help="Write the hardened Track 2 back to the card."
+)
+@click.option(
+    "--require-chip/--no-require-chip",
+    "require_chip",
+    default=True,
+    show_default=True,
+    help="Set the chip requirement (Service Code 1st digit 1/5 -> 2/6).",
+)
+@click.option(
+    "--require-pin/--no-require-pin",
+    "require_pin",
+    default=True,
+    show_default=True,
+    help="Set the PIN requirement (Service Code 3rd digit -> 6).",
+)
+@click.option(
+    "--json",
+    "as_json",
+    is_flag=True,
+    help=(
+        'Emit {"name", "service_code", "service_code_hardened", "track2", '
+        '"track2_hardened", "is_ic_card", "requires_pin"}.'
+    ),
+)
+@device_options
+@click.pass_context
+def card_require_sc_cmd(
+    ctx, name, apply, require_chip, require_pin, as_json, verbose, port, device_id
+):
+    """Set a stored card's Track 2 Service Code to demand a chip and/or a PIN
+    — the inverse of `card normalize-sc`.
+
+    Rewrites the Service Code so a terminal requires a chip transaction and/or
+    a PIN instead of accepting a bare magstripe swipe (the active card when
+    NAME is omitted). By default both requirements are set; pass
+    --no-require-chip or --no-require-pin to set only one of the two. Without
+    --apply this only previews the change; pass --apply to write it back via
+    `card set`. Useful to restore a card `normalize-sc` weakened earlier, or
+    to test how a terminal reacts to a stricter service code.
+    """
+    level = _verbosity(ctx, verbose)
+    cmd = f"magcard get {name}" if name else "magcard get"
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(cmd)
+        if not r.ok:
+            _report_error("card require-sc", r)
+            raise SystemExit(1)
+
+        card_name = r.data.get("name", "")
+        t2 = r.data.get("t2", "")
+        if not t2:
+            print_error(f"card {card_name or name} has no track 2")
+            raise SystemExit(1)
+
+        parsed = parse_track2(t2)
+        if parsed is None:
+            print_error("stored track 2 is not valid ISO 7813 — cannot harden")
+            raise SystemExit(1)
+
+        sc = parsed.service_code
+        sc_hard = parsed.hardened_service_code(
+            require_chip=require_chip, require_pin=require_pin
+        )
+        t2_hard = parsed.to_track2(sc_hard)
+
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "name": card_name,
+                        "service_code": sc,
+                        "service_code_hardened": sc_hard,
+                        "track2": t2,
+                        "track2_hardened": t2_hard,
+                        "is_ic_card": parsed.is_ic_card,
+                        "requires_pin": parsed.requires_pin,
+                        "require_chip": require_chip,
+                        "require_pin": require_pin,
+                    }
+                )
+            )
+            return
+
+        sc_display = f"{sc} → {sc_hard}" if sc != sc_hard else f"{sc} (already hardened)"
+        _print_field("name", card_name or "[dim]—[/dim]")
+        _print_field("service code", sc_display)
+        _print_field("chip required", "yes" if parsed.is_ic_card else "no")
+        _print_field("PIN required", "yes" if parsed.requires_pin else "no")
+        _print_field("require chip", "yes" if require_chip else "no")
+        _print_field("require pin", "yes" if require_pin else "no")
+
+        if not apply:
+            if sc != sc_hard:
+                print_info("use --apply to write the hardened track 2 to the card")
+            return
+
+        if sc == sc_hard:
+            print_info(f"{card_name or name} already hardened — nothing to write")
+            return
+
+        err = _validate_track_data(2, t2_hard)
+        if err:
+            print_error(f"hardened track 2 failed local validation: {err}")
+            raise SystemExit(1)
+
+        rt = link.command(f"magcard set {card_name or name} 2 {t2_hard}")
+        if not rt.ok:
+            _report_error("card require-sc", rt)
+            raise SystemExit(1)
+
+    print_success(f"service code hardened on {card_name or name}: {sc} → {sc_hard}")

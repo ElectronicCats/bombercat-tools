@@ -108,7 +108,7 @@ While `capture on`, each relayed APDU is echoed as:
 - `ts_ms` — the device's `millis()` timestamp (ground-truth timing).
 - `hex` — the raw APDU bytes.
 
-The host turns these into pcap frames — see [Capture / Wireshark](capture.md).
+The host turns these into pcap frames — see [Capture / Wireshark](commands/capture.md).
 
 ---
 

@@ -16,7 +16,7 @@ import json
 import re
 import time
 from contextlib import contextmanager
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Callable, Dict, Iterator, Optional, Tuple
 
 import click
 from click.shell_completion import CompletionItem
@@ -32,7 +32,7 @@ from ..utils.detection_cli import (
 )
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
-from .track2 import normalize_track2, parse_track2
+from .track2 import Track2Data, normalize_track2, parse_track2
 from .track_parser import TrackStandard, analyze_card, card_analysis_to_dict
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
@@ -1011,6 +1011,143 @@ def card_info_cmd(ctx, verbose, port, device_id):
     console.print(table)
 
 
+def _resolve_two_flags(a: Optional[bool], b: Optional[bool]) -> Tuple[bool, bool]:
+    """Resolve a pair of `--flag/--no-flag` options (`Optional[bool]`, `None`
+    when neither was passed) shared by `card normalize-sc`/`card require-sc`:
+    neither passed -> both True (act on both fields); one passed alone -> an
+    affirmative flag (`--remove-chip`) isolates to just that field (the
+    sibling defaults to False), while a negative flag (`--no-remove-chip`)
+    leaves its sibling at the shared True default, so it alone still acts on
+    the other field."""
+    if a is None and b is None:
+        return True, True
+    if a is None:
+        return not b, b
+    if b is None:
+        return a, not a
+    return a, b
+
+
+# mode -> the bits that differ between `normalize-sc` (clear chip/PIN) and
+# `require-sc` (set chip/PIN): the option/JSON/display verb ("remove" vs
+# "require"), the past-tense used in messages and JSON keys ("normalized" vs
+# "hardened"), the command label `_report_error` prints, and the Service Code
+# transform itself.
+_SC_REWRITE_MODES = {
+    "normalize": {
+        "flag_verb": "remove",
+        "past": "normalized",
+        "cmd_label": "card normalize-sc",
+        "transform": lambda parsed, chip, pin: parsed.normalized_service_code(
+            remove_chip=chip, remove_pin=pin
+        ),
+    },
+    "harden": {
+        "flag_verb": "require",
+        "past": "hardened",
+        "cmd_label": "card require-sc",
+        "transform": lambda parsed, chip, pin: parsed.hardened_service_code(
+            require_chip=chip, require_pin=pin
+        ),
+    },
+}
+
+
+def _card_sc_rewrite(
+    ctx,
+    name: Optional[str],
+    apply: bool,
+    chip: bool,
+    pin: bool,
+    as_json: bool,
+    verbose: int,
+    port: Optional[str],
+    device_id: Optional[int],
+    *,
+    mode: str,
+) -> None:
+    """Shared body of `card normalize-sc`/`card require-sc`: fetch NAME's (or
+    the active card's) stored Track 2, rewrite its Service Code per MODE
+    ("normalize" clears the chip/PIN requirements, "harden" sets them),
+    preview the result, and — with `apply` — write it back via `card set`.
+    CHIP/PIN are already resolved booleans (see `_resolve_two_flags`)."""
+    spec = _SC_REWRITE_MODES[mode]
+    flag_verb: str = spec["flag_verb"]
+    past: str = spec["past"]
+    cmd_label: str = spec["cmd_label"]
+    transform: Callable[[Track2Data, bool, bool], str] = spec["transform"]
+
+    level = _verbosity(ctx, verbose)
+    cmd = f"magcard get {name}" if name else "magcard get"
+    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(cmd)
+        if not r.ok:
+            _report_error(cmd_label, r)
+            raise SystemExit(1)
+
+        card_name = r.data.get("name", "")
+        t2 = r.data.get("t2", "")
+        if not t2:
+            print_error(f"card {card_name or name} has no track 2")
+            raise SystemExit(1)
+
+        parsed = parse_track2(t2)
+        if parsed is None:
+            print_error(f"stored track 2 is not valid ISO 7813 — cannot {mode}")
+            raise SystemExit(1)
+
+        sc = parsed.service_code
+        sc_new = transform(parsed, chip, pin)
+        t2_new = parsed.to_track2(sc_new)
+
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "name": card_name,
+                        "service_code": sc,
+                        f"service_code_{past}": sc_new,
+                        "track2": t2,
+                        f"track2_{past}": t2_new,
+                        "is_ic_card": parsed.is_ic_card,
+                        "requires_pin": parsed.requires_pin,
+                        f"{flag_verb}_chip": chip,
+                        f"{flag_verb}_pin": pin,
+                    }
+                )
+            )
+            return
+
+        sc_display = f"{sc} → {sc_new}" if sc != sc_new else f"{sc} (already {past})"
+        _print_field("name", card_name or "[dim]—[/dim]")
+        _print_field("service code", sc_display)
+        _print_field("chip required", "yes" if parsed.is_ic_card else "no")
+        _print_field("PIN required", "yes" if parsed.requires_pin else "no")
+        _print_field(f"{flag_verb} chip", "yes" if chip else "no")
+        _print_field(f"{flag_verb} pin", "yes" if pin else "no")
+
+        if not apply:
+            if sc != sc_new:
+                print_info(f"use --apply to write the {past} track 2 to the card")
+            return
+
+        if sc == sc_new:
+            print_info(f"{card_name or name} already {past} — nothing to write")
+            return
+
+        err = _validate_track_data(2, t2_new)
+        if err:
+            print_error(f"{past} track 2 failed local validation: {err}")
+            raise SystemExit(1)
+
+        rt = link.command(f"magcard set {card_name or name} 2 {t2_new}")
+        if not rt.ok:
+            _report_error(cmd_label, rt)
+            raise SystemExit(1)
+
+    print_success(f"service code {past} on {card_name or name}: {sc} → {sc_new}")
+
+
 @card.command("normalize-sc", context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument("name", required=False, shell_complete=complete_card_name)
 @click.option(
@@ -1061,93 +1198,19 @@ def card_normalize_sc_cmd(
     --apply to write it back via `card set`. FOR AUTHORIZED TESTING ONLY —
     this deliberately weakens the card's stated security requirements.
     """
-    # Neither passed: clear both (previous default). One passed and the
-    # other omitted: an explicit --remove-* means "just this one" (the
-    # omitted side defaults to False), while an explicit --no-remove-*
-    # leaves the omitted side at its True default — so `--no-remove-chip`
-    # alone still clears the PIN requirement, matching the option's own
-    # help text.
-    if remove_chip is None and remove_pin is None:
-        remove_chip = True
-        remove_pin = True
-    elif remove_chip is None:
-        remove_chip = not remove_pin
-    elif remove_pin is None:
-        remove_pin = not remove_chip
-
-    level = _verbosity(ctx, verbose)
-    cmd = f"magcard get {name}" if name else "magcard get"
-    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        r = link.command(cmd)
-        if not r.ok:
-            _report_error("card normalize-sc", r)
-            raise SystemExit(1)
-
-        card_name = r.data.get("name", "")
-        t2 = r.data.get("t2", "")
-        if not t2:
-            print_error(f"card {card_name or name} has no track 2")
-            raise SystemExit(1)
-
-        parsed = parse_track2(t2)
-        if parsed is None:
-            print_error("stored track 2 is not valid ISO 7813 — cannot normalize")
-            raise SystemExit(1)
-
-        sc = parsed.service_code
-        sc_norm = parsed.normalized_service_code(
-            remove_chip=remove_chip, remove_pin=remove_pin
-        )
-        t2_norm = parsed.to_track2(sc_norm)
-
-        if as_json:
-            print(
-                json.dumps(
-                    {
-                        "name": card_name,
-                        "service_code": sc,
-                        "service_code_normalized": sc_norm,
-                        "track2": t2,
-                        "track2_normalized": t2_norm,
-                        "is_ic_card": parsed.is_ic_card,
-                        "requires_pin": parsed.requires_pin,
-                        "remove_chip": remove_chip,
-                        "remove_pin": remove_pin,
-                    }
-                )
-            )
-            return
-
-        sc_display = (
-            f"{sc} → {sc_norm}" if sc != sc_norm else f"{sc} (already normalized)"
-        )
-        _print_field("name", card_name or "[dim]—[/dim]")
-        _print_field("service code", sc_display)
-        _print_field("chip required", "yes" if parsed.is_ic_card else "no")
-        _print_field("PIN required", "yes" if parsed.requires_pin else "no")
-        _print_field("remove chip", "yes" if remove_chip else "no")
-        _print_field("remove pin", "yes" if remove_pin else "no")
-
-        if not apply:
-            if sc != sc_norm:
-                print_info("use --apply to write the normalized track 2 to the card")
-            return
-
-        if sc == sc_norm:
-            print_info(f"{card_name or name} already normalized — nothing to write")
-            return
-
-        err = _validate_track_data(2, t2_norm)
-        if err:
-            print_error(f"normalized track 2 failed local validation: {err}")
-            raise SystemExit(1)
-
-        rt = link.command(f"magcard set {card_name or name} 2 {t2_norm}")
-        if not rt.ok:
-            _report_error("card normalize-sc", rt)
-            raise SystemExit(1)
-
-    print_success(f"service code normalized on {card_name or name}: {sc} → {sc_norm}")
+    remove_chip, remove_pin = _resolve_two_flags(remove_chip, remove_pin)
+    _card_sc_rewrite(
+        ctx,
+        name,
+        apply,
+        remove_chip,
+        remove_pin,
+        as_json,
+        verbose,
+        port,
+        device_id,
+        mode="normalize",
+    )
 
 
 @card.command("require-sc", context_settings={"help_option_names": ["-h", "--help"]})
@@ -1202,90 +1265,16 @@ def card_require_sc_cmd(
     `normalize-sc` weakened earlier, or to test how a terminal reacts to a
     stricter service code.
     """
-    # Neither passed: harden both (previous default). One passed and the
-    # other omitted: an explicit --require-* means "just this one" (the
-    # omitted side defaults to False), while an explicit --no-require-*
-    # leaves the omitted side at its True default — so `--no-require-chip`
-    # alone still sets the PIN requirement, matching the option's own help
-    # text ("pass --no-require-chip ... to set only one of the two").
-    if require_chip is None and require_pin is None:
-        require_chip = True
-        require_pin = True
-    elif require_chip is None:
-        require_chip = not require_pin
-    elif require_pin is None:
-        require_pin = not require_chip
-
-    level = _verbosity(ctx, verbose)
-    cmd = f"magcard get {name}" if name else "magcard get"
-    with _magspoof_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        r = link.command(cmd)
-        if not r.ok:
-            _report_error("card require-sc", r)
-            raise SystemExit(1)
-
-        card_name = r.data.get("name", "")
-        t2 = r.data.get("t2", "")
-        if not t2:
-            print_error(f"card {card_name or name} has no track 2")
-            raise SystemExit(1)
-
-        parsed = parse_track2(t2)
-        if parsed is None:
-            print_error("stored track 2 is not valid ISO 7813 — cannot harden")
-            raise SystemExit(1)
-
-        sc = parsed.service_code
-        sc_hard = parsed.hardened_service_code(
-            require_chip=require_chip, require_pin=require_pin
-        )
-        t2_hard = parsed.to_track2(sc_hard)
-
-        if as_json:
-            print(
-                json.dumps(
-                    {
-                        "name": card_name,
-                        "service_code": sc,
-                        "service_code_hardened": sc_hard,
-                        "track2": t2,
-                        "track2_hardened": t2_hard,
-                        "is_ic_card": parsed.is_ic_card,
-                        "requires_pin": parsed.requires_pin,
-                        "require_chip": require_chip,
-                        "require_pin": require_pin,
-                    }
-                )
-            )
-            return
-
-        sc_display = (
-            f"{sc} → {sc_hard}" if sc != sc_hard else f"{sc} (already hardened)"
-        )
-        _print_field("name", card_name or "[dim]—[/dim]")
-        _print_field("service code", sc_display)
-        _print_field("chip required", "yes" if parsed.is_ic_card else "no")
-        _print_field("PIN required", "yes" if parsed.requires_pin else "no")
-        _print_field("require chip", "yes" if require_chip else "no")
-        _print_field("require pin", "yes" if require_pin else "no")
-
-        if not apply:
-            if sc != sc_hard:
-                print_info("use --apply to write the hardened track 2 to the card")
-            return
-
-        if sc == sc_hard:
-            print_info(f"{card_name or name} already hardened — nothing to write")
-            return
-
-        err = _validate_track_data(2, t2_hard)
-        if err:
-            print_error(f"hardened track 2 failed local validation: {err}")
-            raise SystemExit(1)
-
-        rt = link.command(f"magcard set {card_name or name} 2 {t2_hard}")
-        if not rt.ok:
-            _report_error("card require-sc", rt)
-            raise SystemExit(1)
-
-    print_success(f"service code hardened on {card_name or name}: {sc} → {sc_hard}")
+    require_chip, require_pin = _resolve_two_flags(require_chip, require_pin)
+    _card_sc_rewrite(
+        ctx,
+        name,
+        apply,
+        require_chip,
+        require_pin,
+        as_json,
+        verbose,
+        port,
+        device_id,
+        mode="harden",
+    )

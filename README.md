@@ -44,7 +44,7 @@ The tool is developed and tested on Linux; read
 
 Throughout the docs the command is written as `bombercat`; if you have not set up
 the [`bombercat` alias](docs/reference.md#invocation) or
-[shell completion](docs/reference.md#completion), run it as
+[shell completion](docs/commands/completion.md), run it as
 `python3 bombercat.py …` from `tools/`.
 
 ## Quick start
@@ -82,7 +82,7 @@ bombercat tags watch                  # stream detections until Ctrl-C
 bombercat tags scan -t 20             # sample for 20s, aggregated summary
 ```
 
-See [Detecting NFC tags](docs/usage.md#detecting-nfc-tags-with-detecttags).
+See [Detecting NFC tags](docs/commands/tags.md).
 
 Or flip it around: `bombercat flash DetectReaders` and detect the
 readers/terminals that probe the board's emulated card — no server, no
@@ -94,7 +94,7 @@ bombercat readers watch               # stream detections until Ctrl-C
 bombercat readers scan -t 20          # sample for 20s, aggregated summary
 ```
 
-See [Detecting NFC readers](docs/usage.md#detecting-nfc-readersterminals-with-detectreaders).
+See [Detecting NFC readers](docs/commands/readers.md).
 
 > **Command layout changed.** The relay commands now live under `bombercat
 > relay …`, and `bombercat status` reports the **flashed firmware** instead of
@@ -115,13 +115,14 @@ one by its ID with `-d/--device`. See the
 | [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`), `readers …` (`read`/`watch`/`scan`/`info`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags`/`readers` workflows on DetectTags/DetectReaders. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
-| [Capture / Wireshark](docs/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
+| [Capture / Wireshark](docs/commands/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
 | [Troubleshooting](docs/troubleshooting.md) | Serial permissions, board not detected, old firmware without `identify`/`capture`, `run` timeouts. |
+| [Glossary](docs/glossary.md) | Terms used across these docs — REPL, SEL_RES, APDU, Service Code, UF2, VID/PID, and more. |
 
 ## Dev tooling
 
 These wrap the reproducible build/test scripts (see docs/NFCGATE_PLAN.md Fases 1–5);
-full details in the [reference](docs/reference.md#dev-tooling):
+full details in [`proto`](docs/commands/proto.md) and [`testserver`](docs/commands/testserver.md):
 
 ```sh
 bombercat proto gen                   # regenerate firmware/core/src/proto/*.pb.{c,h}
@@ -209,7 +210,7 @@ Concretely, the non-Linux gaps are:
   concurrent live captures no longer collide there.
 - **Classic pcap only.** The writer emits classic pcap with `DLT_ISO_14443`; no
   pcapng, no per-packet comments
-  ([capture.md](docs/capture.md#classic-pcap-vs-pcapng)).
+  ([capture.md](docs/commands/capture.md#classic-pcap-vs-pcapng)).
 - `tools/tests/capture_hosttest.py` checks the dissection only when `tshark` is
   installed; without it that half of the test is skipped.
 - `testserver smoke` needs the classic protobuf 3.x runtime. If the interpreter

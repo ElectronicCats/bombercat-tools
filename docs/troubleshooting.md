@@ -16,6 +16,9 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [`tags`: no tags detected](#no-tags-detected)
 - [`tags`: UID shows "unavailable" for NFC-B/NFC-F](#tags-uid-unavailable)
 - [`magspoof`: the physical button only plays track 2](#magspoof-button-track-2)
+- [`magspoof`: every command answers `-ERR unknown command`](#magspoof-unknown-command)
+- [`magspoof nfc visa`/`nfc read`: tap wait times out with no error](#magspoof-nfc-tap-timeout)
+- [`magspoof show`: "chip required — swipe may be refused"](#magspoof-chip-required-warning)
 - [`testserver` errors](#testserver-issues)
 
 ---
@@ -73,7 +76,7 @@ of:
 
 - **It isn't running the NFCGate relay firmware.** Check with `bombercat
   status`, and flash it: `bombercat flash NFCGate`
-  ([reference](reference.md#flash)). Afterwards `bombercat device info` should
+  ([flash](commands/flash.md)). Afterwards `bombercat device info` should
   show a `fw` version and `state idle`. To build from source instead, see
   [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md).
 - **`RELAY_AUTOSTART = 1` with a non-empty SSID.** The sketch then blocks on the
@@ -116,7 +119,7 @@ The CLI can be newer than the board's firmware. You'll see:
   reflash `firmware/NFCGate` (needs ≥ 0.8.0).
 
 Fix: reflash the current NFCGate firmware — `bombercat flash NFCGate`
-([reference](reference.md#flash)), or build it from source with
+([flash](commands/flash.md)), or build it from source with
 [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md). Check the
 version afterwards with `bombercat device info` (the `fw` field).
 
@@ -227,7 +230,7 @@ board (or check the app's session/role for Path B).
 - **"Wireshark did not attach to the pipe in time"** — it took longer than 30 s
   to open the FIFO; with `-o` also given, capture falls back to the file.
 - A **classic pcap** written by the CLI vs a **pcapng** saved from Wireshark is
-  expected — see [Capture / Wireshark](capture.md#classic-pcap-vs-pcapng).
+  expected — see [Capture / Wireshark](commands/capture.md#classic-pcap-vs-pcapng).
 
 <a id="no-tags-detected"></a>
 ## `tags`: no tags detected
@@ -251,7 +254,7 @@ board (or check the app's session/role for Path B).
 - Card positioning/antenna range issues are a firmware/hardware matter, not
   something the CLI can diagnose — try `bombercat tags info` first to at
   least confirm the board answers and check its `events` mode
-  ([reference](reference.md#tags-info)).
+  ([tags info](commands/tags.md#tags-info)).
 
 <a id="tags-uid-unavailable"></a>
 ## `tags`: UID shows "unavailable" for NFC-B/NFC-F
@@ -262,7 +265,7 @@ uid           unavailable (NFC-B: firmware prints no ID)
 
 Not a bug — every *published* DetectTags `.uf2` parses the older,
 human-readable `displayCardInfo()` text (see
-[Firmwares](reference.md#firmwares)), and on that build **NFC-B** and
+[Firmwares](commands/status.md#firmware-capability-table)), and on that build **NFC-B** and
 **NFC-F** never printed a UID field at all — there was nothing for the CLI to
 read. `tags` reports this honestly rather than inventing a value or leaving
 the field blank. NFC-A, MIFARE and ISO15693 all print their UID and are
@@ -305,13 +308,77 @@ magbtn alt
 `bombercat magspoof show` should then report `alternating 1 and 2`, and the
 button follows the active card again. A firmware factory reset clears it too.
 
+<a id="magspoof-unknown-command"></a>
+## `magspoof`: every command answers `-ERR unknown command`
+
+```
+✗ play failed: unknown command
+ℹ this firmware predates magplay/magset/magget/magbtn — reflash the magspoof
+  image (bombercat flash magspoof) to use it.
+```
+
+Two different causes give the same reply:
+
+- **Old `magspoof` image.** Boards built before the `magplay`/`magset`/`magget`/
+  `magbtn` REPL hook was added answer every `magspoof …` subcommand this way —
+  and it's `1.1.1.0` either side of that change, so the version alone doesn't
+  tell you. Reflash: `bombercat flash magspoof`.
+- **Wrong firmware entirely.** `MagspoofCVSAttack` and `MagSpoofMqtt` boot with
+  the same banner as `magspoof` but don't expose this REPL surface at all —
+  confirm what's actually flashed with `bombercat status` before assuming the
+  image is just stale. See [`magspoof`](commands/magspoof.md#subcommands).
+
+<a id="magspoof-nfc-tap-timeout"></a>
+## `magspoof nfc visa`/`nfc read`: tap wait times out with no error
+
+Symptom: the command sits on `waiting for a contactless tap (up to 15s)...` /
+`waiting for a card (up to 8s)...` and then reports failure — no crash, no
+malformed data, just nothing detected in the window.
+
+- **Antenna positioning/range** is a hardware matter the CLI can't diagnose —
+  present the card/reader flat against the PN7150 antenna, not at an angle or
+  edge-on.
+- **Check what mode the PN7150 is actually in first**:
+  `bombercat magspoof nfc info` reports `mode` (`reader`/emulation) and
+  `SEL_RES` without touching either — if a prior [`nfc selres`](commands/magspoof.md#magspoof-nfc-selres)
+  override or a different command left it in an unexpected state, that
+  explains a silent timeout better than retrying blind.
+- **`nfc visa` needs a reader on the other end**, not another BomberCat in
+  reader mode — it emulates a card, so tap it *to* a terminal/PN7150 running
+  as reader. `nfc read` is the reverse: it expects a physical EMV/Visa card
+  presented *to* the BomberCat.
+- Retrying costs nothing — both commands just re-arm the same wait.
+
+<a id="magspoof-chip-required-warning"></a>
+## `magspoof show`: "chip required — swipe may be refused"
+
+```
+security      ⚠ chip required — swipe may be refused
+chip required yes
+PIN required  no
+
+ℹ use: bombercat magspoof card normalize-sc --apply
+```
+
+Not an error — [`magspoof show`](commands/magspoof.md#magspoof-show) is reading the
+card's own Track 2 Service Code and reporting, honestly, that a terminal may
+reject a plain magstripe swipe of this card because its Service Code demands
+chip (and/or PIN) verification. This is expected for any real financial card
+data; a magstripe-only swipe genuinely can't satisfy that requirement.
+
+The CLI hint points at [`card normalize-sc`](commands/magspoof.md#magspoof-card-normalize-sc),
+which rewrites the Service Code to waive chip/PIN so a swipe is accepted —
+**FOR AUTHORIZED TESTING ONLY**, since it's deliberately weakening the card's
+stated security requirements. [`card require-sc`](commands/magspoof.md#magspoof-card-require-sc)
+reverses it if you need the original requirement back.
+
 <a id="testserver-issues"></a>
 ## `testserver` errors
 
 - **`testserver run`**: needs Docker on `PATH` **and** the server fetched once
   (`tools/testserver/fetch_server.sh`) — the clone at `<repo>/server` is the
   Docker *build context*, not just a dependency of `smoke`. Full list in the
-  [reference](reference.md#requirements).
+  [testserver run](commands/testserver.md#testserver-run).
   The CLI pre-checks all of it *before* building and prints a framed panel with
   the numbered commands that fix it, so you should never see a raw `docker
   build` error. What each panel means:

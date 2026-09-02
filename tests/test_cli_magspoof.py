@@ -331,6 +331,7 @@ def test_card_group_exposes_all_subcommands():
         "get",
         "info",
         "normalize-sc",
+        "require-sc",
     }
 
 
@@ -784,7 +785,55 @@ def test_card_normalize_sc_json(runner, use_link):
         "track2_normalized": T2_NORMALIZED,
         "is_ic_card": True,
         "requires_pin": True,
+        "remove_chip": True,
+        "remove_pin": True,
     }
+
+
+def test_card_normalize_sc_no_remove_chip_keeps_chip_requirement(runner, use_link):
+    # 1st digit 2 (chip) is left alone; 3rd digit 6 (PIN) still clears to 1.
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(
+        _card_cmd("normalize-sc"), ["BBVA", "--no-remove-chip", "--json"]
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["service_code_normalized"] == "201"
+    assert data["remove_chip"] is False
+    assert data["remove_pin"] is True
+
+
+def test_card_normalize_sc_no_remove_pin_keeps_pin_requirement(runner, use_link):
+    # 3rd digit 6 (PIN) is left alone; 1st digit 2 (chip) still clears to 1.
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_CHIP_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(
+        _card_cmd("normalize-sc"), ["BBVA", "--no-remove-pin", "--json"]
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["service_code_normalized"] == "106"
+    assert data["remove_chip"] is True
+    assert data["remove_pin"] is False
 
 
 def test_card_normalize_sc_reports_missing_track2(runner, use_link):
@@ -822,6 +871,218 @@ def test_card_normalize_sc_reports_a_missing_card(runner, use_link):
 
     assert result.exit_code == 1
     assert "card normalize-sc failed" in flat(result.output)
+
+
+# ── card require-sc ──────────────────────────────────────────────────────────
+
+T2_NO_CHIP_NO_PIN = ";4111111111111111=28031010000094600000?"
+T2_HARDENED = ";4111111111111111=28032060000094600000?"
+
+
+def test_card_require_sc_previews_without_apply(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA"]  # no write without --apply
+    assert "101 → 206" in out
+    assert "use --apply" in out
+
+
+def test_card_require_sc_targets_the_active_card_when_name_omitted(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), [])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get"]
+
+
+def test_card_require_sc_applies_and_writes_back(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                ),
+                f"magcard set BBVA 2 {T2_HARDENED}": ok(""),
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA", "--apply"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA", f"magcard set BBVA 2 {T2_HARDENED}"]
+    assert "101 → 206" in out
+
+
+def test_card_require_sc_apply_is_a_noop_when_already_hardened(runner, use_link):
+    fake = use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_HARDENED, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA", "--apply"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["magcard get BBVA"]  # no write — already correct
+    assert "already hardened" in out
+
+
+def test_card_require_sc_no_require_chip_keeps_chip_optional(runner, use_link):
+    # 1st digit stays 1 (no chip); 3rd digit still set to 6 (PIN required).
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(
+        _card_cmd("require-sc"), ["BBVA", "--no-require-chip", "--json"]
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["service_code_hardened"] == "106"
+    assert data["require_chip"] is False
+    assert data["require_pin"] is True
+
+
+def test_card_require_sc_no_require_pin_keeps_pin_optional(runner, use_link):
+    # 3rd digit stays 0 (no PIN); 1st digit still set to 2 (chip required).
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(
+        _card_cmd("require-sc"), ["BBVA", "--no-require-pin", "--json"]
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["service_code_hardened"] == "201"
+    assert data["require_chip"] is True
+    assert data["require_pin"] is False
+
+
+def test_card_require_sc_preserves_national_interchange(runner, use_link):
+    # 1st digit 5 (national, no chip) -> 6 (national, chip), not always 2.
+    t2_national = ";4111111111111111=28035010000094600000?"
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=t2_national, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA", "--json"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["service_code_hardened"] == "606"
+
+
+def test_card_require_sc_json(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok(
+                    "", name="BBVA", t1="", t2=T2_NO_CHIP_NO_PIN, active="1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "name": "BBVA",
+        "service_code": "101",
+        "service_code_hardened": "206",
+        "track2": T2_NO_CHIP_NO_PIN,
+        "track2_hardened": T2_HARDENED,
+        "is_ic_card": False,
+        "requires_pin": False,
+        "require_chip": True,
+        "require_pin": True,
+    }
+
+
+def test_card_require_sc_reports_missing_track2(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard get BBVA": ok("", name="BBVA", t1="", t2="")}),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "has no track 2" in flat(result.output)
+
+
+def test_card_require_sc_reports_invalid_track2(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(
+            responses={
+                "magcard get BBVA": ok("", name="BBVA", t1="", t2=";not-a-track?")
+            }
+        ),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["BBVA"])
+
+    assert result.exit_code == 1
+    assert "not valid ISO 7813" in flat(result.output)
+
+
+def test_card_require_sc_reports_a_missing_card(runner, use_link):
+    use_link(
+        magspoofcli,
+        FakeLink(responses={"magcard get NOPE": err("not found")}),
+    )
+    result = runner.invoke(_card_cmd("require-sc"), ["NOPE"])
+
+    assert result.exit_code == 1
+    assert "card require-sc failed" in flat(result.output)
 
 
 def test_card_hints_reflash_on_unknown_command(runner, use_link):

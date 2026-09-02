@@ -1216,7 +1216,9 @@ def card_require_sc_cmd(
             )
             return
 
-        sc_display = f"{sc} → {sc_hard}" if sc != sc_hard else f"{sc} (already hardened)"
+        sc_display = (
+            f"{sc} → {sc_hard}" if sc != sc_hard else f"{sc} (already hardened)"
+        )
         _print_field("name", card_name or "[dim]—[/dim]")
         _print_field("service code", sc_display)
         _print_field("chip required", "yes" if parsed.is_ic_card else "no")

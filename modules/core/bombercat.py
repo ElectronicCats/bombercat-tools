@@ -16,9 +16,9 @@ from .usb_connection import (
     DEFAULT_BAUDRATE,
     DEFAULT_TIMEOUT,
     BomberCatDevice,
+    _resolve_device_by_id,
     bombercat_ports,
     describe_devices,
-    find_device,
     find_devices,
     open_serial,
 )
@@ -274,19 +274,7 @@ def resolve_port(
         return preferred
 
     if device_id is not None:
-        dev = find_device(device_id)
-        if dev is not None:
-            return dev.port
-        known = find_devices()
-        if known:
-            raise DeviceError(
-                f"no BomberCat with ID {device_id}; attached: "
-                f"{describe_devices(known)} (see `bombercat device list`)"
-            )
-        raise DeviceError(
-            f"no BomberCat with ID {device_id}: none is attached "
-            "(see `bombercat device list`)"
-        )
+        return _resolve_device_by_id(device_id, DeviceError).port
 
     devices = discover_devices(baudrate)
     if len(devices) == 1:

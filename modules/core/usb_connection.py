@@ -205,6 +205,31 @@ def describe_devices(devices: Optional[Sequence[BomberCatDevice]] = None) -> str
     return ", ".join(f"#{d.device_id} {d.port}" for d in devices)
 
 
+def _resolve_device_by_id(
+    device_id: int, error_cls: type = ValueError
+) -> BomberCatDevice:
+    """Look up a `--device/-d` id, or raise `error_cls` naming what's attached.
+
+    Shared by every `--device` resolver (`bombercat.resolve_port`,
+    `firmwares.resolve_status_port`, `firmware.cli._resolve_target`) so the
+    "no BomberCat with ID N" wording stays identical across them; callers pass
+    their own exception type since each module raises a different one.
+    """
+    dev = find_device(device_id)
+    if dev is not None:
+        return dev
+    known = find_devices()
+    if known:
+        raise error_cls(
+            f"no BomberCat with ID {device_id}; attached: "
+            f"{describe_devices(known)} (see `bombercat device list`)"
+        )
+    raise error_cls(
+        f"no BomberCat with ID {device_id}: none is attached "
+        "(see `bombercat device list`)"
+    )
+
+
 def open_serial(
     port: str,
     baudrate: int = DEFAULT_BAUDRATE,

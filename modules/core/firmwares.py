@@ -263,9 +263,9 @@ def all_firmwares(enrich: bool = True) -> Tuple[Firmware, ...]:
 from .bombercat import DeviceError, DeviceLink  # noqa: E402
 from .usb_connection import (  # noqa: E402
     DEFAULT_BAUDRATE,
+    _resolve_device_by_id,
     bombercat_ports,
     describe_devices,
-    find_device,
     find_devices,
 )
 
@@ -426,19 +426,8 @@ def resolve_status_port(
         return preferred, preferred in tagged
 
     if device_id is not None:
-        dev = find_device(device_id)
-        if dev is not None:
-            return dev.port, dev.usb_tagged
-        known = find_devices()
-        if known:
-            raise DeviceError(
-                f"no BomberCat with ID {device_id}; attached: "
-                f"{describe_devices(known)} (see `bombercat device list`)"
-            )
-        raise DeviceError(
-            f"no BomberCat with ID {device_id}: none is attached "
-            "(see `bombercat device list`)"
-        )
+        dev = _resolve_device_by_id(device_id, DeviceError)
+        return dev.port, dev.usb_tagged
 
     devices = find_devices()
     if not devices:

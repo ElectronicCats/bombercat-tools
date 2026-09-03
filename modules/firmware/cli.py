@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ..core.firmwares import all_firmwares
-from ..core.usb_connection import describe_devices, find_device, find_devices
+from ..core.usb_connection import _resolve_device_by_id, describe_devices, find_devices
 from ..utils.cli_options import target_options
 from ..utils.output import (
     console,
@@ -192,15 +192,7 @@ def _resolve_target(port, device_id, in_bootloader: bool):
         return port
 
     if device_id is not None:
-        device = find_device(device_id)
-        if device is None:
-            known = describe_devices()
-            raise FirmwareError(
-                f"no BomberCat with ID {device_id}"
-                + (f"; attached: {known}" if known else ": none is attached")
-                + " (see `bombercat device list`)"
-            )
-        return device.port
+        return _resolve_device_by_id(device_id, FirmwareError).port
 
     devices = find_devices()
     if len(devices) == 1:

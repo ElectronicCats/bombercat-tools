@@ -241,22 +241,6 @@ def by_id(firmware_id: str) -> Firmware:
     return REGISTRY.get(firmware_id, UNKNOWN)
 
 
-def by_uf2(uf2_name: str) -> Optional[Firmware]:
-    """Match a `.uf2` file name (case-insensitive) to its firmware."""
-    return _BY_UF2.get((uf2_name or "").lower())
-
-
-def repl_firmwares() -> Tuple[Firmware, ...]:
-    """Firmwares that answer the control handshake.
-
-    NFCGate (full SerialControl) plus the sketches that embed the small
-    BomberCatControl REPL. The legacy relay pair and the ESP32 passthrough have
-    no REPL at all, so they can only be recognised by banner — which is why
-    `has_repl` must stay honest here.
-    """
-    return tuple(fw for fw in _ENTRIES if fw.has_repl)
-
-
 def all_firmwares(enrich: bool = True) -> Tuple[Firmware, ...]:
     """The registry, optionally enriched with descriptions.json prose."""
     if not enrich:
@@ -308,11 +292,6 @@ class DetectionResult:
     port: Optional[str] = None
     version: Optional[str] = None  # firmware version, when the REPL reports it
     usb_present: bool = False  # a BomberCat USB id is on this port
-
-    @property
-    def identified(self) -> bool:
-        """Did we end up with a name? (Not necessarily a certain one.)"""
-        return self.confidence in (HANDSHAKE, INFERRED, BANNER)
 
 
 def _match_banner(lines) -> Optional[Firmware]:

@@ -87,7 +87,11 @@ def test_an_unnamed_repl_board_is_inferred_not_asserted(fake_link):
     assert r.firmware.id == "nfcgate"
     assert r.confidence == fw.INFERRED
     assert r.confidence != fw.HANDSHAKE
-    assert r.confidence in (fw.HANDSHAKE, fw.INFERRED, fw.BANNER)  # named, just not certain
+    assert r.confidence in (
+        fw.HANDSHAKE,
+        fw.INFERRED,
+        fw.BANNER,
+    )  # named, just not certain
     assert r.version == "0.9.7"
 
 

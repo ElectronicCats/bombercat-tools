@@ -11,6 +11,7 @@ import serial
 
 from conftest import FakeLink, make_device, make_port
 from modules.core import bombercat as core
+from modules.core import usb_connection
 from modules.core.bombercat import DeviceError, discover_devices, resolve_port
 
 
@@ -22,7 +23,10 @@ def usb_devices(monkeypatch):
         devices = list(devices)
         monkeypatch.setattr(core, "find_devices", lambda *a, **k: list(devices))
         monkeypatch.setattr(
-            core,
+            usb_connection, "find_devices", lambda *a, **k: list(devices)
+        )
+        monkeypatch.setattr(
+            usb_connection,
             "find_device",
             lambda device_id=None: next(
                 (d for d in devices if d.device_id == device_id), None

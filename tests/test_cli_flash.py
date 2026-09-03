@@ -18,6 +18,7 @@ import click
 import pytest
 
 from conftest import flat, make_device, make_port
+from modules.core import usb_connection
 from modules.core.firmwares import all_firmwares
 from modules.firmware import cli as fw
 from modules.firmware import flasher, releases as releases_mod, uf2
@@ -1165,13 +1166,19 @@ def bench(monkeypatch, tmp_path):
     def _set(devices=(), drive=None, outcome=None, error=None):
         monkeypatch.setattr(fw, "find_devices", lambda *a, **k: list(devices))
         monkeypatch.setattr(
-            fw,
+            usb_connection, "find_devices", lambda *a, **k: list(devices)
+        )
+        monkeypatch.setattr(
+            usb_connection,
             "find_device",
             lambda device_id=None: next(
                 (d for d in devices if d.device_id == device_id), None
             ),
         )
         monkeypatch.setattr(fw, "describe_devices", lambda *a, **k: "#1 /dev/ttyACM0")
+        monkeypatch.setattr(
+            usb_connection, "describe_devices", lambda *a, **k: "#1 /dev/ttyACM0"
+        )
         monkeypatch.setattr(fw, "find_uf2_drive", lambda: drive)
 
         def _write(image, port=None, progress=None):

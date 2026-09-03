@@ -10,11 +10,11 @@ from contextlib import contextmanager
 from typing import Iterator, List, Optional, Tuple
 
 import click
-import serial
 from rich.table import Table
 
 from ..core.bombercat import DeviceError, DeviceLink, resolve_port
 from ..utils.cli_options import target_options
+from ..utils.detection_cli import device_session
 from ..utils.output import (
     console,
     print_error,
@@ -29,39 +29,14 @@ from ..utils.output import (
 def _device_session(
     port: Optional[str], device_id: Optional[int] = None
 ) -> Iterator[Tuple[str, DeviceLink]]:
-    """Open a verified link, yield ``(target, link)``, and always close it.
-
-    The board is picked by ``--port`` (raw path) or ``--device/-d`` (ID from
-    `bombercat device list`), falling back to handshake auto-detection when a
-    single BomberCat is attached — see ``core.bombercat.resolve_port``.
-
-    Any ``DeviceError`` or serial/OS error — whether raised while connecting
-    OR while running commands inside the ``with`` block — is reported as a
-    clean one-line message and exits with status 1, instead of letting a
-    traceback reach the user. ``SystemExit`` raised by the body (e.g. a failed
-    ``set``) passes through untouched, and the port is closed either way.
-    """
-    link: Optional[DeviceLink] = None
-    try:
-        target = resolve_port(port, device_id)
-        link = DeviceLink(target).open()
-        if not link.ping():
-            print_error(
-                f"{target} did not answer the handshake. "
-                "The relay commands need the NFCGate firmware — check what's "
-                "flashed with:  bombercat status"
-            )
-            raise SystemExit(1)
-        yield target, link
-    except DeviceError as e:
-        print_error(str(e))
-        raise SystemExit(1)
-    except (serial.SerialException, OSError) as e:
-        print_error(f"{type(e).__name__}: {e}")
-        raise SystemExit(1)
-    finally:
-        if link is not None:
-            link.close()
+    """Open a verified link for the relay commands, yield ``(target, link)``,
+    and always close it. Thin, nfcgate-flavored wrapper around
+    `detection_cli.device_session` — `resolve_port`/`DeviceLink` are passed
+    in explicitly so tests can still monkeypatch this module's copies."""
+    with device_session(
+        resolve_port, DeviceLink, "nfcgate", "NFCGate", port, device_id
+    ) as pair:
+        yield pair
 
 
 def _apply(link: DeviceLink, pairs: List[Tuple[str, str]], save: bool) -> None:

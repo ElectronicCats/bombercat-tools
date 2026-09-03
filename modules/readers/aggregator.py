@@ -3,15 +3,15 @@
 # Electronic Cats
 # aggregator.py — collapses a stream of Reader detections into a per-reader
 # summary for `bombercat readers scan`: how many times each fingerprint was
-# seen, and when (relative to when the scan started). Twin of
+# seen, and when (relative to when the scan started). Thin wrapper over the
+# shared modules.utils.aggregator.Aggregator engine; twin of
 # modules/tags/aggregator.py, grouped by Reader.fingerprint instead of UID.
 # docs/IMPLEMENTATION_PLAN_DetectReaders_CLI.md §3.2.
 # Distributed as-is; no warranty is given.
 
-import time
-from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
+from ..utils.aggregator import Aggregator
 from .parser import Reader
 
 # Columns this module computes itself. A device-supplied `extra` key with the
@@ -31,20 +31,18 @@ _RESERVED_KEYS = {
 }
 
 
-def _merge_extra(row: Dict[str, object], extra: Dict[str, str]) -> None:
-    for key, value in extra.items():
-        row["x_" + key if key in _RESERVED_KEYS else key] = value
+def _row(reader: Reader) -> Dict[str, object]:
+    return {
+        "label": reader.label,
+        "tech": reader.tech,
+        "protocol": reader.protocol,
+        "intf": reader.intf,
+        "apdu": reader.apdu,
+        "aid": reader.aid,
+    }
 
 
-@dataclass
-class _Entry:
-    reader: Reader
-    count: int
-    first_s: float
-    last_s: float
-
-
-class ReaderAggregator:
+class ReaderAggregator(Aggregator):
     """Feed `Reader`s in via `add()`; read the aggregate back via `to_dict()`.
 
     Grouped by `Reader.fingerprint` (label + aid, or label + tech:protocol
@@ -53,45 +51,10 @@ class ReaderAggregator:
     """
 
     def __init__(self, start: Optional[float] = None):
-        self._start = start if start is not None else time.monotonic()
-        self._entries: Dict[str, _Entry] = {}
-        self._order: List[str] = []
-
-    def add(self, reader: Reader) -> None:
-        key = reader.fingerprint
-        elapsed = time.monotonic() - self._start
-        entry = self._entries.get(key)
-        if entry is None:
-            self._entries[key] = _Entry(
-                reader=reader, count=1, first_s=elapsed, last_s=elapsed
-            )
-            self._order.append(key)
-        else:
-            entry.count += 1
-            entry.last_s = elapsed
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-    @property
-    def total_detections(self) -> int:
-        return sum(e.count for e in self._entries.values())
-
-    def to_dict(self) -> List[Dict[str, object]]:
-        rows: List[Dict[str, object]] = []
-        for key in self._order:
-            e = self._entries[key]
-            row: Dict[str, object] = {
-                "label": e.reader.label,
-                "tech": e.reader.tech,
-                "protocol": e.reader.protocol,
-                "intf": e.reader.intf,
-                "apdu": e.reader.apdu,
-                "aid": e.reader.aid,
-                "count": e.count,
-                "first_s": round(e.first_s, 1),
-                "last_s": round(e.last_s, 1),
-            }
-            _merge_extra(row, e.reader.extra)
-            rows.append(row)
-        return rows
+        super().__init__(
+            key_fn=lambda reader: reader.fingerprint,
+            row_fn=_row,
+            extra_fn=lambda reader: reader.extra,
+            reserved_keys=_RESERVED_KEYS,
+            start=start,
+        )

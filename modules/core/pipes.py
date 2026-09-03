@@ -328,7 +328,6 @@ class Wireshark(threading.Thread):
         else:
             self.pipe_name = pipe_name
         self.profile = profile
-        self.running = True
         self.wireshark_process: subprocess.Popen | None = None
         # Set by run() when the launch itself fails (binary vanished after the
         # caller's find_wireshark_path() check, exec failure, ...), so a caller

@@ -139,11 +139,6 @@ class BomberCatDevice:
     usb_tagged: bool = True  # False = matched only as a fallback,
     # its USB VID/PID isn't a BomberCat's
 
-    @property
-    def identity(self) -> str:
-        """Short human label for the identity the ID is derived from."""
-        return self.serial_number or self.port
-
     def __str__(self) -> str:
         return f"BomberCat #{self.device_id}"
 

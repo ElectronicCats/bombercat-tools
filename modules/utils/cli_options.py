@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+
+# Electronic Cats
+# cli_options.py — click options shared by every command that talks to a board,
+# so device selection reads the same everywhere:
+#
+#   -p/--port <path>   raw serial port (/dev/ttyACM0, COM3)
+#   -d/--device <ID>   stable device ID from `bombercat device list`
+#
+# With a single BomberCat attached both can be omitted (handshake auto-detect).
+# The resolution rules live in core/bombercat.resolve_port().
+# Distributed as-is; no warranty is given.
+
+import click
+
+PORT_OPTION = click.option(
+    "-p",
+    "--port",
+    default=None,
+    metavar="PATH",
+    help="Serial port (auto-detected if omitted).",
+)
+
+DEVICE_OPTION = click.option(
+    "-d",
+    "--device",
+    "device_id",
+    default=None,
+    type=int,
+    metavar="ID",
+    help="Device ID from `bombercat device list` (for multiple BomberCats).",
+)
+
+VERBOSE_OPTION = click.option(
+    "-v",
+    "--verbose",
+    count=True,
+    help="Trace the wire protocol to stderr (-v, or -vv for timestamps/bytes).",
+)
+
+
+def target_options(func):
+    """Apply both selectors to a command (`-p/--port` and `-d/--device`)."""
+    return PORT_OPTION(DEVICE_OPTION(func))
+
+
+def device_options(func):
+    """`target_options` plus a local `-v/--verbose` for commands that trace the
+    wire protocol (see `output.make_tracer`). Combine with the root `-v` via
+    each command's own verbosity merge, since Click keeps group- and
+    command-level options with the same name independent."""
+    return VERBOSE_OPTION(target_options(func))

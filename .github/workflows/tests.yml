@@ -1,0 +1,115 @@
+name: BomberCat Host Tests
+
+on:
+  push:
+    branches: ["**"]
+    # Only trigger if the code under test, its deps, or this workflow change
+    paths:
+      - "modules/**"
+      - "tests/**"
+      - "bombercat.py"
+      - "requirements.txt"
+      - "pytest.ini"
+      - ".github/workflows/tests.yml"
+  pull_request:
+    paths:
+      - "modules/**"
+      - "tests/**"
+      - "bombercat.py"
+      - "requirements.txt"
+      - "pytest.ini"
+      - ".github/workflows/tests.yml"
+  workflow_dispatch:
+
+# A new push to the same branch cancels the previous run
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Host tests (Python ${{ matrix.python-version }})
+    # tests/serialctl_hosttest.py uses os.openpty(): POSIX only
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+
+    steps:
+      # ── 1. Clone the repository ──────────────────────────────────────────
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # ── 2. Configure Python ──────────────────────────────────────────────
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+          cache-dependency-path: requirements.txt
+
+      # ── 3. System dependencies ───────────────────────────────────────────
+      # tshark: capture_hosttest.py dissects the generated .pcap with it and
+      #         degrades to a partial check when missing.
+      # libmagic1: backing library for python-magic (requirements.txt).
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq tshark libmagic1
+
+      # ── 4. Install Python dependencies ───────────────────────────────────
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install coverage
+          pip install -r requirements.txt
+
+      # ── 5. CLI smoke test ────────────────────────────────────────────────
+      # Catches import-time breakage in every command module at once.
+      - name: Smoke test the CLI
+        run: python bombercat.py --help
+
+      # ── 6. Unit tests ────────────────────────────────────────────────────
+      # tests/test_*.py: the CLI surface driven through Click's CliRunner with
+      # the serial/Docker/Wireshark layers faked. No hardware, no network.
+      - name: Run unit tests
+        run: coverage run -p --source=modules -m pytest -q
+
+      # ── 7. Run host tests ────────────────────────────────────────────────
+      # These are standalone scripts (main() -> exit code), not pytest cases,
+      # so each is run directly under coverage and the results are combined.
+      - name: Run host tests
+        run: |
+          shopt -s nullglob
+          tests=(tests/*_hosttest.py)
+          if [ ${#tests[@]} -eq 0 ]; then
+            echo "::error::No host tests found in tests/"
+            exit 1
+          fi
+          rc=0
+          for t in "${tests[@]}"; do
+            echo "::group::$t"
+            coverage run -p --source=modules "$t" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
+
+      # ── 8. Coverage report ───────────────────────────────────────────────
+      - name: Build coverage report
+        if: always()
+        run: |
+          coverage combine
+          coverage report -m
+          coverage xml
+
+      # ── 9. Upload coverage to Codecov ────────────────────────────────────
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        if: matrix.python-version == '3.12'
+        with:
+          files: ./coverage.xml
+          flags: hosttests
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

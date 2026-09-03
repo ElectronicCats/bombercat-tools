@@ -224,11 +224,6 @@ def test_describe_devices_is_a_one_line_summary(two_devices):
     assert describe_devices() == "#1 /dev/ttyACM0, #2 /dev/ttyACM1"
 
 
-def test_device_identity_prefers_the_usb_serial():
-    assert BomberCatDevice(1, "/dev/ttyACM0", serial_number="AAA").identity == "AAA"
-    assert BomberCatDevice(1, "/dev/ttyACM0").identity == "/dev/ttyACM0"
-
-
 def test_device_str_is_the_user_facing_label():
     assert str(BomberCatDevice(3, "/dev/ttyACM2")) == "BomberCat #3"
 

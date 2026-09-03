@@ -33,7 +33,7 @@ def test_handshake_identifies_nfcgate_with_its_version(fake_link):
     assert r.confidence == fw.HANDSHAKE
     assert r.firmware.id == "nfcgate"
     assert r.version == "0.9.8"
-    assert r.usb_present and r.identified
+    assert r.usb_present and r.confidence in (fw.HANDSHAKE, fw.INFERRED, fw.BANNER)
 
 
 def test_handshake_trusts_an_explicit_fw_name(fake_link):
@@ -87,7 +87,7 @@ def test_an_unnamed_repl_board_is_inferred_not_asserted(fake_link):
     assert r.firmware.id == "nfcgate"
     assert r.confidence == fw.INFERRED
     assert r.confidence != fw.HANDSHAKE
-    assert r.identified  # named, just not certain
+    assert r.confidence in (fw.HANDSHAKE, fw.INFERRED, fw.BANNER)  # named, just not certain
     assert r.version == "0.9.7"
 
 
@@ -102,7 +102,7 @@ def test_a_firmware_that_names_itself_something_unknown_is_not_inferred(fake_lin
 
     assert r.firmware is fw.UNKNOWN
     assert r.confidence == fw.USB
-    assert not r.identified
+    assert r.confidence not in (fw.HANDSHAKE, fw.INFERRED, fw.BANNER)
     assert r.version == "9"  # what little we did learn survives
 
 
@@ -123,7 +123,6 @@ def test_banner_identifies_a_board_whose_repl_stays_silent(fake_link):
 
     assert r.confidence == fw.BANNER
     assert r.firmware.id == "detecttags"
-    assert r.identified
 
 
 def test_banner_identifies_the_repl_less_relay_pair(fake_link):

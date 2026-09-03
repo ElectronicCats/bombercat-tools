@@ -33,7 +33,7 @@ def test_exactly_the_repl_firmwares_are_flagged():
     neither, so they must stay flagged REPL-less — `_match_banner` and
     `detect_firmware` both lean on this being true.
     """
-    repl = {f.id for f in fw.repl_firmwares()}
+    repl = {f.id for f in fw.all_firmwares(enrich=False) if f.has_repl}
     assert repl == {
         "nfcgate",
         "detecttags",
@@ -43,7 +43,6 @@ def test_exactly_the_repl_firmwares_are_flagged():
         "magspoofmqtt",
         "nfcgate_wifiwebserver",
     }
-    assert all(f.has_repl for f in fw.repl_firmwares())
 
 
 def test_only_repl_firmwares_claim_the_identify_capability():
@@ -74,12 +73,6 @@ def test_ids_and_uf2_names_are_unique():
     uf2s = [f.uf2.lower() for f in fw.all_firmwares(enrich=False)]
     assert len(ids) == len(set(ids))
     assert len(uf2s) == len(set(uf2s))
-
-
-def test_lookup_by_uf2_is_case_insensitive():
-    assert fw.by_uf2("nfcgate.uf2").id == "nfcgate"
-    assert fw.by_uf2("NFCGate.uf2").id == "nfcgate"
-    assert fw.by_uf2("does-not-exist.uf2") is None
 
 
 def test_by_id_falls_back_to_unknown():
@@ -115,11 +108,6 @@ def test_only_detectreaders_claims_the_readers_capability():
     for f in fw.all_firmwares(enrich=False):
         if f.can(fw.CAP_READERS):
             assert f.id == "detectreaders"
-
-
-def test_lookup_by_uf2_finds_detectreaders():
-    assert fw.by_uf2("DetectReaders.uf2").id == "detectreaders"
-    assert fw.by_uf2("detectreaders.uf2").id == "detectreaders"
 
 
 def test_magspoof_claims_the_magspoof_capability():

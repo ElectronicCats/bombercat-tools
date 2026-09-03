@@ -104,3 +104,4 @@ The server must have been fetched once with `tools/testserver/fetch_server.sh` (
 
 - Wraps `tools/testserver/run.sh`, `tools/testserver/relay_smoketest.py`, `tools/testserver/verify_patch.py`.
 - See [`testserver/README.md`](../../testserver/README.md) for the fixture itself.
+- Need the relay up **permanently**, not just for local testing? See [Deployment](../deployment.md) for running `nfcgate-server` on a VPS.

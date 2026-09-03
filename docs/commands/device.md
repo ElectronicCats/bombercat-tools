@@ -66,16 +66,16 @@ bombercat device info -d 2       # specific board
         BomberCat @ /dev/ttyACM0
 ┏━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃ Field   ┃ Value                     ┃
-┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ fw      │ 0.9.7                      │
-│ fw_name │ NFCGate                     │
-│ role    │ reader                     │
-│ ssid    │ MyNet                      │
-│ server  │ 192.168.1.5                │
-│ port    │ 5566                       │
-│ session │ 42                         │
-│ state   │ idle                       │
-└─────────┴────────────────────────────┘
+┡━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ fw      │ 0.9.7                     │
+│ fw_name │ NFCGate                   │
+│ role    │ reader                    │
+│ ssid    │ MyNet                     │
+│ server  │ 192.168.1.5               │
+│ port    │ 5566                      │
+│ session │ 42                        │
+│ state   │ idle                      │
+└─────────┴───────────────────────────┘
 ```
 
 (`relay config show` prints the same table.)

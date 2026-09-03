@@ -79,3 +79,5 @@ A single-board vs. two-board command cheat sheet lives in [`relay` → Cheat she
 - [`protocol.md`](protocol.md) — wire protocol details
 - [`capture.md`](commands/capture.md) — pcap/ISO 14443 framing details
 - [`troubleshooting.md`](troubleshooting.md) — common issues and fixes
+- [`limitations.md`](limitations.md) — platform support, host requirements, relay scope
+- [`deployment.md`](deployment.md) — run `nfcgate-server` permanently on a VPS

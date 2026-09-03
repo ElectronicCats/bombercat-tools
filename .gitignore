@@ -32,3 +32,4 @@ htmlcov/
 
 # host codec test binary
 testserver/codec_hosttest/hosttest
+.venv-smoke/

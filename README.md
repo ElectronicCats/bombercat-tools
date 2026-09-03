@@ -196,6 +196,12 @@ All Bombercat Hardware has been moved to a different repository, to have a bette
 
 https://github.com/ElectronicCats/Bombercat
 
+## Disclaimer
+>[!IMPORTANT]
+>BomberCat is a wireless penetration testing tool intended **solely for use in authorized security audits, where such usage is permitted by applicable laws and regulations**. Before utilizing this tool, it is crucial to ensure compliance with all relevant legal requirements and obtain appropriate permissions from the relevant authorities.
+>
+>The board **does not provide** any means or authorization to utilize credit cards or engage in any financial transactions that are not legally authorized. **Electronic Cats holds no responsibility for any unauthorized use of the tool or any resulting damages**.
+
 ## Contribute
 <img width="1354" alt="image" src="https://github.com/ElectronicCats/CatSniffer-Tools/assets/15166625/f3d1a1a2-caf5-496f-bc4d-8c7614c8af62">
 

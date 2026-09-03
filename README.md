@@ -135,6 +135,7 @@ one by its ID with `-d/--device`. See the
 | [Glossary](docs/glossary.md) | Terms used across these docs — REPL, SEL_RES, APDU, Service Code, UF2, VID/PID, and more. |
 | [Current limitations](docs/limitations.md) | Platform support matrix, host requirements, device/serial and relay-scope constraints — known, not bugs. |
 | [Deploy a dedicated server](docs/deployment.md) | Run `nfcgate-server` permanently on a VPS (Docker or systemd), verify the latency patch, day-2 ops. |
+| [Rooting an Android phone for NFCGate](docs/android-nfcgate-rooting-guide.en.md) ([es](docs/android-nfcgate-rooting-guide.es.md)) | Required only for Path B card/HCE mode: rooting with Magisk and installing NFCGate's native module (Zygisk + LSPosed), with the associated risks. |
 
 ## Dev tooling
 

@@ -56,6 +56,11 @@ bombercat relay monitor
 
 In the NFCGate app, point it at the same `nfcgate-server`, set the same session, and pick the opposite role (card/HCE for B1, reader for B2). The BomberCat's `status` flips `peer present` to `yes` when the app joins the session.
 
+> Card/HCE mode in the NFCGate app **requires a rooted phone** with NFCGate's
+> native module (Zygisk + LSPosed) — see the
+> [rooting guide](../android-nfcgate-rooting-guide.en.md). If you'd rather not
+> root the phone, use it as the `reader` instead (no root required).
+
 ---
 
 ## Subcommands

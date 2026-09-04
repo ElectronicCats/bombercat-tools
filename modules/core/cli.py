@@ -23,6 +23,7 @@ from .firmwares import (
     NONE,
     USB,
     CAP_MAGSPOOF,
+    CAP_MIFARE,
     CAP_MONITOR,
     CAP_PASSTHROUGH,
     CAP_READERS,
@@ -222,6 +223,11 @@ def _next_steps(detection):
     elif fw.can(CAP_PASSTHROUGH):
         steps.append(
             "passthrough firmware: bridge the ESP32 with an external serial tool"
+        )
+    elif fw.can(CAP_MIFARE):
+        steps.append("bombercat tags mifare keys     — list the built-in default keys")
+        steps.append(
+            "bombercat tags mifare auth ... — authenticate a sector (tap a card)"
         )
     elif fw.can(CAP_TAGS):
         steps.append("bombercat tags read       — detect a single NFC tag")

@@ -33,6 +33,7 @@ CAP_READERS = (
     "readers"  # NFC reader/terminal detection (`bombercat readers read/watch`)
 )
 CAP_MAGSPOOF = "magspoof"  # magstripe emulation control (`bombercat magspoof …`)
+CAP_MIFARE = "mifare"  # Mifare Classic auth/read/write (`bombercat tags mifare …`)
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,17 @@ _ENTRIES = (
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_TAGS}),
         banners=("Detect NFC tags with PN7150", "Detect NFC tags"),
+    ),
+    Firmware(
+        id="mifareclassic",
+        display="MifareClassic",
+        uf2="MifareClassic.uf2",
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        # Not CAP_TAGS: it emits ':tag' too, but `tags read/watch` is not this
+        # firmware's point and `test_only_detecttags_claims_the_tags_capability`
+        # keeps that capability exclusive to DetectTags.
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_MIFARE}),
+        banners=("Mifare Classic reader with PN7150/60",),
     ),
     Firmware(
         id="detectreaders",

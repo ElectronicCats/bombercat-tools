@@ -35,6 +35,7 @@ from ..utils.output import (
     print_dim,
     print_error,
     print_info,
+    print_success,
     print_warning,
 )
 from .aggregator import _RESERVED_KEYS, TagAggregator
@@ -55,6 +56,16 @@ _NOISE_RE = re.compile(
 # for hours/days would otherwise grow this dict without bound. Cap it as an
 # LRU: oldest key evicted once full (M15).
 _MAX_DEDUPE_KEYS = 10_000
+
+# `tags mifare ...` (MifareClassic firmware, MIFARE_CLASSIC_PLAN.md §3/Phase 4)
+_MIFARE_KEY_HEX_LEN = 12  # 6-byte key, hex-encoded
+_MIFARE_BLOCK_HEX_LEN = 32  # 16-byte block, hex-encoded
+_MIFARE_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
+# Always printed right before the firmware opens its interactive session
+# (probeMifareBlock() runs, then openMifareSession() — see MifareClassic.ino's
+# handleTagDetected()), so seeing it is a reliable "the session is open now".
+_MIFARE_PROBE_RE = re.compile(r"^:mifare\s")
+_MIFARE_TAP_TIMEOUT = 15.0
 
 
 @click.group("tags", context_settings={"help_option_names": ["-h", "--help"]})
@@ -428,4 +439,258 @@ def info_cmd(ctx, verbose, port, device_id):
         events = "legacy text  (no ':tag' events — reflash for exact parsing)"
     table.add_row("events", events)
     table.add_row("state", r.data.get("state") or "[dim]—[/dim]")
+    console.print(table)
+
+
+# ── mifare ───────────────────────────────────────────────────────────────────
+#
+# `bombercat tags mifare auth|read|write|sector|keys` — Mifare Classic block
+# access over the MifareClassic firmware's REPL (bombercat-firmware's
+# MIFARE_CLASSIC_PLAN.md §3.1/Phase 3, CLI side is §4/Phase 4). `auth`/`read`/
+# `write`/`sector` need a card already selected in the firmware's interactive
+# "mifare session", which it opens on its own right after tapping a Mifare
+# Classic card (see MifareClassic.ino's handleTagDetected()); rather than just
+# failing when no card has been tapped yet, each of those commands asks the
+# user to tap one and waits for the firmware's auto-probe ':mifare' event
+# (proof the session is now open) before retrying once.
+#
+# `mifare dump` (read every sector of a card) and `mifare keys add/remove`
+# (persisted custom keys) are listed in the plan's CLI design but not
+# implemented here yet — out of scope for this pass.
+
+
+def _mifare_validate_hex(value: str, expected_len: int, label: str) -> Optional[str]:
+    if len(value) != expected_len or not _MIFARE_HEX_RE.match(value):
+        return f"{label} must be exactly {expected_len} hex characters"
+    return None
+
+
+@contextmanager
+def _mifare_session(
+    port: Optional[str],
+    device_id: Optional[int] = None,
+    trace=None,
+) -> Iterator[Tuple[str, DeviceLink]]:
+    """Open a verified link for the `tags mifare` commands, yield ``(target,
+    link)``, and always close it. Same `device_session` wrapper as
+    `_tags_session`, naming the MifareClassic firmware in its error message."""
+    with device_session(
+        resolve_port, DeviceLink, "tags mifare", "MifareClassic", port, device_id, trace
+    ) as pair:
+        yield pair
+
+
+def _wait_for_mifare_card(link, timeout: float) -> bool:
+    """Block until the firmware's auto-probe ':mifare' event appears — proof
+    it has opened the interactive session — or `timeout` seconds pass."""
+    deadline = time.monotonic() + timeout
+    for line in link.stream(yield_empty=True):
+        if line and _MIFARE_PROBE_RE.match(line):
+            return True
+        if time.monotonic() > deadline:
+            return False
+    return False
+
+
+def _run_mifare_command(link, line: str, timeout: float):
+    """Send a `mifare ...` REPL line. If the firmware answers "no card
+    selected" (no session open yet), ask the user to tap a card, wait up to
+    `timeout`s for the auto-probe event, and retry once."""
+    r = link.command(line)
+    if not r.ok and "no card selected" in r.message:
+        print_info(
+            f"no card selected — tap a Mifare Classic card (up to {timeout:g}s)..."
+        )
+        if _wait_for_mifare_card(link, timeout):
+            r = link.command(line)
+    return r
+
+
+_MIFARE_TIMEOUT_OPTION = click.option(
+    "-t",
+    "--timeout",
+    default=_MIFARE_TAP_TIMEOUT,
+    show_default=True,
+    help="Seconds to wait for a card tap if none is selected yet.",
+)
+
+_MIFARE_KEY_TYPE_OPTION = click.option(
+    "--key-type",
+    type=click.Choice(["A", "B"], case_sensitive=False),
+    default="A",
+    show_default=True,
+    help="Which key slot (A or B) to authenticate with.",
+)
+
+
+@tags.group("mifare", context_settings={"help_option_names": ["-h", "--help"]})
+def mifare():
+    """Mifare Classic auth/read/write/sector commands (requires the
+    MifareClassic firmware).
+
+    Tap a Mifare Classic card to let the firmware select it — `auth`, `read`,
+    `write` and `sector` all wait for this automatically if no card is
+    selected yet. The card then stays selected for ~10s of inactivity between
+    commands before the firmware closes the session and re-arms discovery.
+    """
+
+
+@mifare.command("auth", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--block", type=click.IntRange(0, 255), required=True, help="Block number."
+)
+@_MIFARE_KEY_TYPE_OPTION
+@click.option("--key", required=True, metavar="HEX12", help="6-byte key, 12 hex chars.")
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_auth_cmd(ctx, block, key_type, key, timeout, verbose, port, device_id):
+    """Authenticate BLOCK's sector so a following `read`/`write` can access it."""
+    err = _mifare_validate_hex(key, _MIFARE_KEY_HEX_LEN, "--key")
+    if err:
+        print_error(err)
+        raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = _run_mifare_command(
+            link, f"mifare auth {block} {key_type.upper()} {key.upper()}", timeout
+        )
+
+    if not r.ok:
+        print_error(f"auth failed: {r.message}")
+        raise SystemExit(1)
+    print_success(f"authenticated block {block} with key {key_type.upper()}")
+
+
+@mifare.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--block", type=click.IntRange(0, 255), required=True, help="Block number."
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help='Emit {"block": ..., "data": ...}.'
+)
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_read_cmd(ctx, block, as_json, timeout, verbose, port, device_id):
+    """Read BLOCK from its already-authenticated sector (run `auth` first)."""
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = _run_mifare_command(link, f"mifare read {block}", timeout)
+
+    if not r.ok:
+        print_error(f"read failed: {r.message}")
+        raise SystemExit(1)
+    _, _, data_hex = r.data.get("mifare_data", "").partition(" ")
+    if as_json:
+        print(json.dumps({"block": block, "data": data_hex}))
+        return
+    console.print("")
+    _print_field("block", str(block))
+    _print_field("data", data_hex or "[dim]—[/dim]")
+
+
+@mifare.command("write", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--block", type=click.IntRange(0, 255), required=True, help="Block number."
+)
+@click.option(
+    "--data", required=True, metavar="HEX32", help="16-byte block, 32 hex chars."
+)
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_write_cmd(ctx, block, data, timeout, verbose, port, device_id):
+    """Write DATA to BLOCK in its already-authenticated sector (run `auth` first)."""
+    err = _mifare_validate_hex(data, _MIFARE_BLOCK_HEX_LEN, "--data")
+    if err:
+        print_error(err)
+        raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = _run_mifare_command(link, f"mifare write {block} {data.upper()}", timeout)
+
+    if not r.ok:
+        print_error(f"write failed: {r.message}")
+        raise SystemExit(1)
+    print_success(f"wrote block {block}")
+
+
+@mifare.command("sector", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--sector", type=click.IntRange(0, 255), required=True, help="Sector number."
+)
+@_MIFARE_KEY_TYPE_OPTION
+@click.option("--key", required=True, metavar="HEX12", help="6-byte key, 12 hex chars.")
+@click.option(
+    "--json", "as_json", is_flag=True, help='Emit {"sector": ..., "data": ...}.'
+)
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_sector_cmd(
+    ctx, sector, key_type, key, as_json, timeout, verbose, port, device_id
+):
+    """Authenticate and read every block of SECTOR in one call (self-contained)."""
+    err = _mifare_validate_hex(key, _MIFARE_KEY_HEX_LEN, "--key")
+    if err:
+        print_error(err)
+        raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = _run_mifare_command(
+            link, f"mifare sector {sector} {key_type.upper()} {key.upper()}", timeout
+        )
+
+    if not r.ok:
+        print_error(f"sector read failed: {r.message}")
+        raise SystemExit(1)
+    data_hex = r.data.get("mifare_sector", "")
+    if as_json:
+        print(json.dumps({"sector": sector, "data": data_hex}))
+        return
+    console.print("")
+    _print_field("sector", str(sector))
+    _print_field("data", data_hex or "[dim]—[/dim]")
+
+
+@mifare.command("keys", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per key.")
+@device_options
+@click.pass_context
+def mifare_keys_cmd(ctx, as_json, verbose, port, device_id):
+    """List the firmware's built-in default keys. No card needed."""
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("mifare keys")
+
+    if not r.ok:
+        print_error(f"keys failed: {r.message}")
+        raise SystemExit(1)
+
+    keys = []
+    i = 0
+    while f"mifare_key{i}" in r.data:
+        name, _, hex_value = r.data[f"mifare_key{i}"].partition(" ")
+        keys.append((name, hex_value))
+        i += 1
+
+    if as_json:
+        for name, hex_value in keys:
+            print(json.dumps({"name": name, "key": hex_value}))
+        return
+
+    if not keys:
+        print_dim("no keys reported")
+        return
+    table = Table(
+        title=f"MifareClassic default keys @ {target}", header_style="cyan bold"
+    )
+    table.add_column("name", style="cyan")
+    table.add_column("key")
+    for name, hex_value in keys:
+        table.add_row(name, hex_value)
     console.print(table)

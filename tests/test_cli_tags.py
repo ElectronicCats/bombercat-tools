@@ -11,9 +11,16 @@ import json
 
 import pytest
 
-from conftest import FakeLink, flat, ok
+from conftest import FakeLink, err, flat, ok
 from modules.tags import cli as tagscli
 from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
+from modules.tags.cli import (
+    mifare_auth_cmd,
+    mifare_keys_cmd,
+    mifare_read_cmd,
+    mifare_sector_cmd,
+    mifare_write_cmd,
+)
 
 STRUCTURED_LINE = ":tag 1234 NFC-A T2T 041A2B3C"
 
@@ -434,8 +441,211 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
     assert link.closed
 
 
+# ── mifare ───────────────────────────────────────────────────────────────────
+
+_MIFARE_KEYS_LINE = ok(
+    mifare_key0="default_ff FFFFFFFFFFFF",
+    mifare_key1="default_00 000000000000",
+    mifare_key2="default_a0a1a2 A0A1A2A3A4A5",
+)
+
+
+def test_mifare_auth_succeeds_when_a_session_is_already_open(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_auth_cmd, ["--block", "4", "--key-type", "A", "--key", "FFFFFFFFFFFF"]
+    )
+
+    assert result.exit_code == 0
+    assert "authenticated block 4" in flat(result.stdout)
+    assert "mifare auth 4 A FFFFFFFFFFFF" in fake.sent
+
+
+def test_mifare_auth_rejects_a_malformed_key_locally(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_auth_cmd, ["--block", "4", "--key-type", "A", "--key", "ZZ"]
+    )
+
+    assert result.exit_code == 1
+    assert "12 hex characters" in flat(result.output)
+    assert fake.sent == []  # never reached the wire
+
+
+def test_mifare_auth_waits_for_a_tap_when_no_card_is_selected(runner, use_link):
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                # First attempt: no session yet. After the tap event arrives,
+                # the retry succeeds (FakeLink._resolve pops a list in order).
+                "mifare auth 4 A FFFFFFFFFFFF": [
+                    err("no card selected, tap a Mifare Classic card first"),
+                    ok(),
+                ]
+            },
+            stream_lines=[
+                ":mifare 1000 041A2B3C 4 00112233445566778899AABBCCDDEEFF ok"
+            ],
+        ),
+    )
+    result = runner.invoke(
+        mifare_auth_cmd, ["--block", "4", "--key-type", "A", "--key", "FFFFFFFFFFFF"]
+    )
+
+    assert result.exit_code == 0
+    assert "tap a Mifare Classic card" in flat(result.output)
+    # sent twice: the initial attempt, then the retry once the tap was seen
+    assert fake.sent.count("mifare auth 4 A FFFFFFFFFFFF") == 2
+
+
+def test_mifare_auth_reports_a_timeout_waiting_for_a_tap(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 4 A FFFFFFFFFFFF": err(
+                    "no card selected, tap a Mifare Classic card first"
+                )
+            },
+            stream_lines=[],
+        ),
+    )
+    result = runner.invoke(
+        mifare_auth_cmd,
+        ["--block", "4", "--key-type", "A", "--key", "FFFFFFFFFFFF", "-t", "0.01"],
+    )
+
+    assert result.exit_code == 1
+    assert "no card selected" in flat(result.output)
+
+
+def test_mifare_read_reports_the_block_data(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare read 4": ok(mifare_data="4 00112233445566778899AABBCCDDEEFF")
+            }
+        ),
+    )
+    result = runner.invoke(mifare_read_cmd, ["--block", "4"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "00112233445566778899AABBCCDDEEFF" in out
+
+
+def test_mifare_read_json_emits_block_and_data(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare read 4": ok(mifare_data="4 00112233445566778899AABBCCDDEEFF")
+            }
+        ),
+    )
+    result = runner.invoke(mifare_read_cmd, ["--block", "4", "--json"])
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload == {"block": 4, "data": "00112233445566778899AABBCCDDEEFF"}
+
+
+def test_mifare_write_rejects_a_malformed_data_length_locally(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+    result = runner.invoke(mifare_write_cmd, ["--block", "4", "--data", "AABB"])
+
+    assert result.exit_code == 1
+    assert "32 hex characters" in flat(result.output)
+    assert fake.sent == []
+
+
+def test_mifare_write_succeeds(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_write_cmd,
+        ["--block", "4", "--data", "00112233445566778899AABBCCDDEEFF"],
+    )
+
+    assert result.exit_code == 0
+    assert "wrote block 4" in flat(result.stdout)
+    assert "mifare write 4 00112233445566778899AABBCCDDEEFF" in fake.sent
+
+
+def test_mifare_sector_reports_the_sector_data(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"mifare sector 1 A FFFFFFFFFFFF": ok(mifare_sector="00" * 64)}
+        ),
+    )
+    result = runner.invoke(
+        mifare_sector_cmd, ["--sector", "1", "--key-type", "A", "--key", "FFFFFFFFFFFF"]
+    )
+
+    assert result.exit_code == 0
+    # A long hex blob can get line-wrapped by Rich in the plain-text view;
+    # strip newlines (not real spaces) rather than the wrap-tolerant `flat()`.
+    assert "00" * 64 in result.stdout.replace("\n", "")
+
+
+def test_mifare_sector_json_emits_sector_and_full_data(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"mifare sector 1 A FFFFFFFFFFFF": ok(mifare_sector="00" * 64)}
+        ),
+    )
+    result = runner.invoke(
+        mifare_sector_cmd,
+        ["--sector", "1", "--key-type", "A", "--key", "FFFFFFFFFFFF", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload == {"sector": 1, "data": "00" * 64}
+
+
+def test_mifare_keys_lists_every_default_key(runner, use_link):
+    use_link(tagscli, FakeLink(responses={"mifare keys": _MIFARE_KEYS_LINE}))
+    result = runner.invoke(mifare_keys_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "default_ff" in out and "FFFFFFFFFFFF" in out
+    assert "default_00" in out and "000000000000" in out
+    assert "default_a0a1a2" in out and "A0A1A2A3A4A5" in out
+
+
+def test_mifare_keys_json_emits_one_object_per_key(runner, use_link):
+    use_link(tagscli, FakeLink(responses={"mifare keys": _MIFARE_KEYS_LINE}))
+    result = runner.invoke(mifare_keys_cmd, ["--json"])
+    lines = [json.loads(line) for line in result.stdout.strip().splitlines()]
+
+    assert result.exit_code == 0
+    assert lines == [
+        {"name": "default_ff", "key": "FFFFFFFFFFFF"},
+        {"name": "default_00", "key": "000000000000"},
+        {"name": "default_a0a1a2", "key": "A0A1A2A3A4A5"},
+    ]
+
+
+def test_mifare_reports_a_board_that_will_not_handshake(runner, use_link):
+    link = use_link(tagscli, FakeLink(ping_ok=False))
+    result = runner.invoke(mifare_keys_cmd, [])
+
+    assert result.exit_code == 1
+    assert "did not answer the handshake" in flat(result.output)
+    assert link.closed
+
+
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 
 def test_tags_group_exposes_all_subcommands():
-    assert set(tags.commands) == {"read", "watch", "scan", "info"}
+    assert set(tags.commands) == {"read", "watch", "scan", "info", "mifare"}
+
+
+def test_mifare_group_exposes_all_subcommands():
+    assert set(tagscli.mifare.commands) == {"auth", "read", "write", "sector", "keys"}

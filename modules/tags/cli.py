@@ -35,10 +35,12 @@ from ..utils.output import (
     print_dim,
     print_error,
     print_info,
+    print_subtitle,
     print_success,
     print_warning,
 )
 from .aggregator import _RESERVED_KEYS, TagAggregator
+from .block0 import Block0, parse_block0
 from .keyfile import default_keyfile, load_keys
 from .parser import Tag, TagParser
 
@@ -464,6 +466,24 @@ def info_cmd(ctx, verbose, port, device_id):
 # implemented here yet — out of scope for this pass.
 
 
+def _print_block0(b0: Block0) -> None:
+    """Render a dissected block 0 under the raw hex the caller already
+    printed - `mifare read --block 0` and `mifare sector --sector 0` both
+    have it, one straight off the card, the other as the first 32 hex chars
+    of the sector dump."""
+    print_subtitle("Block 0 (UID sector)")
+    _print_field("uid", b0.uid)
+    _print_field("bcc", f"{b0.bcc}  ({'OK' if b0.bcc_valid else 'MISMATCH ⚠'})")
+    _print_field("sak", f"{b0.sak}  -> {b0.sak_name}")
+    _print_field("atqa", f"{b0.atqa}  -> {b0.atqa_name}")
+    _print_field("mfg data", b0.manufacturer_data)
+    if not b0.bcc_valid:
+        print_warning(
+            "BCC does not match the UID — possibly a magic/clone card with a "
+            "hand-written block 0"
+        )
+
+
 def _mifare_validate_hex(value: str, expected_len: int, label: str) -> Optional[str]:
     if len(value) != expected_len or not _MIFARE_HEX_RE.match(value):
         return f"{label} must be exactly {expected_len} hex characters"
@@ -588,12 +608,18 @@ def mifare_read_cmd(ctx, block, as_json, timeout, verbose, port, device_id):
         print_error(f"read failed: {r.message}")
         raise SystemExit(1)
     _, _, data_hex = r.data.get("mifare_data", "").partition(" ")
+    b0 = parse_block0(data_hex) if block == 0 else None
     if as_json:
-        print(json.dumps({"block": block, "data": data_hex}))
+        out = {"block": block, "data": data_hex}
+        if b0 is not None:
+            out["block0"] = b0.to_dict()
+        print(json.dumps(out))
         return
     console.print("")
     _print_field("block", str(block))
     _print_field("data", data_hex or "[dim]—[/dim]")
+    if b0 is not None:
+        _print_block0(b0)
 
 
 @mifare.command("write", context_settings={"help_option_names": ["-h", "--help"]})
@@ -654,12 +680,18 @@ def mifare_sector_cmd(
         print_error(f"sector read failed: {r.message}")
         raise SystemExit(1)
     data_hex = r.data.get("mifare_sector", "")
+    b0 = parse_block0(data_hex[:32]) if sector == 0 else None
     if as_json:
-        print(json.dumps({"sector": sector, "data": data_hex}))
+        out = {"sector": sector, "data": data_hex}
+        if b0 is not None:
+            out["block0"] = b0.to_dict()
+        print(json.dumps(out))
         return
     console.print("")
     _print_field("sector", str(sector))
     _print_field("data", data_hex or "[dim]—[/dim]")
+    if b0 is not None:
+        _print_block0(b0)
 
 
 @mifare.command("keys", context_settings={"help_option_names": ["-h", "--help"]})

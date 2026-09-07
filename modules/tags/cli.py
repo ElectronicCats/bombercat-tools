@@ -466,6 +466,37 @@ def info_cmd(ctx, verbose, port, device_id):
 # implemented here yet — out of scope for this pass.
 
 
+_MIFARE_TRAILER_KEY_LEN = 12  # 6-byte key, hex-encoded
+_MIFARE_TRAILER_AC_LEN = 8  # 4-byte access conditions, hex-encoded
+
+
+def _sector_display_lines(sector: int, data_hex: str) -> List[str]:
+    """Split a sector's dump (4 blocks x 32 hex chars) into the 4 lines
+    `mifare sector` prints: block 0 in magenta only for sector 0 (the only
+    sector where it's factory UID data, not user data), blocks 1-2 plain,
+    and block 3 (the trailer) as key A / access conditions / key B in their
+    own colors."""
+    blocks = [
+        data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
+        for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
+    ]
+    blocks += [""] * (4 - len(blocks))
+    block0, block1, block2, trailer = blocks[:4]
+
+    line0 = f"[magenta]{block0}[/magenta]" if sector == 0 and block0 else block0
+
+    key_a = trailer[:_MIFARE_TRAILER_KEY_LEN]
+    ac = trailer[
+        _MIFARE_TRAILER_KEY_LEN : _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN
+    ]
+    key_b = trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    line3 = (
+        f"[green]{key_a}[/green][dark_orange3]{ac}[/dark_orange3][green]{key_b}[/green]"
+    )
+
+    return [line0, block1, block2, line3]
+
+
 def _print_block0(b0: Block0) -> None:
     """Render a dissected block 0 under the raw hex the caller already
     printed - `mifare read --block 0` and `mifare sector --sector 0` both
@@ -689,7 +720,11 @@ def mifare_sector_cmd(
         return
     console.print("")
     _print_field("sector", str(sector))
-    _print_field("data", data_hex or "[dim]—[/dim]")
+    if data_hex:
+        for line in _sector_display_lines(sector, data_hex):
+            console.print(line)
+    else:
+        console.print("  [dim]—[/dim]")
     if b0 is not None:
         _print_block0(b0)
 

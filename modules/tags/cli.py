@@ -41,7 +41,12 @@ from ..utils.output import (
 )
 from .aggregator import _RESERVED_KEYS, TagAggregator
 from .block0 import Block0, parse_block0
-from .keyfile import default_keyfile, load_keys
+from .keyfile import (
+    SectorKeyfileError,
+    default_keyfile,
+    load_keys,
+    load_sector_keys,
+)
 from .parser import Tag, TagParser
 
 # How long `tags info` listens for a ':tag' event before concluding the
@@ -470,12 +475,22 @@ _MIFARE_TRAILER_KEY_LEN = 12  # 6-byte key, hex-encoded
 _MIFARE_TRAILER_AC_LEN = 8  # 4-byte access conditions, hex-encoded
 
 
-def _sector_display_lines(sector: int, data_hex: str) -> List[str]:
+def _sector_display_lines(
+    sector: int,
+    data_hex: str,
+    key_a: Optional[str] = None,
+    key_b: Optional[str] = None,
+) -> List[str]:
     """Split a sector's dump (4 blocks x 32 hex chars) into the 4 lines
     `mifare sector` prints: block 0 in magenta only for sector 0 (the only
     sector where it's factory UID data, not user data), blocks 1-2 plain,
     and block 3 (the trailer) as key A / access conditions / key B in their
-    own colors."""
+    own colors.
+
+    A card never reads its Key A back (and often not Key B either) — the
+    trailer's key bytes come back as zeros. `key_a`/`key_b`, when given (from
+    `--keys-file`), are substituted into the display so the real keys show
+    instead of those zeros; the access-conditions bytes always stay as read."""
     blocks = [
         data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
         for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
@@ -485,13 +500,14 @@ def _sector_display_lines(sector: int, data_hex: str) -> List[str]:
 
     line0 = f"[magenta]{block0}[/magenta]" if sector == 0 and block0 else block0
 
-    key_a = trailer[:_MIFARE_TRAILER_KEY_LEN]
+    shown_a = key_a or trailer[:_MIFARE_TRAILER_KEY_LEN]
     ac = trailer[
         _MIFARE_TRAILER_KEY_LEN : _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN
     ]
-    key_b = trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    shown_b = key_b or trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
     line3 = (
-        f"[green]{key_a}[/green][dark_orange3]{ac}[/dark_orange3][green]{key_b}[/green]"
+        f"[green]{shown_a}[/green][dark_orange3]{ac}[/dark_orange3]"
+        f"[green]{shown_b}[/green]"
     )
 
     return [line0, block1, block2, line3]
@@ -680,12 +696,42 @@ def mifare_write_cmd(ctx, block, data, timeout, verbose, port, device_id):
     print_success(f"wrote block {block}")
 
 
+def _load_sector_key_pair(
+    keys_file: str, sector: int
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read `keys_file` and return ``(keyA, keyB)`` for `sector`, exiting with
+    a clear error if the file is malformed or doesn't list that sector."""
+    try:
+        table = load_sector_keys(keys_file)
+    except OSError as e:
+        print_error(f"could not read {keys_file}: {e}")
+        raise SystemExit(1)
+    except SectorKeyfileError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+    if sector not in table:
+        print_error(f"sector {sector} not found in {keys_file}")
+        raise SystemExit(1)
+    return table[sector]
+
+
 @mifare.command("sector", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--sector", type=click.IntRange(0, 255), required=True, help="Sector number."
 )
 @_MIFARE_KEY_TYPE_OPTION
-@click.option("--key", required=True, metavar="HEX12", help="6-byte key, 12 hex chars.")
+@click.option("--key", metavar="HEX12", help="6-byte key, 12 hex chars.")
+@click.option(
+    "-k",
+    "--keys-file",
+    "keys_file",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    metavar="FILE",
+    help="A `sector:keyA:keyB` file from `mifare check --output-keys`. Uses "
+    "the sector's key A (falling back to key B) instead of --key, and shows "
+    "the real keys in the trailer line.",
+)
 @click.option(
     "--json", "as_json", is_flag=True, help='Emit {"sector": ..., "data": ...}.'
 )
@@ -693,22 +739,53 @@ def mifare_write_cmd(ctx, block, data, timeout, verbose, port, device_id):
 @device_options
 @click.pass_context
 def mifare_sector_cmd(
-    ctx, sector, key_type, key, as_json, timeout, verbose, port, device_id
+    ctx, sector, key_type, key, keys_file, as_json, timeout, verbose, port, device_id
 ):
-    """Authenticate and read every block of SECTOR in one call (self-contained)."""
-    err = _mifare_validate_hex(key, _MIFARE_KEY_HEX_LEN, "--key")
-    if err:
-        print_error(err)
+    """Authenticate and read every block of SECTOR in one call (self-contained).
+
+    Pass either --key (a single 12-hex key of --key-type) or --keys-file (a
+    `sector:keyA:keyB` file from `mifare check --output-keys`, which tries the
+    sector's key A then key B and shows the real keys in the trailer line).
+    """
+    if keys_file and key:
+        print_error("pass either --key or --keys-file, not both")
+        raise SystemExit(1)
+    if not keys_file and not key:
+        print_error("one of --key or --keys-file is required")
         raise SystemExit(1)
 
-    level = _verbosity(ctx, verbose)
-    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        r = _run_mifare_command(
-            link, f"mifare sector {sector} {key_type.upper()} {key.upper()}", timeout
-        )
+    file_key_a: Optional[str] = None
+    file_key_b: Optional[str] = None
+    if keys_file:
+        file_key_a, file_key_b = _load_sector_key_pair(keys_file, sector)
+        attempts = [("A", file_key_a), ("B", file_key_b)]
+        attempts = [(kt, k) for kt, k in attempts if k]
+        if not attempts:
+            print_error(f"sector {sector} has no key A or key B in {keys_file}")
+            raise SystemExit(1)
+    else:
+        err = _mifare_validate_hex(key, _MIFARE_KEY_HEX_LEN, "--key")
+        if err:
+            print_error(err)
+            raise SystemExit(1)
+        attempts = [(key_type.upper(), key.upper())]
 
-    if not r.ok:
-        print_error(f"sector read failed: {r.message}")
+    level = _verbosity(ctx, verbose)
+    r = None
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        first = True
+        for kt, k in attempts:
+            line = f"mifare sector {sector} {kt} {k.upper()}"
+            if first:
+                r = _run_mifare_command(link, line, timeout)
+                first = False
+            else:
+                r = link.command(line)
+            if r.ok:
+                break
+
+    if r is None or not r.ok:
+        print_error(f"sector read failed: {r.message if r else 'no key tried'}")
         raise SystemExit(1)
     data_hex = r.data.get("mifare_sector", "")
     b0 = parse_block0(data_hex[:32]) if sector == 0 else None
@@ -721,7 +798,7 @@ def mifare_sector_cmd(
     console.print("")
     _print_field("sector", str(sector))
     if data_hex:
-        for line in _sector_display_lines(sector, data_hex):
+        for line in _sector_display_lines(sector, data_hex, file_key_a, file_key_b):
             console.print(line)
     else:
         console.print("  [dim]—[/dim]")
@@ -791,6 +868,20 @@ def _write_keyfile(path: str, keys: List[str]) -> None:
             f.write(key + "\n")
 
 
+def _write_sector_keyfile(
+    path: str, sectors: int, found: Dict[Tuple[int, str], Optional[str]]
+) -> None:
+    """Write the per-sector `sector:keyA:keyB` file consumed by
+    `mifare sector --keys-file`. A key type that wasn't recovered is left
+    blank (e.g. `3::FFFFFFFFFFFF`), so the sector line is always present even
+    when only one of its two keys is known."""
+    with open(path, "w", encoding="utf-8") as f:
+        for s in range(sectors):
+            key_a = found.get((s, "A")) or ""
+            key_b = found.get((s, "B")) or ""
+            f.write(f"{s}:{key_a}:{key_b}\n")
+
+
 @mifare.command("check", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--keys",
@@ -828,7 +919,19 @@ def _write_keyfile(path: str, keys: List[str]) -> None:
     help="Write the recovered keys as a keyfile (one 12-hex key per line, "
     "mfoc/proxmark-compatible).",
 )
-@click.option("--force", is_flag=True, help="Overwrite --out if it already exists.")
+@click.option(
+    "-o",
+    "--output-keys",
+    "output_keys_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write recovered keys as one `sector:keyA:keyB` line per sector, "
+    "for `mifare sector --keys-file`. A key type not recovered is left blank.",
+)
+@click.option(
+    "--force", is_flag=True, help="Overwrite --out/--output-keys if they exist."
+)
 @_MIFARE_TIMEOUT_OPTION
 @device_options
 @click.pass_context
@@ -839,6 +942,7 @@ def mifare_check_cmd(
     key_type,
     as_json,
     out_file,
+    output_keys_file,
     force,
     timeout,
     verbose,
@@ -857,6 +961,8 @@ def mifare_check_cmd(
     """
     if out_file:
         _refuse_overwrite(out_file, force)
+    if output_keys_file:
+        _refuse_overwrite(output_keys_file, force)
 
     dictionary = load_keys(keyfiles or [str(default_keyfile())])
     if not dictionary:
@@ -939,6 +1045,15 @@ def mifare_check_cmd(
             raise SystemExit(1)
         if not as_json:
             print_info(f"wrote {out_file}")
+
+    if output_keys_file:
+        try:
+            _write_sector_keyfile(output_keys_file, sectors, found)
+        except OSError as e:
+            print_error(f"could not write {output_keys_file}: {e}")
+            raise SystemExit(1)
+        if not as_json:
+            print_info(f"wrote {output_keys_file}")
 
     if as_json:
         rows = []

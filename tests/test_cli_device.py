@@ -64,7 +64,7 @@ def test_list_flags_a_board_present_by_usb_id_that_stays_silent(runner, usb_view
 
     assert "USB id" in out
     assert "did not answer the handshake" in out
-    assert "NFCGate relay" in out
+    assert "bombercat status" in out
 
 
 def test_list_asks_for_a_board_when_nothing_is_detected(runner, usb_view):

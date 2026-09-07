@@ -158,7 +158,7 @@ def test_silent_board_present_by_usb_id_points_at_the_firmware(monkeypatch):
         resolve_port()
 
     assert "did not answer the handshake" in str(e.value)
-    assert "NFCGate relay" in str(e.value)
+    assert "bombercat status" in str(e.value)
 
 
 def test_several_silent_boards_ask_for_a_device_id(monkeypatch):

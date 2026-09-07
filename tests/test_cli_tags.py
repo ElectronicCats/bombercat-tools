@@ -648,4 +648,11 @@ def test_tags_group_exposes_all_subcommands():
 
 
 def test_mifare_group_exposes_all_subcommands():
-    assert set(tagscli.mifare.commands) == {"auth", "read", "write", "sector", "keys"}
+    assert set(tagscli.mifare.commands) == {
+        "auth",
+        "read",
+        "write",
+        "sector",
+        "keys",
+        "check",
+    }

@@ -16,6 +16,7 @@ from modules.tags import cli as tagscli
 from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
 from modules.tags.cli import (
     mifare_auth_cmd,
+    mifare_check_cmd,
     mifare_keys_cmd,
     mifare_read_cmd,
     mifare_sector_cmd,
@@ -638,6 +639,80 @@ def test_mifare_reports_a_board_that_will_not_handshake(runner, use_link):
     assert result.exit_code == 1
     assert "did not answer the handshake" in flat(result.output)
     assert link.closed
+
+
+# ── check (dictionary attack) ─────────────────────────────────────────────────
+
+
+def test_mifare_check_continues_past_a_failed_key_and_finds_the_real_one(
+    runner, use_link, tmp_path
+):
+    # Regression for the firmware HALT-after-failed-auth bug
+    # (CLI_IMPROVEMENTS_MifareCheck.md §4): the correct key is NOT first in the
+    # dictionary, so the host sweep must keep going after a "-ERR" instead of
+    # giving up. FFFFFFFFFFFF fails on this sector; A0A1A2A3A4A5 (the MAD key)
+    # opens it — exactly the "shows all keys failing" symptom before the fix.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\nA0A1A2A3A4A5\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": err("authentication failed"),
+                "mifare auth 0 A A0A1A2A3A4A5": ok(),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "1", "--key-type", "A", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload == {
+        "sectors": [{"sector": 0, "key_a": "A0A1A2A3A4A5", "key_b": None}],
+        "recovered": 1,
+        "total": 1,
+    }
+    # The sweep did not stop at the first failure: BOTH keys were tried, in
+    # dictionary order.
+    assert "mifare auth 0 A FFFFFFFFFFFF" in fake.sent
+    assert "mifare auth 0 A A0A1A2A3A4A5" in fake.sent
+    assert fake.sent.index("mifare auth 0 A FFFFFFFFFFFF") < fake.sent.index(
+        "mifare auth 0 A A0A1A2A3A4A5"
+    )
+
+
+def test_mifare_check_tries_known_keys_first_on_later_sectors(
+    runner, use_link, tmp_path
+):
+    # Once a key opens sector 0, known-keys-first tries it before the rest of
+    # the dictionary on sector 1 (block 4) — the speed-up for real cards that
+    # reuse one key across sectors. FFFFFFFFFFFF must never be sent for block 4.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\nA0A1A2A3A4A5\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": err("authentication failed"),
+                "mifare auth 0 A A0A1A2A3A4A5": ok(),
+                "mifare auth 4 A A0A1A2A3A4A5": ok(),
+                "mifare auth 4 A FFFFFFFFFFFF": err("authentication failed"),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "2", "--key-type", "A", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["recovered"] == 2
+    assert "mifare auth 4 A A0A1A2A3A4A5" in fake.sent
+    assert "mifare auth 4 A FFFFFFFFFFFF" not in fake.sent
 
 
 # ── group wiring ─────────────────────────────────────────────────────────────

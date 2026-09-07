@@ -11,7 +11,7 @@ import json
 import re
 import time
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import click
@@ -39,6 +39,7 @@ from ..utils.output import (
     print_warning,
 )
 from .aggregator import _RESERVED_KEYS, TagAggregator
+from .keyfile import default_keyfile, load_keys
 from .parser import Tag, TagParser
 
 # How long `tags info` listens for a ':tag' event before concluding the
@@ -454,6 +455,10 @@ def info_cmd(ctx, verbose, port, device_id):
 # user to tap one and waits for the firmware's auto-probe ':mifare' event
 # (proof the session is now open) before retrying once.
 #
+# `mifare check` (dictionary attack, host-side sweep over `auth` — see
+# docs/CLI_IMPROVEMENTS_MifareCheck.md) needs no pre-existing session either;
+# it opens one itself the same way.
+#
 # `mifare dump` (read every sector of a card) and `mifare keys add/remove`
 # (persisted custom keys) are listed in the plan's CLI design but not
 # implemented here yet — out of scope for this pass.
@@ -694,3 +699,209 @@ def mifare_keys_cmd(ctx, as_json, verbose, port, device_id):
     for name, hex_value in keys:
         table.add_row(name, hex_value)
     console.print(table)
+
+
+# ── check ────────────────────────────────────────────────────────────────────
+#
+# `mifare check` — dictionary attack: try known keys against every sector
+# and report which ones open. docs/CLI_IMPROVEMENTS_MifareCheck.md §6.3.
+
+
+def _sector_first_block(sector: int) -> int:
+    """Block that opens SECTOR's keys — 1K/2K (4-block sectors) mapping only.
+    4K's sectors 32-39 (16 blocks each) aren't supported yet; isolating the
+    mapping here means extending it later won't touch the sweep loop."""
+    return sector * 4
+
+
+# Limit of the "block = 4 * sector" mapping above (1K = 16, 2K = 32 sectors).
+_MIFARE_CHECK_MAX_SECTORS = 32
+
+
+def _write_keyfile(path: str, keys: List[str]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        for key in keys:
+            f.write(key + "\n")
+
+
+@mifare.command("check", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--keys",
+    "keyfiles",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    metavar="FILE",
+    help="Key dictionary (.keys/.dic/.md), repeatable. Defaults to the "
+    "bundled dictionary (2477 known keys); passing --keys replaces it — "
+    "include the bundled file yourself alongside others if you want both.",
+)
+@click.option(
+    "--sectors",
+    type=click.IntRange(1, _MIFARE_CHECK_MAX_SECTORS),
+    default=16,
+    show_default=True,
+    help=f"Number of sectors to check (16 = 1K). Max {_MIFARE_CHECK_MAX_SECTORS} "
+    "— 4K's 16-block sectors (32-39) aren't supported yet.",
+)
+@click.option(
+    "--key-type",
+    "key_type",
+    type=click.Choice(["A", "B", "both"], case_sensitive=False),
+    default="both",
+    show_default=True,
+    help="Which key slot(s) to try.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout.")
+@click.option(
+    "--out",
+    "out_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write the recovered keys as a keyfile (one 12-hex key per line, "
+    "mfoc/proxmark-compatible).",
+)
+@click.option("--force", is_flag=True, help="Overwrite --out if it already exists.")
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_check_cmd(
+    ctx,
+    keyfiles,
+    sectors,
+    key_type,
+    as_json,
+    out_file,
+    force,
+    timeout,
+    verbose,
+    port,
+    device_id,
+):
+    """Dictionary attack: try known keys against every sector and report
+    which ones open.
+
+    Authorized use only — test only cards you own or with the owner's
+    explicit permission. A sector that opens with a dictionary key (e.g. the
+    default `FFFFFFFFFFFF`) is evidence that card is exposed.
+
+    Exit code: 0 if every requested (sector, key type) was recovered, 1
+    otherwise (some unknown, or the sweep was interrupted early).
+    """
+    if out_file:
+        _refuse_overwrite(out_file, force)
+
+    dictionary = load_keys(keyfiles or [str(default_keyfile())])
+    if not dictionary:
+        print_error("no keys loaded — check --keys")
+        raise SystemExit(1)
+
+    key_types = ["A", "B"] if key_type.lower() == "both" else [key_type.upper()]
+    total = sectors * len(key_types)
+
+    level = _verbosity(ctx, verbose)
+    found: Dict[Tuple[int, str], Optional[str]] = {}
+    known: "OrderedDict[str, None]" = OrderedDict()
+    interrupted = False
+
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if not as_json:
+            print_info(
+                f"Checking {target} — {sectors} sector(s) x {len(key_types)} key "
+                f"type(s), {len(dictionary)} keys — Ctrl-C for partial results"
+            )
+        progress = (
+            None
+            if as_json
+            else Progress(
+                SpinnerColumn(style="cyan"),
+                TextColumn("[cyan]checking[/cyan]"),
+                BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
+                TextColumn(
+                    "[dim]{task.fields[recovered]}/{task.total} recovered[/dim]"
+                ),
+                console=console,
+                transient=True,
+            )
+        )
+        first = True
+        try:
+            with progress or nullcontext():
+                task = (
+                    progress.add_task("", total=total, recovered=0)
+                    if progress
+                    else None
+                )
+                for s in range(sectors):
+                    block = _sector_first_block(s)
+                    for kt in key_types:
+                        candidates = list(known) + [
+                            k for k in dictionary if k not in known
+                        ]
+                        key = None
+                        for candidate in candidates:
+                            line = f"mifare auth {block} {kt} {candidate}"
+                            if first:
+                                r = _run_mifare_command(link, line, timeout)
+                                first = False
+                            else:
+                                r = link.command(line)
+                            if r.ok:
+                                key = candidate
+                                break
+                        found[(s, kt)] = key
+                        if key:
+                            known.setdefault(key, None)
+                        if progress:
+                            recovered = sum(1 for v in found.values() if v)
+                            progress.update(task, advance=1, recovered=recovered)
+        except KeyboardInterrupt:
+            interrupted = True
+
+    if interrupted and not as_json:
+        print_warning("interrupted — showing partial results")
+
+    recovered = sum(1 for v in found.values() if v)
+    exposed_sectors = len({s for (s, _kt), v in found.items() if v})
+
+    if out_file:
+        try:
+            _write_keyfile(out_file, list(known))
+        except OSError as e:
+            print_error(f"could not write {out_file}: {e}")
+            raise SystemExit(1)
+        if not as_json:
+            print_info(f"wrote {out_file}")
+
+    if as_json:
+        rows = []
+        for s in range(sectors):
+            key_a = found.get((s, "A")) if "A" in key_types else None
+            key_b = found.get((s, "B")) if "B" in key_types else None
+            rows.append({"sector": s, "key_a": key_a, "key_b": key_b})
+        print(json.dumps({"sectors": rows, "recovered": recovered, "total": total}))
+        raise SystemExit(0 if recovered == total else 1)
+
+    console.print("")
+    table = Table(title=f"MifareClassic check @ {target}", header_style="cyan bold")
+    table.add_column("Sector", justify="right")
+    table.add_column("Key A")
+    table.add_column("Key B")
+    for s in range(sectors):
+        row = []
+        for kt in ("A", "B"):
+            if kt not in key_types:
+                row.append("[dim]—[/dim]")
+                continue
+            key = found.get((s, kt))
+            row.append(f"[green]{key}[/green]" if key else r"[dim]\[unknown][/dim]")
+        table.add_row(str(s), *row)
+    console.print(table)
+
+    console.print("")
+    print_info(
+        f"{recovered}/{total} keys recovered — card exposes {exposed_sectors}/"
+        f"{sectors} sectors with known keys"
+    )
+
+    raise SystemExit(0 if recovered == total else 1)

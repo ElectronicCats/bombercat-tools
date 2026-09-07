@@ -715,6 +715,75 @@ def test_mifare_check_tries_known_keys_first_on_later_sectors(
     assert "mifare auth 4 A FFFFFFFFFFFF" not in fake.sent
 
 
+def test_mifare_check_table_reports_vulnerable_verdict(runner, use_link, tmp_path):
+    # Both sectors open with the default key: the table shows the recovered
+    # key in every cell and the verdict line reports 4/4 keys, 2/2 sectors.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": ok(),
+                "mifare auth 0 B FFFFFFFFFFFF": ok(),
+                "mifare auth 4 A FFFFFFFFFFFF": ok(),
+                "mifare auth 4 B FFFFFFFFFFFF": ok(),
+            }
+        ),
+    )
+    result = runner.invoke(mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "2"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert out.count("FFFFFFFFFFFF") == 4
+    assert "4/4 keys recovered" in out
+    assert "card exposes 2/2 sectors with known keys" in out
+
+
+def test_mifare_check_reports_unknown_keys_and_fails(runner, use_link, tmp_path):
+    # No key in the dictionary opens the card: the table shows [unknown] for
+    # every cell and the command exits non-zero (not fully recovered).
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": err("authentication failed"),
+                "mifare auth 0 B FFFFFFFFFFFF": err("authentication failed"),
+            }
+        ),
+    )
+    result = runner.invoke(mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "1"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 1
+    assert "[unknown]" in out
+    assert "0/2 keys recovered" in out
+
+
+def test_mifare_check_key_type_a_never_tries_b(runner, use_link, tmp_path):
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(responses={"mifare auth 0 A FFFFFFFFFFFF": ok()}),
+    )
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "1", "--key-type", "A", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload == {
+        "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": None}],
+        "recovered": 1,
+        "total": 1,
+    }
+    assert not any(" B " in s for s in fake.sent)
+
+
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 

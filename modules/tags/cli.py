@@ -46,7 +46,7 @@ from ..utils.output import (
     print_success,
     print_warning,
 )
-from .access_bits import SectorAccessBits, parse_access_bits
+from .access_bits import _KEY_A, SectorAccessBits, parse_access_bits
 from .aggregator import _RESERVED_KEYS, TagAggregator
 from .block0 import Block0, parse_block0
 from .keyfile import (
@@ -926,6 +926,49 @@ def _write_sector_keyfile(
             f.write(f"{s}:{key_a}:{key_b}\n")
 
 
+# Trailer-read key-B recovery. This is NOT the Crypto-1 nested attack (that
+# needs raw nonce/parity capture the PN7150 never surfaces — it runs Crypto-1
+# in-chip and only reports auth pass/fail). Instead, once the dictionary has
+# opened a sector with key A, we read its trailer with that key: on cards whose
+# access bits leave key B *readable with key A* (the transport/default configs
+# 000 and 001 — NXP MF1S50yyX Table 8), key B comes back in cleartext in the
+# trailer's last 6 bytes. Key A itself never reads back under any access
+# condition, so only key B is recoverable this way.
+#
+# Offsets into a `mifare sector` dump (4 blocks x 32 hex chars); the trailer is
+# the 4th block, laid out key A (bytes 0-5) | access+GPB (6-9) | key B (10-15).
+_TRAILER_HEX_START = 3 * _MIFARE_BLOCK_HEX_LEN
+_TRAILER_AC_HEX = slice(
+    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN,
+    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN + 6,
+)
+_TRAILER_KEYB_HEX = slice(
+    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN,
+    _TRAILER_HEX_START + _MIFARE_BLOCK_HEX_LEN,
+)
+
+
+def _recover_key_b_via_trailer(link, sector: int, key_a: str) -> Optional[str]:
+    """Read SECTOR's key B off the card using its known key A, no cryptography.
+
+    Returns the 12-hex key B on success, or None if auth/read failed, the
+    trailer wasn't a full block, its access bits don't make key B readable
+    with key A, or the card handed back all-zeros (key B not exposed)."""
+    r = link.command(f"mifare sector {sector} A {key_a.upper()}")
+    if not r.ok:
+        return None
+    data_hex = r.data.get("mifare_sector", "")
+    if len(data_hex) < _MIFARE_BLOCK_HEX_LEN * 4:
+        return None
+    access = parse_access_bits(data_hex[_TRAILER_AC_HEX])
+    if access is None or access.trailer.key_b_read != _KEY_A:
+        return None
+    key_b = data_hex[_TRAILER_KEYB_HEX].upper()
+    if not _MIFARE_HEX_RE.match(key_b) or key_b == "0" * _MIFARE_KEY_HEX_LEN:
+        return None
+    return key_b
+
+
 @mifare.command("check", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--keys",
@@ -1113,6 +1156,33 @@ def mifare_check_cmd(
                             progress.update(task, recovered=recovered)
         except KeyboardInterrupt:
             interrupted = True
+
+        # Trailer-read fallback (still inside the open session): for sectors
+        # the dictionary opened with key A but not key B, try to read key B
+        # straight off the card. Not the Crypto-1 nested attack — that needs
+        # nonce capture this reader can't do — but it recovers key B for free
+        # on cards that leave it readable. See _recover_key_b_via_trailer.
+        if not interrupted and "B" in key_types:
+            targets = [
+                (s, key_a)
+                for s in range(sectors)
+                if found.get((s, "B")) is None
+                and (key_a := found.get((s, "A"))) is not None
+            ]
+            if targets and not as_json:
+                print_info(
+                    f"trailer read: {len(targets)} sector(s) opened key A but "
+                    "not key B — reading key B off the card (no Crypto-1 attack)"
+                )
+            for s, key_a in targets:
+                key_b = _recover_key_b_via_trailer(link, s, key_a)
+                if key_b:
+                    found[(s, "B")] = key_b
+                    known.setdefault(key_b, None)
+                    if not as_json:
+                        print_success(
+                            f"sector {s} key B recovered via trailer read: {key_b}"
+                        )
 
     if interrupted and not as_json:
         print_warning("interrupted — showing partial results")

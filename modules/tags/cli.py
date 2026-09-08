@@ -39,6 +39,7 @@ from ..utils.output import (
     print_success,
     print_warning,
 )
+from .access_bits import SectorAccessBits, parse_access_bits
 from .aggregator import _RESERVED_KEYS, TagAggregator
 from .block0 import Block0, parse_block0
 from .keyfile import (
@@ -480,23 +481,27 @@ def _sector_display_lines(
     data_hex: str,
     key_a: Optional[str] = None,
     key_b: Optional[str] = None,
-) -> List[str]:
-    """Split a sector's dump (4 blocks x 32 hex chars) into the 4 lines
-    `mifare sector` prints: block 0 in magenta only for sector 0 (the only
-    sector where it's factory UID data, not user data), blocks 1-2 plain,
-    and block 3 (the trailer) as key A / access conditions / key B in their
-    own colors.
+) -> Tuple[List[Tuple[str, str]], Optional[SectorAccessBits]]:
+    """Split a sector's dump (4 blocks x 32 hex chars) into the `(label,
+    line)` rows `mifare sector` prints — labeled with the sector's real block
+    numbers (the same `sector * 4` mapping `_sector_first_block` uses; 1K/2K
+    sectors 0-31 only, 4K's 16-block sectors 32-39 aren't supported yet) —
+    plus the decoded access bits for those blocks (None if the trailer wasn't
+    a full block).
 
-    A card never reads its Key A back (and often not Key B either) — the
-    trailer's key bytes come back as zeros. `key_a`/`key_b`, when given (from
-    `--keys-file`), are substituted into the display so the real keys show
-    instead of those zeros; the access-conditions bytes always stay as read."""
+    Block 0 is colored magenta only for sector 0 (the only sector where it's
+    factory UID data, not user data). A card never reads its Key A back (and
+    often not Key B either) — the trailer's key bytes come back as zeros.
+    `key_a`/`key_b`, when given (from `--keys-file`), are substituted into the
+    display so the real keys show instead of those zeros; the
+    access-conditions bytes always stay as read."""
     blocks = [
         data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
         for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
     ]
     blocks += [""] * (4 - len(blocks))
     block0, block1, block2, trailer = blocks[:4]
+    base = _sector_first_block(sector)
 
     line0 = f"[magenta]{block0}[/magenta]" if sector == 0 and block0 else block0
 
@@ -510,7 +515,36 @@ def _sector_display_lines(
         f"[green]{shown_b}[/green]"
     )
 
-    return [line0, block1, block2, line3]
+    lines = [
+        (f"block {base}", line0),
+        (f"block {base + 1}", block1),
+        (f"block {base + 2}", block2),
+        (f"block {base + 3} (trailer)", line3),
+    ]
+    access = parse_access_bits(ac[:6]) if len(ac) == _MIFARE_TRAILER_AC_LEN else None
+    return lines, access
+
+
+def _print_access_bits(access: SectorAccessBits, base: int) -> None:
+    """Render a sector's decoded access conditions under its block dump."""
+    print_subtitle("Access conditions")
+    for i, blk in enumerate(access.blocks):
+        _print_field(
+            f"block {base + i}",
+            f"read {blk.read} · write {blk.write} · increment {blk.increment} · "
+            f"decr/transfer/restore {blk.decrement}",
+        )
+    t = access.trailer
+    _print_field(
+        f"block {base + 3} (trailer)",
+        f"key A: write {t.key_a_write} · AC: read {t.ac_read}, write {t.ac_write} "
+        f"· key B: read {t.key_b_read}, write {t.key_b_write}",
+    )
+    if not access.valid:
+        print_warning(
+            "access bits fail their own inverse check — bytes may be corrupt "
+            "or this trailer wasn't actually read"
+        )
 
 
 def _print_block0(b0: Block0) -> None:
@@ -798,8 +832,11 @@ def mifare_sector_cmd(
     console.print("")
     _print_field("sector", str(sector))
     if data_hex:
-        for line in _sector_display_lines(sector, data_hex, file_key_a, file_key_b):
-            console.print(line)
+        lines, access = _sector_display_lines(sector, data_hex, file_key_a, file_key_b)
+        for label, line in lines:
+            _print_field(label, line)
+        if access is not None:
+            _print_access_bits(access, _sector_first_block(sector))
     else:
         console.print("  [dim]—[/dim]")
     if b0 is not None:

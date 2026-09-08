@@ -792,6 +792,116 @@ def test_mifare_check_key_type_a_never_tries_b(runner, use_link, tmp_path):
     assert not any(" B " in s for s in fake.sent)
 
 
+# ── check: trailer-read key-B recovery ────────────────────────────────────────
+# When the dictionary opens key A but not key B, `check` reads the sector
+# trailer with key A; on cards whose access bits leave key B readable (the
+# transport/default config), key B comes back in cleartext. NOT the Crypto-1
+# nested attack — the PN7150 runs Crypto-1 in-chip and never surfaces a nonce.
+
+
+# blocks 0-2 zeroed, then the trailer: key A reads back as zeros, access bytes
+# FF0780 (trailer config 001 → key B readable with key A) + GPB 69, key B.
+_TRAILER_KEYB_READABLE = "00" * 48 + "000000000000" "FF078069" "B0B1B2B3B4B5"
+
+
+def test_mifare_check_recovers_key_b_via_trailer_read(runner, use_link, tmp_path):
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": ok(),
+                "mifare auth 0 B FFFFFFFFFFFF": err("authentication failed"),
+                "mifare sector 0 A FFFFFFFFFFFF": ok(
+                    mifare_sector=_TRAILER_KEYB_READABLE
+                ),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "1", "--json"]
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload == {
+        "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": "B0B1B2B3B4B5"}],
+        "recovered": 2,
+        "total": 2,
+    }
+    # It read the trailer with the recovered key A.
+    assert "mifare sector 0 A FFFFFFFFFFFF" in fake.sent
+
+
+def test_mifare_check_trailer_read_prints_recovery_line(runner, use_link, tmp_path):
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": ok(),
+                "mifare auth 0 B FFFFFFFFFFFF": err("authentication failed"),
+                "mifare sector 0 A FFFFFFFFFFFF": ok(
+                    mifare_sector=_TRAILER_KEYB_READABLE
+                ),
+            }
+        ),
+    )
+    result = runner.invoke(mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "1"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "key B recovered via trailer read" in out
+    assert "B0B1B2B3B4B5" in out
+
+
+def test_mifare_check_trailer_read_skips_when_key_b_not_exposed(
+    runner, use_link, tmp_path
+):
+    # The card returns an all-zero trailer (key B not readable): recovery
+    # finds nothing and key B stays unknown, so the command still fails.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": ok(),
+                "mifare auth 0 B FFFFFFFFFFFF": err("authentication failed"),
+                "mifare sector 0 A FFFFFFFFFFFF": ok(mifare_sector="00" * 64),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "1", "--json"]
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["sectors"] == [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": None}]
+
+
+def test_mifare_check_trailer_read_not_attempted_for_key_type_a(
+    runner, use_link, tmp_path
+):
+    # key-type A only never looks for (or recovers) key B, so no trailer read.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(responses={"mifare auth 0 A FFFFFFFFFFFF": ok()}),
+    )
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "1", "--key-type", "A", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert not any(s.startswith("mifare sector") for s in fake.sent)
+
+
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 

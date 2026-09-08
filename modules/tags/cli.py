@@ -825,8 +825,16 @@ def mifare_sector_cmd(
             if r.ok:
                 break
 
-    if r is None or not r.ok:
-        print_error(f"sector read failed: {r.message if r else 'no key tried'}")
+    if r is None:
+        print_error("sector read failed: no key tried")
+        raise SystemExit(1)
+    if not r.ok:
+        # r.message is already a complete sentence from the firmware (e.g.
+        # "authentication failed" or "sector read failed: key authenticated
+        # but a block read was denied (access bits)") — don't re-wrap it in
+        # another "sector read failed:" prefix, or the two collide into
+        # nonsense like "sector read failed: sector read failed".
+        print_error(f"sector {sector}: {r.message}")
         raise SystemExit(1)
     data_hex = r.data.get("mifare_sector", "")
     b0 = parse_block0(data_hex[:32]) if sector == 0 else None

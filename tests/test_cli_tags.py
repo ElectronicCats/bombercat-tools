@@ -584,11 +584,19 @@ def test_mifare_sector_reports_the_sector_data(runner, use_link):
     result = runner.invoke(
         mifare_sector_cmd, ["--sector", "1", "--key-type", "A", "--key", "FFFFFFFFFFFF"]
     )
+    out = flat(result.stdout)
 
     assert result.exit_code == 0
-    # A long hex blob can get line-wrapped by Rich in the plain-text view;
-    # strip newlines (not real spaces) rather than the wrap-tolerant `flat()`.
-    assert "00" * 64 in result.stdout.replace("\n", "")
+    # sector 1 = blocks 4-7 — labeled with their real block numbers, not just
+    # a position within the sector.
+    assert "block 4" in out
+    assert "block 5" in out
+    assert "block 6" in out
+    assert "block 7 (trailer)" in out
+    assert "00" * 16 in out
+    # trailer's access bits get decoded into per-block permissions too.
+    assert "Access conditions" in out
+    assert "read key A or B" in out
 
 
 def test_mifare_sector_json_emits_sector_and_full_data(runner, use_link):

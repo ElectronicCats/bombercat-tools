@@ -18,6 +18,11 @@ _SAK_NAMES = {
     0x09: "MIFARE Mini",
     0x28: "SmartMX Classic 1K",
     0x38: "SmartMX Classic 4K",
+    # Non-NXP silicon (Infineon SLE66R35 and friends) sets the proprietary
+    # b8 bit (0x80) on top of the standard Classic 1K SAK: 0x88 & 0x7F == 0x08.
+    # NXP's AN10833 doesn't list it, but Proxmark3/libnfc report it as a
+    # Classic 1K-compatible card; it authenticates with normal Crypto1.
+    0x88: "MIFARE Classic 1K (Infineon)",
 }
 
 _ATQA_NAMES = {

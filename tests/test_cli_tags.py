@@ -800,3 +800,137 @@ def test_mifare_group_exposes_all_subcommands():
         "keys",
         "check",
     }
+
+
+# ── key persistence: check --output-keys / sector --keys-file ─────────────────
+# docs/CLI_IMPROVEMENTS_MifareCheck.md — `check` writes a `sector:keyA:keyB`
+# file that `sector` reads back to auth and to show the real keys in the trailer.
+
+
+def test_mifare_check_output_keys_writes_sector_lines_and_still_shows_table(
+    runner, use_link, tmp_path
+):
+    keyfile = tmp_path / "dict.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    out = tmp_path / "claves.txt"
+    # FakeLink answers unscripted commands ok, so spell out the one failure:
+    # sector 1's key B never opens and must land as a blank in the file.
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"mifare auth 4 B FFFFFFFFFFFF": err("authentication failed")}
+        ),
+    )
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "2", "--output-keys", str(out)],
+    )
+
+    assert result.exit_code == 1  # sector 1 key B never recovered
+    # the on-screen table is still printed alongside the file write
+    assert "MifareClassic check" in flat(result.stdout)
+    assert f"wrote {out}" in flat(result.stdout)
+    # blank for the key type that wasn't recovered, always one line per sector
+    assert out.read_text() == ("0:FFFFFFFFFFFF:FFFFFFFFFFFF\n" "1:FFFFFFFFFFFF:\n")
+
+
+def test_mifare_check_output_keys_refuses_overwrite_without_force(
+    runner, use_link, tmp_path
+):
+    keyfile = tmp_path / "dict.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    out = tmp_path / "claves.txt"
+    out.write_text("stale\n")
+    use_link(tagscli, FakeLink(responses={"mifare auth 0 A FFFFFFFFFFFF": ok()}))
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--keys", str(keyfile), "--sectors", "1", "--output-keys", str(out)],
+    )
+
+    assert result.exit_code != 0
+    assert out.read_text() == "stale\n"  # untouched
+
+
+def test_mifare_sector_keys_file_auths_with_key_a_and_shows_real_keys(
+    runner, use_link, tmp_path
+):
+    keys = tmp_path / "claves.txt"
+    keys.write_text("0:A0A1A2A3A4A5:787788C10203\n")
+    # trailer reads back as zeros over the wire; --keys-file substitutes reals
+    data = "1092289339880400C08E1E9841205212" + "00" * 16 + "00" * 16
+    fake = use_link(
+        tagscli,
+        FakeLink(responses={"mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=data)}),
+    )
+    result = runner.invoke(
+        mifare_sector_cmd, ["--sector", "0", "--keys-file", str(keys)]
+    )
+    flat_out = result.stdout.replace("\n", "")
+
+    assert result.exit_code == 0
+    # authenticated with the file's key A, not zeros
+    assert "mifare sector 0 A A0A1A2A3A4A5" in fake.sent
+    # both real keys appear in the trailer line, not the zeros the card returned
+    assert "A0A1A2A3A4A5" in flat_out
+    assert "787788C10203" in flat_out
+
+
+def test_mifare_sector_keys_file_falls_back_to_key_b_when_a_fails(
+    runner, use_link, tmp_path
+):
+    keys = tmp_path / "claves.txt"
+    keys.write_text("0:A0A1A2A3A4A5:787788C10203\n")
+    data = "00" * 64
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": err("authentication failed"),
+                "mifare sector 0 B 787788C10203": ok(mifare_sector=data),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_sector_cmd, ["--sector", "0", "--keys-file", str(keys)]
+    )
+
+    assert result.exit_code == 0
+    assert "mifare sector 0 A A0A1A2A3A4A5" in fake.sent
+    assert "mifare sector 0 B 787788C10203" in fake.sent
+
+
+def test_mifare_sector_keys_file_errors_when_sector_missing(runner, use_link, tmp_path):
+    keys = tmp_path / "claves.txt"
+    keys.write_text("0:A0A1A2A3A4A5:787788C10203\n")
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_sector_cmd, ["--sector", "5", "--keys-file", str(keys)]
+    )
+
+    assert result.exit_code == 1
+    assert "sector 5 not found" in flat(result.output)
+
+
+def test_mifare_sector_keys_file_errors_on_a_malformed_file(runner, use_link, tmp_path):
+    keys = tmp_path / "claves.txt"
+    keys.write_text("0:nothex:787788C10203\n")
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_sector_cmd, ["--sector", "0", "--keys-file", str(keys)]
+    )
+
+    assert result.exit_code == 1
+    assert "expected 'sector:keyA:keyB'" in flat(result.output)
+
+
+def test_mifare_sector_rejects_both_key_and_keys_file(runner, use_link, tmp_path):
+    keys = tmp_path / "claves.txt"
+    keys.write_text("0:A0A1A2A3A4A5:787788C10203\n")
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_sector_cmd,
+        ["--sector", "0", "--key", "FFFFFFFFFFFF", "--keys-file", str(keys)],
+    )
+
+    assert result.exit_code != 0
+    assert "either --key or --keys-file" in flat(result.output)

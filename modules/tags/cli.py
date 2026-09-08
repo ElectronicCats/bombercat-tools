@@ -15,7 +15,14 @@ from contextlib import contextmanager, nullcontext
 from typing import Dict, Iterator, List, Optional, Tuple
 
 import click
-from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from ..core.bombercat import DeviceLink, resolve_port
@@ -1020,25 +1027,48 @@ def mifare_check_cmd(
                 f"Checking {target} — {sectors} sector(s) x {len(key_types)} key "
                 f"type(s), {len(dictionary)} keys — Ctrl-C for partial results"
             )
+        total_attempts = total * len(dictionary)
         progress = (
             None
             if as_json
             else Progress(
                 SpinnerColumn(style="cyan"),
-                TextColumn("[cyan]checking[/cyan]"),
+                TextColumn(
+                    "[cyan]sector {task.fields[sector]:>2} key {task.fields[key_type]}"
+                    "[/cyan]"
+                ),
                 BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
                 TextColumn(
-                    "[dim]{task.fields[recovered]}/{task.total} recovered[/dim]"
+                    "[dim]{task.fields[tried]}/{task.fields[key_total]} keys[/dim]"
+                ),
+                TextColumn("[dim]{task.fields[rate]:.0f} keys/s[/dim]"),
+                TimeRemainingColumn(),
+                TimeElapsedColumn(),
+                TextColumn(
+                    "[dim]{task.fields[recovered]}/{task.fields[pairs]} "
+                    "recovered[/dim]"
                 ),
                 console=console,
                 transient=True,
             )
         )
         first = True
+        attempts = 0
+        start_time = time.monotonic()
         try:
             with progress or nullcontext():
                 task = (
-                    progress.add_task("", total=total, recovered=0)
+                    progress.add_task(
+                        "",
+                        total=total_attempts,
+                        recovered=0,
+                        pairs=total,
+                        sector=0,
+                        key_type="",
+                        tried=0,
+                        key_total=len(dictionary),
+                        rate=0.0,
+                    )
                     if progress
                     else None
                 )
@@ -1049,6 +1079,7 @@ def mifare_check_cmd(
                             k for k in dictionary if k not in known
                         ]
                         key = None
+                        tried = 0
                         for candidate in candidates:
                             line = f"mifare auth {block} {kt} {candidate}"
                             if first:
@@ -1056,6 +1087,18 @@ def mifare_check_cmd(
                                 first = False
                             else:
                                 r = link.command(line)
+                            tried += 1
+                            attempts += 1
+                            if progress:
+                                elapsed = time.monotonic() - start_time
+                                progress.update(
+                                    task,
+                                    advance=1,
+                                    sector=s,
+                                    key_type=kt,
+                                    tried=tried,
+                                    rate=attempts / elapsed if elapsed > 0 else 0.0,
+                                )
                             if r.ok:
                                 key = candidate
                                 break
@@ -1064,7 +1107,10 @@ def mifare_check_cmd(
                             known.setdefault(key, None)
                         if progress:
                             recovered = sum(1 for v in found.values() if v)
-                            progress.update(task, advance=1, recovered=recovered)
+                            skipped = len(candidates) - tried
+                            if skipped:
+                                progress.update(task, advance=skipped)
+                            progress.update(task, recovered=recovered)
         except KeyboardInterrupt:
             interrupted = True
 

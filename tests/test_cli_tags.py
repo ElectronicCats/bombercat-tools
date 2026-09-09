@@ -24,6 +24,7 @@ from modules.tags.cli import (
     mifare_restore_cmd,
     mifare_sector_cmd,
     mifare_write_cmd,
+    mifare_write_text_cmd,
 )
 
 STRUCTURED_LINE = ":tag 1234 NFC-A T2T 041A2B3C"
@@ -953,6 +954,7 @@ def test_mifare_group_exposes_all_subcommands():
         "dump",
         "restore",
         "code",
+        "write-text",
     }
 
 
@@ -1853,3 +1855,177 @@ def test_mifare_code_rejects_empty_text(runner):
 
     assert result.exit_code == 1
     assert "empty" in flat(result.output)
+
+
+# ── write-text ───────────────────────────────────────────────────────────────
+#
+# `mifare write-text` — `code`'s encoder plus a real auth/write pass, so these
+# drive a FakeLink and assert on the REPL lines it was sent.
+
+
+def test_mifare_write_text_authenticates_then_writes_the_blocks(runner, use_link):
+    keyfile = None
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["hola", "--sector", "1", "--key", "d3f7d3f7d3f7", "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["blocks_written"] == 1
+    assert payload["key_type"] == "A"
+    assert fake.sent[0] == "mifare auth 4 A D3F7D3F7D3F7"
+    assert "mifare write 4 686F6C61000000000000000000000000" in fake.sent
+    assert keyfile is None
+
+
+def test_mifare_write_text_spans_blocks_and_takes_keys_from_the_keys_file(
+    runner, use_link, tmp_path
+):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("1::FFFFFFFFFFFF\n")
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["A" * 20, "--sector", "1", "-k", str(keyfile), "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["key_type"] == "B"
+    assert payload["blocks_written"] == 2
+    assert fake.sent[0] == "mifare auth 4 B FFFFFFFFFFFF"
+    assert [e["block"] for e in payload["blocks"]] == [4, 5]
+
+
+def test_mifare_write_text_starts_at_the_requested_block(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["hola", "--block", "6", "--key", "FFFFFFFFFFFF", "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["sector"] == 1
+    assert fake.sent[0] == "mifare auth 4 A FFFFFFFFFFFF"
+    assert [e["block"] for e in payload["blocks"]] == [6]
+
+
+def test_mifare_write_text_refuses_a_trailer_block(runner, use_link):
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_write_text_cmd, ["hola", "--block", "7", "--key", "FFFFFFFFFFFF"]
+    )
+
+    assert result.exit_code == 1
+    assert "trailer" in flat(result.output)
+
+
+def test_mifare_write_text_refuses_block0_of_sector_0(runner, use_link):
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_write_text_cmd, ["hola", "--block", "0", "--key", "FFFFFFFFFFFF"]
+    )
+
+    assert result.exit_code == 1
+    assert "manufacturer block" in flat(result.output)
+
+
+def test_mifare_write_text_rejects_text_larger_than_the_room_left(runner, use_link):
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["A" * 40, "--block", "6", "--key", "FFFFFFFFFFFF"],
+    )
+
+    assert result.exit_code == 1
+    assert "only 1 data block(s)" in flat(result.output)
+
+
+def test_mifare_write_text_reports_a_failed_auth(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"mifare auth 4 A FFFFFFFFFFFF": err("authentication failed")}
+        ),
+    )
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["hola", "--sector", "1", "--key", "FFFFFFFFFFFF", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["blocks_written"] == 0
+    assert payload["reason"] == "authentication failed"
+
+
+def test_mifare_write_text_stops_at_the_first_denied_write(runner, use_link):
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare write 5 "
+                + "41" * 4
+                + "00" * 12: err("write denied (access bits)")
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["A" * 20, "--sector", "1", "--key", "FFFFFFFFFFFF", "--json"],
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["blocks_written"] == 1
+    assert "block 5 write failed" in payload["reason"]
+
+
+def test_mifare_write_text_needs_exactly_one_destination(runner, use_link):
+    use_link(tagscli, FakeLink())
+    both = runner.invoke(
+        mifare_write_text_cmd,
+        ["hola", "--sector", "1", "--block", "4", "--key", "FFFFFFFFFFFF"],
+    )
+    neither = runner.invoke(mifare_write_text_cmd, ["hola", "--key", "FFFFFFFFFFFF"])
+
+    assert both.exit_code == 1 and neither.exit_code == 1
+    assert "exactly one of --sector or --block" in flat(both.output)
+    assert "exactly one of --sector or --block" in flat(neither.output)
+
+
+def test_mifare_write_text_needs_exactly_one_key_source(runner, use_link, tmp_path):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("1:D3F7D3F7D3F7:FFFFFFFFFFFF\n")
+    use_link(tagscli, FakeLink())
+
+    both = runner.invoke(
+        mifare_write_text_cmd,
+        ["hola", "--sector", "1", "--key", "FFFFFFFFFFFF", "-k", str(keyfile)],
+    )
+    neither = runner.invoke(mifare_write_text_cmd, ["hola", "--sector", "1"])
+
+    assert both.exit_code == 1 and neither.exit_code == 1
+    assert "not both" in flat(both.output)
+    assert "one of --key or --keys-file is required" in flat(neither.output)
+
+
+def test_mifare_write_text_honours_a_custom_pad_byte(runner, use_link):
+    fake = use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_write_text_cmd,
+        ["hi", "--sector", "1", "--key", "FFFFFFFFFFFF", "--pad", "FF"],
+        catch_exceptions=False,
+    )
+
+    assert result.exit_code == 0
+    assert "mifare write 4 6869" + "FF" * 14 in fake.sent

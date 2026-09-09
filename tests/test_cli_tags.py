@@ -20,6 +20,7 @@ from modules.tags.cli import (
     mifare_dump_cmd,
     mifare_keys_cmd,
     mifare_read_cmd,
+    mifare_restore_cmd,
     mifare_sector_cmd,
     mifare_write_cmd,
 )
@@ -1381,3 +1382,310 @@ def test_mifare_dump_json_flag_emits_json_on_stdout(runner, use_link, tmp_path):
     assert payload["sectors_read"] == 1
     # the table/progress UI mifare dump shows without --json didn't leak in
     assert "MifareClassic dump" not in result.stdout
+
+
+# ── mifare restore ────────────────────────────────────────────────────────────
+# docs/CLI_IMPROVEMENTS_MifareRestore.md §7 (gen2). Restore consumes the
+# canonical `mifare dump` JSON and writes it back block by block: data blocks,
+# then the trailer last (unless --skip-trailers), with block 0 gated behind
+# --write-block0 + a non-destructive probe. FakeLink answers unscripted writes
+# ok, so a test only scripts the one command it wants to fail.
+
+# Access-bit byte triples for a trailer's C1/C2/C3 (hex chars 12-17):
+_AC_VALID = "FF0780"  # transport default — valid, not self-locking
+_AC_FROZEN = "7F0F08"  # valid but leaves the trailer permanently unwritable
+_AC_INVALID = "000000"  # C-bits equal their inverses -> invalid
+
+
+def _restore_trailer_block(
+    ac: str = _AC_VALID, key_a: str = "A0A1A2A3A4A5", key_b: str = "B0B1B2B3B4B5"
+) -> str:
+    """A 32-hex trailer block: key A (12) + access bits (6) + GPB (2) + key B."""
+    return key_a + ac + "69" + key_b
+
+
+def _restore_dump(tmp_path, ac: str = _AC_VALID, sectors=None, sectors_total: int = 2):
+    """Write a canonical `mifare dump` JSON to a temp file and return its path.
+
+    Two sectors by default; sector 0's block 0 carries a UID so --write-block0
+    has something to write, and both trailers use the same access bits `ac`."""
+    data = "11" * 16
+    if sectors is None:
+        sectors = [
+            {
+                "sector": 0,
+                "blocks": ["DE" * 16, data, data, _restore_trailer_block(ac)],
+            },
+            {"sector": 1, "blocks": [data, data, data, _restore_trailer_block(ac)]},
+        ]
+    dump = {"sectors_total": sectors_total, "sectors": sectors}
+    path = tmp_path / "dump.json"
+    path.write_text(json.dumps(dump))
+    return path
+
+
+def test_mifare_restore_writes_data_and_trailers_skipping_block0(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path)
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["sectors_written"] == 2
+    assert payload["block0_written"] is False
+    assert payload["trailers_skipped"] is False
+    # authenticated per sector with key A from the dump trailer
+    assert "mifare auth 0 A A0A1A2A3A4A5" in fake.sent
+    assert "mifare auth 4 A A0A1A2A3A4A5" in fake.sent
+    # trailers written last (blocks 3 and 7)
+    trailer = _restore_trailer_block()
+    assert f"mifare write 3 {trailer}" in fake.sent
+    assert f"mifare write 7 {trailer}" in fake.sent
+    # block 0 (the UID) left untouched by default
+    assert not any(s.startswith("mifare write 0 ") for s in fake.sent)
+
+
+def test_mifare_restore_skip_trailers_never_writes_a_trailer_block(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path)
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd,
+        ["--dump", str(dump), "--skip-trailers", "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["trailers_skipped"] is True
+    assert not any(
+        s.startswith("mifare write 3 ") or s.startswith("mifare write 7 ")
+        for s in fake.sent
+    )
+
+
+def test_mifare_restore_write_block0_prompts_and_declining_skips_it(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path)
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--write-block0"], input="n\n"
+    )
+
+    assert result.exit_code == 1
+    assert "UID" in result.output  # the block-0 warning was shown
+    # declined before opening the session -> no writes at all to block 0
+    assert not any(s.startswith("mifare write 0 ") for s in fake.sent)
+
+
+def test_mifare_restore_write_block0_yes_probes_then_writes_the_uid(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path)
+    current = "AA" * 16
+    fake = use_link(
+        tagscli, FakeLink(responses={"mifare read 0": ok(mifare_data="0 " + current)})
+    )
+
+    result = runner.invoke(
+        mifare_restore_cmd,
+        ["--dump", str(dump), "--write-block0", "--yes", "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["block0_written"] is True
+    # non-destructive probe: read block 0, echo the same bytes back, THEN write
+    assert fake.sent.index("mifare read 0") < fake.sent.index(
+        f"mifare write 0 {current}"
+    )
+    assert f"mifare write 0 {'DE' * 16}" in fake.sent  # the dump's UID
+
+
+def test_mifare_restore_write_block0_aborts_when_probe_shows_a_genuine_card(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path)
+    current = "AA" * 16
+    # the echo-write of the card's own block 0 fails -> not a magic card
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare read 0": ok(mifare_data="0 " + current),
+                f"mifare write 0 {current}": err("write not allowed"),
+            }
+        ),
+    )
+
+    result = runner.invoke(
+        mifare_restore_cmd,
+        ["--dump", str(dump), "--write-block0", "--yes", "--json"],
+        catch_exceptions=False,
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["block0_written"] is False
+    # the real UID write never happened — the probe stopped it
+    assert f"mifare write 0 {'DE' * 16}" not in fake.sent
+    assert any("not writable" in s["reason"] for s in payload["failed_sectors"])
+
+
+def test_mifare_restore_refuses_a_trailer_with_invalid_access_bits(
+    runner, use_link, tmp_path
+):
+    # sector 0's trailer is invalid, sector 1's is fine -> 0 fails, 1 continues
+    dump = _restore_dump(
+        tmp_path,
+        sectors=[
+            {
+                "sector": 0,
+                "blocks": [
+                    "DE" * 16,
+                    "11" * 16,
+                    "11" * 16,
+                    _restore_trailer_block(_AC_INVALID),
+                ],
+            },
+            {
+                "sector": 1,
+                "blocks": [
+                    "11" * 16,
+                    "11" * 16,
+                    "11" * 16,
+                    _restore_trailer_block(_AC_VALID),
+                ],
+            },
+        ],
+    )
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["sectors_written"] == 1  # only sector 1
+    failed = {s["sector"]: s["reason"] for s in payload["failed_sectors"]}
+    assert 0 in failed and "invalid access bits" in failed[0]
+    # the invalid trailer was never written; sector 1's valid one was
+    assert not any(s.startswith("mifare write 3 ") for s in fake.sent)
+    assert f"mifare write 7 {_restore_trailer_block(_AC_VALID)}" in fake.sent
+
+
+def test_mifare_restore_warns_but_writes_a_self_locking_trailer(
+    runner, use_link, tmp_path
+):
+    dump = _restore_dump(tmp_path, ac=_AC_FROZEN)
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["sectors_written"] == 2
+    # written despite being self-locking, but each sector carries a warning
+    assert f"mifare write 3 {_restore_trailer_block(_AC_FROZEN)}" in fake.sent
+    assert all("warning" in s for s in payload["sectors"])
+    assert "frozen" in payload["sectors"][0]["warning"].lower()
+
+
+def test_mifare_restore_marks_a_sector_failed_when_a_write_is_denied(
+    runner, use_link, tmp_path
+):
+    # sector 1's block 1 (block 5) can't be written -> sector 1 fails, 0 is fine
+    denied = "AB" * 16
+    dump = _restore_dump(
+        tmp_path,
+        sectors=[
+            {
+                "sector": 0,
+                "blocks": ["DE" * 16, "11" * 16, "11" * 16, _restore_trailer_block()],
+            },
+            {
+                "sector": 1,
+                "blocks": ["11" * 16, denied, "11" * 16, _restore_trailer_block()],
+            },
+        ],
+    )
+    fake = use_link(
+        tagscli, FakeLink(responses={f"mifare write 5 {denied}": err("write denied")})
+    )
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["sectors_written"] == 1  # sector 0 only
+    failed = {s["sector"]: s["reason"] for s in payload["failed_sectors"]}
+    assert failed == {1: "write denied"}
+
+
+def test_mifare_restore_ctrl_c_reports_partial_results(runner, use_link, tmp_path):
+    dump = _restore_dump(tmp_path)
+    fake = use_link(tagscli, FakeLink())
+    original_command = fake.command
+
+    def _interrupt_on_sector_1(line, read_timeout=None):
+        if line.startswith("mifare auth 4"):  # sector 1's auth
+            raise KeyboardInterrupt
+        return original_command(line, read_timeout)
+
+    fake.command = _interrupt_on_sector_1
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["interrupted"] is True
+    assert [s["sector"] for s in payload["sectors"]] == [0]  # sector 1 never ran
+
+
+def test_mifare_restore_only_attempts_sectors_present_in_a_partial_dump(
+    runner, use_link, tmp_path
+):
+    # a partial dump: sectors_total says 4 but only 0 and 1 were captured
+    dump = _restore_dump(tmp_path, sectors_total=4)
+    fake = use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 0
+    assert payload["target_sectors"] == 2
+    assert [s["sector"] for s in payload["sectors"]] == [0, 1]
+    assert not any(s.startswith("mifare auth 8") for s in fake.sent)  # sector 2
+
+
+def test_mifare_restore_json_flag_emits_pure_json_on_stdout(runner, use_link, tmp_path):
+    dump = _restore_dump(tmp_path)
+    use_link(tagscli, FakeLink())
+
+    result = runner.invoke(
+        mifare_restore_cmd, ["--dump", str(dump), "--json"], catch_exceptions=False
+    )
+    payload = json.loads(result.stdout)  # doesn't raise -> stdout is pure JSON
+
+    assert result.exit_code == 0
+    assert payload["source_dump"] == str(dump)
+    assert "MifareClassic restore" not in result.stdout  # the table UI didn't leak

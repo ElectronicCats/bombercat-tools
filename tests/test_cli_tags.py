@@ -17,6 +17,7 @@ from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
 from modules.tags.cli import (
     mifare_auth_cmd,
     mifare_check_cmd,
+    mifare_code_cmd,
     mifare_dump_cmd,
     mifare_keys_cmd,
     mifare_read_cmd,
@@ -951,6 +952,7 @@ def test_mifare_group_exposes_all_subcommands():
         "check",
         "dump",
         "restore",
+        "code",
     }
 
 
@@ -1740,3 +1742,114 @@ def test_mifare_restore_json_flag_emits_pure_json_on_stdout(runner, use_link, tm
     assert result.exit_code == 0
     assert payload["source_dump"] == str(dump)
     assert "MifareClassic restore" not in result.stdout  # the table UI didn't leak
+
+
+# ── code ─────────────────────────────────────────────────────────────────────
+# `mifare code` — offline text → block hex. No link, no card: these drive the
+# encoder and the sector layout only.
+
+
+def test_mifare_code_pads_text_into_one_block(runner):
+    result = runner.invoke(mifare_code_cmd, ["ElectronicCats"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    # "ElectronicCats" (14 bytes) zero-padded out to a whole 16-byte block.
+    assert "456C656374726F6E6963436174730000" in out
+    assert "pass --sector" in out
+
+
+def test_mifare_code_places_blocks_on_the_sector_data_blocks(runner):
+    result = runner.invoke(mifare_code_cmd, ["A" * 40, "--sector", "4"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    # Sector 4 = blocks 16-19; 19 is the trailer and must never be targeted.
+    assert "block 16" in out and "block 17" in out and "block 18" in out
+    assert "block 19" not in out
+
+
+def test_mifare_code_skips_block0_of_sector_0(runner):
+    result = runner.invoke(mifare_code_cmd, ["hi", "--sector", "0", "--json"])
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert result.exit_code == 0
+    # Block 0 is the factory UID block — the first usable block is 1.
+    assert out["blocks"] == [
+        {"index": 0, "block": 1, "data": "68690000000000000000000000000000"}
+    ]
+
+
+def test_mifare_code_rejects_text_larger_than_the_sector(runner):
+    result = runner.invoke(mifare_code_cmd, ["A" * 60, "--sector", "2"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "48 byte(s)" in out
+
+
+def test_mifare_code_honours_a_custom_pad_byte(runner):
+    result = runner.invoke(mifare_code_cmd, ["hi", "--pad", "FF", "--json"])
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert result.exit_code == 0
+    assert out["blocks"][0]["data"] == "6869" + "FF" * 14
+
+
+def test_mifare_code_rejects_a_malformed_pad(runner):
+    result = runner.invoke(mifare_code_cmd, ["hi", "--pad", "ZZ"])
+
+    assert result.exit_code == 1
+    assert "--pad" in flat(result.output)
+
+
+def test_mifare_code_keys_file_prints_auth_and_write_lines(runner, tmp_path):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("1:D3F7D3F7D3F7:FFFFFFFFFFFF\n")
+    result = runner.invoke(
+        mifare_code_cmd, ["hola", "--sector", "1", "-k", str(keyfile)]
+    )
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "auth --block 4 --key-type A --key D3F7D3F7D3F7" in out
+    assert "write --block 4 --data 686F6C610000" in out
+
+
+def test_mifare_code_keys_file_falls_back_to_key_b(runner, tmp_path):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("1::FFFFFFFFFFFF\n")
+    result = runner.invoke(
+        mifare_code_cmd, ["hola", "--sector", "1", "-k", str(keyfile), "--json"]
+    )
+    out = json.loads(result.stdout.strip().splitlines()[-1])
+
+    assert result.exit_code == 0
+    assert "--key-type B --key FFFFFFFFFFFF" in out["commands"][0]
+
+
+def test_mifare_code_keys_file_errors_when_sector_missing(runner, tmp_path):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("0:A0A1A2A3A4A5:FFFFFFFFFFFF\n")
+    result = runner.invoke(
+        mifare_code_cmd, ["hola", "--sector", "5", "-k", str(keyfile)]
+    )
+
+    assert result.exit_code == 1
+    assert "sector 5 not found" in flat(result.output)
+
+
+def test_mifare_code_keys_file_requires_a_sector(runner, tmp_path):
+    keyfile = tmp_path / "card.keys"
+    keyfile.write_text("1:D3F7D3F7D3F7:FFFFFFFFFFFF\n")
+    result = runner.invoke(mifare_code_cmd, ["hola", "-k", str(keyfile)])
+
+    assert result.exit_code == 1
+    assert "--keys-file needs --sector" in flat(result.output)
+
+
+def test_mifare_code_rejects_empty_text(runner):
+    result = runner.invoke(mifare_code_cmd, [""])
+
+    assert result.exit_code == 1
+    assert "empty" in flat(result.output)

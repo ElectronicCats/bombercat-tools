@@ -17,6 +17,7 @@ from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
 from modules.tags.cli import (
     mifare_auth_cmd,
     mifare_check_cmd,
+    mifare_dump_cmd,
     mifare_keys_cmd,
     mifare_read_cmd,
     mifare_sector_cmd,
@@ -1083,3 +1084,299 @@ def test_mifare_sector_rejects_both_key_and_keys_file(runner, use_link, tmp_path
 
     assert result.exit_code != 0
     assert "either --key or --keys-file" in flat(result.output)
+
+
+# ── dump ─────────────────────────────────────────────────────────────────────
+# docs/CLI_IMPROVEMENTS_MifareDump.md §7. `dump` reads every sector in one
+# session; a sector with no usable key, or whose read fails, is recorded as a
+# gap and never aborts the rest of the card. Reuses the same `sector:keyA:
+# keyB` keyfile shape as `mifare sector`/`mifare check --output-keys`.
+
+_DUMP_UID = "DEADBEEF"
+
+
+def _dump_sector_hex(block1: str = "11" * 16, block2: str = "22" * 16) -> str:
+    """A full 4-block sector (128 hex chars): block 0 carries `_DUMP_UID`,
+    blocks 1-2 are arbitrary data, and the trailer's key bytes read back as
+    zeros — exactly what a real card returns, so `--keys-file` substitution
+    can be asserted against."""
+    block0 = _DUMP_UID + "00" + "08" + "0400" + "00" * 8
+    trailer = "00" * 6 + "FF078069" + "00" * 6
+    return block0 + block1 + block2 + trailer
+
+
+def test_mifare_dump_reads_all_sectors_into_canonical_json(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n1:C0C1C2C3C4C5:D0D1D2D3D4D5\n")
+    out = tmp_path / "dump.json"
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex()),
+                "mifare sector 1 A C0C1C2C3C4C5": ok(
+                    mifare_sector=_dump_sector_hex("33" * 16, "44" * 16)
+                ),
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd,
+        ["--keys-file", str(keys), "--sectors", "2", "--out", str(out)],
+    )
+
+    assert result.exit_code == 0
+    payload = json.loads(out.read_text())
+    assert payload["uid"] == _DUMP_UID
+    assert payload["sectors_read"] == 2
+    assert payload["sectors_total"] == 2
+    assert payload["failed_sectors"] == []
+    assert payload["source_keyfile"] == str(keys)
+    assert [s["sector"] for s in payload["sectors"]] == [0, 1]
+    assert payload["sectors"][0]["opened_with"] == "A"
+    # real keys substituted into the trailer, not the zeros the card returned
+    assert payload["sectors"][0]["blocks"][3] == "A0A1A2A3A4A5FF078069B0B1B2B3B4B5"
+    assert "mifare sector 0 A A0A1A2A3A4A5" in fake.sent
+    assert "mifare sector 1 A C0C1C2C3C4C5" in fake.sent
+    assert f"wrote {out}" in flat(result.stdout)
+
+
+def test_mifare_dump_records_gap_for_sector_missing_from_keyfile(
+    runner, use_link, tmp_path
+):
+    # sector 1 has no line in the keyfile at all -> gap, not an abort.
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "2", "--json"]
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1  # incomplete
+    assert payload["sectors_read"] == 1
+    assert payload["failed_sectors"] == [{"sector": 1, "reason": "no key available"}]
+    assert not any(s.startswith("mifare sector 1") for s in fake.sent)
+
+
+def test_mifare_dump_records_gap_when_a_sector_read_fails(runner, use_link, tmp_path):
+    # only key A on file for sector 0, and it fails -> a gap, not an abort.
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={"mifare sector 0 A A0A1A2A3A4A5": err("authentication failed")}
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1", "--json"]
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["sectors_read"] == 0
+    assert payload["failed_sectors"] == [
+        {"sector": 0, "reason": "authentication failed"}
+    ]
+
+
+def test_mifare_dump_missing_keyfile_fails_cleanly(runner, tmp_path):
+    result = runner.invoke(
+        mifare_dump_cmd,
+        ["--keys-file", str(tmp_path / "missing.txt"), "--sectors", "1"],
+    )
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_mifare_dump_malformed_keyfile_fails_cleanly(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:nothex:B0B1B2B3B4B5\n")
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1"]
+    )
+
+    assert result.exit_code == 1
+    assert "expected 'sector:keyA:keyB'" in flat(result.output)
+    assert "Traceback" not in result.output
+
+
+def test_mifare_dump_writes_out_mfd_and_eml(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    out = tmp_path / "dump.json"
+    mfd = tmp_path / "dump.mfd"
+    eml = tmp_path / "dump.eml"
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd,
+        [
+            "--keys-file",
+            str(keys),
+            "--sectors",
+            "1",
+            "--out",
+            str(out),
+            "--mfd",
+            str(mfd),
+            "--eml",
+            str(eml),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(out.read_text())["sectors_read"] == 1
+
+    raw = mfd.read_bytes()
+    assert len(raw) == 64  # 1 sector * 4 blocks * 16 bytes
+    assert raw[:4] == bytes.fromhex(_DUMP_UID)
+
+    lines = eml.read_text().splitlines()
+    assert len(lines) == 4
+    assert all(len(line) == 32 for line in lines)
+    assert lines[0] == _DUMP_UID + "00" + "08" + "0400" + "00" * 8
+    assert lines[3] == "A0A1A2A3A4A5FF078069B0B1B2B3B4B5"
+
+
+def test_mifare_dump_mfd_eml_fill_gaps_with_zeros(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("")  # no keys at all -> sector 0 is a gap
+    mfd = tmp_path / "dump.mfd"
+    eml = tmp_path / "dump.eml"
+    use_link(tagscli, FakeLink())
+    result = runner.invoke(
+        mifare_dump_cmd,
+        [
+            "--keys-file",
+            str(keys),
+            "--sectors",
+            "1",
+            "--mfd",
+            str(mfd),
+            "--eml",
+            str(eml),
+        ],
+    )
+
+    assert result.exit_code == 1  # incomplete: sector 0 never read
+    assert mfd.read_bytes() == b"\x00" * 64
+    assert eml.read_text().splitlines() == ["0" * 32] * 4
+
+
+def test_mifare_dump_out_refuses_overwrite_without_force(runner, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    out = tmp_path / "dump.json"
+    out.write_text("stale")
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1", "--out", str(out)]
+    )
+
+    assert result.exit_code != 0
+    assert out.read_text() == "stale"  # untouched
+
+
+def test_mifare_dump_mfd_refuses_overwrite_without_force(runner, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    mfd = tmp_path / "dump.mfd"
+    mfd.write_bytes(b"stale")
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1", "--mfd", str(mfd)]
+    )
+
+    assert result.exit_code != 0
+    assert mfd.read_bytes() == b"stale"  # untouched
+
+
+def test_mifare_dump_force_overwrites_existing_outputs(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    out = tmp_path / "dump.json"
+    out.write_text("stale")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd,
+        ["--keys-file", str(keys), "--sectors", "1", "--out", str(out), "--force"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(out.read_text())["sectors_read"] == 1
+
+
+def test_mifare_dump_ctrl_c_dumps_partial_results(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n1:C0C1C2C3C4C5:D0D1D2D3D4D5\n")
+    fake = use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    original_command = fake.command
+
+    def _interrupt_on_sector_1(line, read_timeout=None):
+        if line.startswith("mifare sector 1"):
+            raise KeyboardInterrupt
+        return original_command(line, read_timeout)
+
+    fake.command = _interrupt_on_sector_1
+
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "2", "--json"]
+    )
+    payload = json.loads(result.stdout)
+
+    assert result.exit_code == 1
+    assert payload["sectors_read"] == 1
+    assert payload["sectors"][0]["sector"] == 0
+    assert payload["failed_sectors"] == []  # sector 1 wasn't marked failed, just unread
+
+
+def test_mifare_dump_json_flag_emits_json_on_stdout(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1", "--json"]
+    )
+    payload = json.loads(result.stdout)  # doesn't raise -> stdout is pure JSON
+
+    assert result.exit_code == 0
+    assert payload["uid"] == _DUMP_UID
+    assert payload["sectors_read"] == 1
+    # the table/progress UI mifare dump shows without --json didn't leak in
+    assert "MifareClassic dump" not in result.stdout

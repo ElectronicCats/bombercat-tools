@@ -1,5 +1,5 @@
 # mifare_default_keys.keys
-# Auto-generated from StandardKeys.md (bombercat-tools/modules/tags/keyfile.py).
+# Auto-generated from StandardKeys.md (bombercat-tools/modules/tags/mifare/keyfile.py).
 # One 12-hex-char key per line, uppercase, deduplicated, order preserved.
 # Do not edit by hand; regenerate from the source .md instead.
 

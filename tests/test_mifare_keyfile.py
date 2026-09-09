@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_mifare_keyfile.py — modules/tags/keyfile.py loads MIFARE Classic key
+# test_mifare_keyfile.py — modules/tags/mifare/keyfile.py loads MIFARE Classic key
 # dictionaries (.keys/.dic/.md), keeping only 12-hex-char lines. See
 # docs/CLI_IMPROVEMENTS_MifareCheck.md §5/§6.1/§8.
 
-from modules.tags.keyfile import default_keyfile, load_keys
+from modules.tags.mifare.keyfile import default_keyfile, load_keys
 
 
 def test_bundled_default_keyfile_has_2477_unique_keys():
@@ -62,7 +62,7 @@ def test_loader_unions_multiple_files(tmp_path):
 
 import pytest
 
-from modules.tags.keyfile import SectorKeyfileError, load_sector_keys
+from modules.tags.mifare.keyfile import SectorKeyfileError, load_sector_keys
 
 
 def test_load_sector_keys_round_trips_both_keys(tmp_path):

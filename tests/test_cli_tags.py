@@ -1384,6 +1384,57 @@ def test_mifare_dump_json_flag_emits_json_on_stdout(runner, use_link, tmp_path):
     assert "MifareClassic dump" not in result.stdout
 
 
+def test_mifare_dump_decode_shows_ascii_and_block0(runner, use_link, tmp_path):
+    # --decode prints each read sector's raw blocks with an ASCII column and,
+    # for sector 0, the dissected block 0 (UID/SAK/ATQA).
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    block1 = b"Cuarta prueba!!!".hex()  # 16 printable bytes -> readable ASCII
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(
+                    mifare_sector=_dump_sector_hex(block1)
+                )
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd, ["--keys-file", str(keys), "--sectors", "1", "--decode"]
+    )
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "Decoded sectors" in out
+    assert "|Cuarta prueba!!!|" in out  # ASCII column beside the data block
+    # block 0 dissected
+    assert f"uid {_DUMP_UID}" in out
+    assert "MIFARE Classic 1K" in out
+
+
+def test_mifare_dump_decode_is_suppressed_by_json(runner, use_link, tmp_path):
+    keys = tmp_path / "keys.txt"
+    keys.write_text("0:A0A1A2A3A4A5:B0B1B2B3B4B5\n")
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(mifare_sector=_dump_sector_hex())
+            }
+        ),
+    )
+    result = runner.invoke(
+        mifare_dump_cmd,
+        ["--keys-file", str(keys), "--sectors", "1", "--decode", "--json"],
+    )
+
+    # --json owns stdout: the decoded human view must not leak into it.
+    payload = json.loads(result.stdout)
+    assert payload["sectors_read"] == 1
+    assert "Decoded sectors" not in result.stdout
+
+
 # ── mifare restore ────────────────────────────────────────────────────────────
 # docs/CLI_IMPROVEMENTS_MifareRestore.md §7 (gen2). Restore consumes the
 # canonical `mifare dump` JSON and writes it back block by block: data blocks,

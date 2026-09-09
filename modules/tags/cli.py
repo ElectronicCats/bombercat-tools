@@ -47,7 +47,7 @@ from ..utils.output import (
     print_success,
     print_warning,
 )
-from .access_bits import _KEY_A, SectorAccessBits, parse_access_bits
+from .access_bits import _KEY_A, _NEVER, SectorAccessBits, parse_access_bits
 from .aggregator import _RESERVED_KEYS, TagAggregator
 from .block0 import Block0, parse_block0
 from .keyfile import (
@@ -1596,15 +1596,18 @@ def mifare_dump_cmd(
 #
 # `mifare restore` — write a `mifare dump` JSON back to a magic card (gen2/CUID).
 # docs/CLI_IMPROVEMENTS_MifareRestore.md §3 (F1: probe + block-0 confirmation +
-# per-sector data-block writes). Trailers are never written in this phase —
-# that's F2 (§3.4 access-bit validation + --skip-trailers).
+# per-sector data-block writes; F2: trailer writes with access-bit validation
+# (§3.4) + --skip-trailers).
 
-# The last data-block index of a 4-block sector is its trailer (index 3), which
-# F1 never writes; block 0 of sector 0 is the manufacturer/UID block, gated
+# In a 4-block sector, index 3 is the trailer (keys + access bits); indices
+# 0-2 are data blocks. Block 0 of sector 0 is the manufacturer/UID block, gated
 # behind --write-block0.
 _MIFARE_TRAILER_BLOCK_INDEX = 3
 _MIFARE_DATA_BLOCK_INDICES = (0, 1, 2)
 _MIFARE_ZERO_KEY = "0" * _MIFARE_KEY_HEX_LEN
+# The 3 access-condition bytes (C1/C2/C3) sit right after key A in a trailer
+# block: hex chars 12-17 (byte 9, the GPB, is not an access condition).
+_MIFARE_TRAILER_AC_COND = slice(_MIFARE_TRAILER_KEY_LEN, _MIFARE_TRAILER_KEY_LEN + 6)
 
 _RESTORE_BLOCK0_WARNING = (
     "Writing block 0 rewrites the card's UID/BCC/SAK/ATQA — its identity. Only "
@@ -1694,6 +1697,44 @@ def _restore_block0(link, block0_hex: str) -> Tuple[bool, str]:
     return True, "ok"
 
 
+def _trailer_freezes_sector(access: SectorAccessBits) -> bool:
+    """True if this trailer's access bits leave the trailer itself unwritable
+    by any key — no way to rewrite the keys or the access bits ever again, so
+    the sector's config is permanently frozen (§3.4). A faithful clone may want
+    this (the source card had it), so it's a warning, not a refusal."""
+    t = access.trailer
+    return t.key_a_write == _NEVER and t.key_b_write == _NEVER and t.ac_write == _NEVER
+
+
+def _restore_trailer(link, base: int, trailer_hex: str) -> Tuple[bool, str]:
+    """Write a sector's trailer (block 3) last, after validating its access
+    bits (§3.4). Returns ``(written, note)``.
+
+    Malformed/invalid access bits (the C-bits and their stored inverses
+    disagree) are *refused*: many chips fall back to the most restrictive
+    config on invalid bits, which would permanently lock the sector — so the
+    trailer is left as the card had it and the sector is reported as a failure.
+    A valid but self-locking config is written (it may be an intentional part
+    of the clone) with a warning."""
+    access = parse_access_bits(trailer_hex[_MIFARE_TRAILER_AC_COND])
+    if access is None or not access.valid:
+        return (
+            False,
+            "trailer not written: invalid access bits (would risk locking the sector)",
+        )
+    warning = (
+        "trailer access bits leave it permanently unwritable — sector config frozen"
+        if _trailer_freezes_sector(access)
+        else ""
+    )
+    w = link.command(
+        f"mifare write {base + _MIFARE_TRAILER_BLOCK_INDEX} {trailer_hex.upper()}"
+    )
+    if not w.ok:
+        return False, f"trailer write failed: {w.message}"
+    return True, warning
+
+
 def _restore_one_sector(
     link,
     sector: int,
@@ -1701,20 +1742,23 @@ def _restore_one_sector(
     timeout: float,
     first: bool,
     write_block0: bool,
-) -> Tuple[int, bool, str]:
+    skip_trailers: bool,
+) -> Tuple[int, bool, str, str]:
     """Authenticate SECTOR (key A, falling back to key B) and write its data
-    blocks — never the trailer (F2). Block 0 of sector 0 is written only if
-    `write_block0`, behind the non-destructive probe of `_restore_block0`.
+    blocks, then (unless `skip_trailers`) its trailer last (§3.3c). Block 0 of
+    sector 0 is written only if `write_block0`, behind the non-destructive
+    probe of `_restore_block0`.
 
-    Returns ``(written, block0_written, reason)``: `written` counts the data
-    blocks written, `reason` is "ok" or the firmware's failure message. A write
-    that's denied stops this sector and returns its reason — the caller keeps
-    going with the next sector (partials are first class, §3.3.4)."""
+    Returns ``(written, block0_written, reason, warning)``: `written` counts
+    the blocks written (data + trailer), `reason` is "ok" or the failure
+    message, `warning` is a non-fatal note (e.g. a self-locking trailer) or "".
+    A write that's denied stops this sector and returns its reason — the caller
+    keeps going with the next sector (partials are first class, §3.3.4)."""
     base = _sector_first_block(sector)
     key_a, key_b = _restore_sector_keys(blocks)
     attempts = [(kt, k) for kt, k in (("A", key_a), ("B", key_b)) if k]
     if not attempts:
-        return 0, False, "no write key in dump trailer"
+        return 0, False, "no write key in dump trailer", ""
 
     r = None
     used_kt: Optional[str] = None
@@ -1730,7 +1774,7 @@ def _restore_one_sector(
             break
     if used_kt is None:
         assert r is not None
-        return 0, False, r.message
+        return 0, False, r.message, ""
 
     written = 0
     block0_written = False
@@ -1740,15 +1784,22 @@ def _restore_one_sector(
                 continue
             ok_b0, note = _restore_block0(link, blocks[0])
             if not ok_b0:
-                return written, False, note
+                return written, False, note, ""
             block0_written = True
             written += 1
             continue
         w = link.command(f"mifare write {base + i} {blocks[i].upper()}")
         if not w.ok:
-            return written, block0_written, w.message
+            return written, block0_written, w.message, ""
         written += 1
-    return written, block0_written, "ok"
+
+    if not skip_trailers:
+        ok_t, note_t = _restore_trailer(link, base, blocks[_MIFARE_TRAILER_BLOCK_INDEX])
+        if not ok_t:
+            return written, block0_written, note_t, ""
+        written += 1
+        return written, block0_written, "ok", note_t
+    return written, block0_written, "ok", ""
 
 
 @mifare.command("restore", context_settings={"help_option_names": ["-h", "--help"]})
@@ -1775,6 +1826,14 @@ def _restore_one_sector(
     "on a genuine card. A non-destructive probe runs first (see --help notes).",
 )
 @click.option(
+    "--skip-trailers",
+    is_flag=True,
+    help="Don't write sector trailers (keys + access bits), only data blocks. "
+    "Recommended for a first run: it clones the card's contents while leaving "
+    "the target's trailers untouched, so a mismatched access-bit layout can't "
+    "lock a sector. Off by default (trailers ARE written).",
+)
+@click.option(
     "--yes",
     is_flag=True,
     help="Skip the interactive confirmation before writing block 0 (for "
@@ -1791,6 +1850,7 @@ def mifare_restore_cmd(
     dump_file,
     sectors,
     write_block0,
+    skip_trailers,
     yes,
     as_json,
     timeout,
@@ -1808,12 +1868,15 @@ def mifare_restore_cmd(
 
     Reads the canonical JSON `mifare dump --out` produces and writes each
     sector's data blocks back after authenticating with the sector's own keys
-    (from the dump trailer). This phase never writes sector trailers (access
-    bits + keys). Sector 0's block 0 (the UID) is skipped unless
-    --write-block0, and even then only after a non-destructive probe proves the
-    card's block 0 is actually writable. A sector whose key can't write is
-    recorded as a failure — it never aborts the rest. Ctrl-C stops and reports
-    what was written so far.
+    (from the dump trailer). Sector trailers (keys + access bits) are written
+    last, after the data blocks — pass --skip-trailers to leave them alone
+    (recommended for a first run). A trailer whose access bits are invalid is
+    refused (writing them could permanently lock the sector); a valid but
+    self-locking layout is written with a warning. Sector 0's block 0 (the UID)
+    is skipped unless --write-block0, and even then only after a
+    non-destructive probe proves the card's block 0 is actually writable. A
+    sector whose key can't write is recorded as a failure — it never aborts the
+    rest. Ctrl-C stops and reports what was written so far.
     """
     dump = _load_restore_dump(dump_file)
     entries = sorted(dump["sectors"], key=lambda e: e["sector"])
@@ -1868,19 +1931,26 @@ def mifare_restore_cmd(
                 failed_count = 0
                 for entry in entries:
                     s = entry["sector"]
-                    written, wrote_b0, reason = _restore_one_sector(
-                        link, s, entry["blocks"], timeout, first, write_block0
+                    written, wrote_b0, reason, warning = _restore_one_sector(
+                        link,
+                        s,
+                        entry["blocks"],
+                        timeout,
+                        first,
+                        write_block0,
+                        skip_trailers,
                     )
                     first = False
                     block0_written = block0_written or wrote_b0
-                    results.append(
-                        {
-                            "sector": s,
-                            "written": written,
-                            "block0": wrote_b0,
-                            "reason": reason,
-                        }
-                    )
+                    entry_result: Dict[str, object] = {
+                        "sector": s,
+                        "written": written,
+                        "block0": wrote_b0,
+                        "reason": reason,
+                    }
+                    if warning:
+                        entry_result["warning"] = warning
+                    results.append(entry_result)
                     if reason == "ok":
                         ok_count += 1
                     else:
@@ -1905,6 +1975,7 @@ def mifare_restore_cmd(
         "target_sectors": len(entries),
         "sectors_written": len(ok_sectors),
         "block0_written": block0_written,
+        "trailers_skipped": skip_trailers,
         "interrupted": interrupted,
         "source_dump": dump_file,
         "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1927,8 +1998,12 @@ def mifare_restore_cmd(
     table_out.add_column("Reason")
     for r in results:
         if r["reason"] == "ok":
+            warn = r.get("warning")
             table_out.add_row(
-                str(r["sector"]), "[green]OK[/green]", str(r["written"]), ""
+                str(r["sector"]),
+                "[green]OK[/green]",
+                str(r["written"]),
+                f"[yellow]⚠ {warn}[/yellow]" if warn else "",
             )
         else:
             table_out.add_row(
@@ -1943,7 +2018,11 @@ def mifare_restore_cmd(
     print_info(
         f"{len(ok_sectors)}/{len(entries)} sectors written"
         + (" — block 0 written" if block0_written else "")
+        + (" — trailers skipped" if skip_trailers else "")
     )
+    for r in results:
+        if r.get("warning"):
+            print_warning(f"sector {r['sector']}: {r['warning']}")
     if interrupted:
         print_warning("restore incomplete — interrupted before finishing")
 

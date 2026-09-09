@@ -44,6 +44,7 @@ from ..utils.output import (
     print_error,
     print_info,
     print_subtitle,
+    print_title,
     print_success,
     print_warning,
 )
@@ -582,6 +583,40 @@ def _print_block0(b0: Block0) -> None:
             "BCC does not match the UID — possibly a magic/clone card with a "
             "hand-written block 0"
         )
+
+
+def _ascii_render(block_hex: str) -> str:
+    """Render a 32-hex-char block (16 bytes) as printable ASCII, non-printable
+    bytes shown as '.' — the classic hex-dump right column. Returns "" for a
+    block that isn't full/valid hex (a gap), so the caller can skip it."""
+    try:
+        raw = bytes.fromhex(block_hex)
+    except ValueError:
+        return ""
+    return "".join(chr(b) if 32 <= b < 127 else "." for b in raw)
+
+
+def _print_decoded_sector(entry: Dict[str, object]) -> None:
+    """Print one read sector for `mifare dump --decode`: the raw block hex
+    (same coloring as `mifare sector`) with an ASCII column beside each data
+    block, plus the dissected block 0 for sector 0. The trailer keeps its
+    key/access-bit coloring but gets no ASCII column (its bytes are keys, not
+    text). `entry` is a `sector_results` item — its trailer already has the
+    real keys substituted in, so no keyfile is needed here."""
+    sector = entry["sector"]
+    blocks = entry["blocks"]
+    data_hex = "".join(blocks)
+    print_subtitle(f"Sector {sector}")
+    lines, _access = _sector_display_lines(sector, data_hex)
+    for i, (label, line) in enumerate(lines):
+        if i in _MIFARE_DATA_BLOCK_INDICES:
+            _print_field(label, f"{line}  [dim]|{_ascii_render(blocks[i])}|[/dim]")
+        else:
+            _print_field(label, line)
+    if sector == 0:
+        b0 = parse_block0(blocks[0])
+        if b0 is not None:
+            _print_block0(b0)
 
 
 def _mifare_validate_hex(value: str, expected_len: int, label: str) -> Optional[str]:
@@ -1400,6 +1435,13 @@ def _dump_blocks_hex(
 @click.option(
     "--json", "as_json", is_flag=True, help="Emit the dump as JSON on stdout."
 )
+@click.option(
+    "--decode",
+    is_flag=True,
+    help="After the status table, print each read sector's raw blocks with an "
+    "ASCII column and the dissected block 0 (UID/BCC/SAK/ATQA). Human view "
+    "only — the JSON/file output is unchanged. Ignored with --json.",
+)
 @_MIFARE_TIMEOUT_OPTION
 @device_options
 @click.pass_context
@@ -1412,6 +1454,7 @@ def mifare_dump_cmd(
     eml_file,
     force,
     as_json,
+    decode,
     timeout,
     verbose,
     port,
@@ -1588,6 +1631,11 @@ def mifare_dump_cmd(
     )
     if interrupted:
         print_warning("dump incomplete — interrupted before finishing")
+
+    if decode and sector_results:
+        print_title("Decoded sectors")
+        for entry in sector_results:
+            _print_decoded_sector(entry)
 
     raise SystemExit(0 if complete else 1)
 

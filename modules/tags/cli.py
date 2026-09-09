@@ -756,6 +756,42 @@ def _load_sector_key_pair(
     return table[sector]
 
 
+def _read_one_sector(
+    link,
+    sector: int,
+    key_a: Optional[str],
+    key_b: Optional[str],
+    timeout: float,
+    first: bool,
+) -> Tuple[Optional[str], Optional[str], str]:
+    """Authenticate SECTOR with key A (falling back to key B) and read its 4
+    blocks in one REPL call. `first` marks the very first command of the
+    session — it waits for a card tap via `_run_mifare_command`; later calls
+    send straight to `link.command` since a card is already selected.
+
+    Returns `(data_hex, used_kt, reason)`: `data_hex` is the 128 hex-char
+    sector dump, or None if nothing was read; `used_kt` is "A" or "B"
+    (whichever key opened the sector), or None; `reason` is "ok" on success
+    or the firmware's failure message otherwise.
+    """
+    attempts = [(kt, k) for kt, k in (("A", key_a), ("B", key_b)) if k]
+    if not attempts:
+        return None, None, "no key available"
+
+    r = None
+    for kt, k in attempts:
+        line = f"mifare sector {sector} {kt} {k.upper()}"
+        if first:
+            r = _run_mifare_command(link, line, timeout)
+            first = False
+        else:
+            r = link.command(line)
+        if r.ok:
+            return r.data.get("mifare_sector", ""), kt, "ok"
+    assert r is not None
+    return None, None, r.message
+
+
 @mifare.command("sector", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "--sector", type=click.IntRange(0, 255), required=True, help="Sector number."
@@ -799,9 +835,8 @@ def mifare_sector_cmd(
     file_key_b: Optional[str] = None
     if keys_file:
         file_key_a, file_key_b = _load_sector_key_pair(keys_file, sector)
-        attempts = [("A", file_key_a), ("B", file_key_b)]
-        attempts = [(kt, k) for kt, k in attempts if k]
-        if not attempts:
+        key_a, key_b = file_key_a, file_key_b
+        if not key_a and not key_b:
             print_error(f"sector {sector} has no key A or key B in {keys_file}")
             raise SystemExit(1)
     else:
@@ -809,34 +844,24 @@ def mifare_sector_cmd(
         if err:
             print_error(err)
             raise SystemExit(1)
-        attempts = [(key_type.upper(), key.upper())]
+        key_a = key.upper() if key_type.upper() == "A" else None
+        key_b = key.upper() if key_type.upper() == "B" else None
 
     level = _verbosity(ctx, verbose)
-    r = None
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        first = True
-        for kt, k in attempts:
-            line = f"mifare sector {sector} {kt} {k.upper()}"
-            if first:
-                r = _run_mifare_command(link, line, timeout)
-                first = False
-            else:
-                r = link.command(line)
-            if r.ok:
-                break
+        data_hex, _used_kt, reason = _read_one_sector(
+            link, sector, key_a, key_b, timeout, first=True
+        )
 
-    if r is None:
-        print_error("sector read failed: no key tried")
-        raise SystemExit(1)
-    if not r.ok:
-        # r.message is already a complete sentence from the firmware (e.g.
+    if reason != "ok":
+        # reason is already a complete sentence from the firmware (e.g.
         # "authentication failed" or "sector read failed: key authenticated
         # but a block read was denied (access bits)") — don't re-wrap it in
         # another "sector read failed:" prefix, or the two collide into
         # nonsense like "sector read failed: sector read failed".
-        print_error(f"sector {sector}: {r.message}")
+        print_error(f"sector {sector}: {reason}")
         raise SystemExit(1)
-    data_hex = r.data.get("mifare_sector", "")
+    assert data_hex is not None
     b0 = parse_block0(data_hex[:32]) if sector == 0 else None
     if as_json:
         out = {"sector": sector, "data": data_hex}

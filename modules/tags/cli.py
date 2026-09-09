@@ -1255,4 +1255,18 @@ def mifare_check_cmd(
         f"{sectors} sectors with known keys"
     )
 
+    duration = time.monotonic() - start_time
+    console.print("")
+    print_subtitle("Timing summary")
+    _print_field("total time", f"{duration:.1f}s")
+    _print_field("attempts", str(attempts))
+    _print_field(
+        "avg rate", f"{attempts / duration:.1f} keys/s" if duration > 0 else "—"
+    )
+    _print_field("keys identified", f"{recovered}/{total}")
+    _print_field("failures", str(total - recovered))
+    _print_field("sectors exposed", f"{exposed_sectors}/{sectors}")
+    if interrupted:
+        _print_field("status", "[yellow]interrupted — partial results[/yellow]")
+
     raise SystemExit(0 if recovered == total else 1)

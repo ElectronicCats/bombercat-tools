@@ -949,6 +949,7 @@ def test_mifare_group_exposes_all_subcommands():
         "keys",
         "check",
         "dump",
+        "restore",
     }
 
 

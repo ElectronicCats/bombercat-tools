@@ -11,6 +11,7 @@ import json
 import re
 import time
 from collections import OrderedDict
+from datetime import datetime, timezone
 from contextlib import contextmanager, nullcontext
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -483,6 +484,21 @@ _MIFARE_TRAILER_KEY_LEN = 12  # 6-byte key, hex-encoded
 _MIFARE_TRAILER_AC_LEN = 8  # 4-byte access conditions, hex-encoded
 
 
+def _substitute_trailer_keys(
+    trailer: str, key_a: Optional[str], key_b: Optional[str]
+) -> Tuple[str, str, str]:
+    """Split a trailer block into `(key_a, ac, key_b)`, substituting the real
+    keys from a keyfile in place of the zeros a card reads back for them. A
+    card never reads Key A back (and often not Key B either); the
+    access-conditions bytes in the middle always stay exactly as read."""
+    shown_a = key_a or trailer[:_MIFARE_TRAILER_KEY_LEN]
+    ac = trailer[
+        _MIFARE_TRAILER_KEY_LEN : _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN
+    ]
+    shown_b = key_b or trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    return shown_a, ac, shown_b
+
+
 def _sector_display_lines(
     sector: int,
     data_hex: str,
@@ -512,11 +528,7 @@ def _sector_display_lines(
 
     line0 = f"[magenta]{block0}[/magenta]" if sector == 0 and block0 else block0
 
-    shown_a = key_a or trailer[:_MIFARE_TRAILER_KEY_LEN]
-    ac = trailer[
-        _MIFARE_TRAILER_KEY_LEN : _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN
-    ]
-    shown_b = key_b or trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    shown_a, ac, shown_b = _substitute_trailer_keys(trailer, key_a, key_b)
     line3 = (
         f"[green]{shown_a}[/green][dark_orange3]{ac}[/dark_orange3]"
         f"[green]{shown_b}[/green]"
@@ -1295,3 +1307,212 @@ def mifare_check_cmd(
         _print_field("status", "[yellow]interrupted — partial results[/yellow]")
 
     raise SystemExit(0 if recovered == total else 1)
+
+
+# ── dump ─────────────────────────────────────────────────────────────────────
+#
+# `mifare dump` — read every sector of a card in one session and save it to
+# canonical JSON. Coexists with `mifare sector` (one sector, interactive);
+# `dump` is batch/non-interactive and never aborts on a bad sector — see
+# docs/CLI_IMPROVEMENTS_MifareDump.md §1, §5.
+
+
+def _dump_size_label(sectors: int) -> str:
+    """Card-size label for the `sectors_total` requested — same 1K/2K
+    convention as `mifare check`'s `--sectors` help text (4-block sectors
+    only; 4K's 16-block sectors aren't supported, see `_sector_first_block`)."""
+    return {16: "1K", 32: "2K"}.get(sectors, f"{sectors} sectors")
+
+
+def _write_dump_json(path: str, dump: Dict[str, object]) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(dump, f, indent=2)
+        f.write("\n")
+
+
+@mifare.command("dump", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "-k",
+    "--keys-file",
+    "keys_file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    metavar="FILE",
+    help="A `sector:keyA:keyB` file (see `mifare check --output-keys`). A "
+    "sector missing from it, or blank for both keys, is dumped as a gap.",
+)
+@click.option(
+    "--sectors",
+    type=click.IntRange(1, _MIFARE_CHECK_MAX_SECTORS),
+    default=16,
+    show_default=True,
+    help=f"Number of sectors to dump (16 = 1K). Max {_MIFARE_CHECK_MAX_SECTORS} "
+    "— 4K's 16-block sectors (32-39) aren't supported yet.",
+)
+@click.option(
+    "--out",
+    "out_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write the dump as canonical JSON (uid, per-sector blocks with real "
+    "keys substituted into the trailer, and failed_sectors for any gap).",
+)
+@click.option("--force", is_flag=True, help="Overwrite --out if it already exists.")
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit the dump as JSON on stdout."
+)
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_dump_cmd(
+    ctx, keys_file, sectors, out_file, force, as_json, timeout, verbose, port, device_id
+):
+    """Read every sector of a card in one session and dump it to file/stdout.
+
+    Unlike `mifare sector` (one sector, interactive), `dump` reads the whole
+    card in a single batch pass. A sector with no usable key, or whose read
+    fails, is recorded as a gap in `failed_sectors` — it never aborts the
+    rest of the card. Ctrl-C dumps whatever was read so far.
+    """
+    if out_file:
+        _refuse_overwrite(out_file, force)
+
+    try:
+        table = load_sector_keys(keys_file)
+    except OSError as e:
+        print_error(f"could not read {keys_file}: {e}")
+        raise SystemExit(1)
+    except SectorKeyfileError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    sector_results: List[Dict[str, object]] = []
+    failed: List[Dict[str, object]] = []
+    interrupted = False
+    uid: Optional[str] = None
+
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if not as_json:
+            print_info(
+                f"Dumping {target} — {sectors} sector(s) — Ctrl-C for partial "
+                "results"
+            )
+        progress = (
+            None
+            if as_json
+            else Progress(
+                SpinnerColumn(style="cyan"),
+                TextColumn("[cyan]sector {task.fields[sector]:>2}[/cyan]"),
+                BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
+                TextColumn(
+                    "[dim]{task.fields[ok]} ok · {task.fields[failed]} failed[/dim]"
+                ),
+                TimeRemainingColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            )
+        )
+        first = True
+        try:
+            with progress or nullcontext():
+                task = (
+                    progress.add_task("", total=sectors, sector=0, ok=0, failed=0)
+                    if progress
+                    else None
+                )
+                for s in range(sectors):
+                    key_a, key_b = table.get(s, (None, None))
+                    data_hex, used_kt, reason = _read_one_sector(
+                        link, s, key_a, key_b, timeout, first=first
+                    )
+                    first = False
+                    if data_hex is not None:
+                        blocks = [
+                            data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
+                            for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
+                        ]
+                        shown_a, ac, shown_b = _substitute_trailer_keys(
+                            blocks[3], key_a, key_b
+                        )
+                        blocks[3] = f"{shown_a}{ac}{shown_b}"
+                        sector_results.append(
+                            {"sector": s, "opened_with": used_kt, "blocks": blocks}
+                        )
+                        if s == 0:
+                            b0 = parse_block0(blocks[0])
+                            if b0 is not None:
+                                uid = b0.uid
+                    else:
+                        failed.append({"sector": s, "reason": reason})
+                    if progress:
+                        progress.update(
+                            task,
+                            advance=1,
+                            sector=s,
+                            ok=len(sector_results),
+                            failed=len(failed),
+                        )
+        except KeyboardInterrupt:
+            interrupted = True
+
+    if interrupted and not as_json:
+        print_warning("interrupted — showing partial results")
+
+    dump = {
+        "uid": uid,
+        "size": _dump_size_label(sectors),
+        "sectors_read": len(sector_results),
+        "sectors_total": sectors,
+        "read_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_keyfile": keys_file,
+        "sectors": sector_results,
+        "failed_sectors": failed,
+    }
+
+    if out_file:
+        try:
+            _write_dump_json(out_file, dump)
+        except OSError as e:
+            print_error(f"could not write {out_file}: {e}")
+            raise SystemExit(1)
+        if not as_json:
+            print_info(f"wrote {out_file}")
+
+    complete = not interrupted and len(sector_results) == sectors
+
+    if as_json:
+        print(json.dumps(dump))
+        raise SystemExit(0 if complete else 1)
+
+    console.print("")
+    table_out = Table(title=f"MifareClassic dump @ {target}", header_style="cyan bold")
+    table_out.add_column("Sector", justify="right")
+    table_out.add_column("Status")
+    table_out.add_column("Opened with")
+    table_out.add_column("Reason")
+    read_by_sector = {r["sector"]: r for r in sector_results}
+    failed_by_sector = {f["sector"]: f for f in failed}
+    for s in range(sectors):
+        if s in read_by_sector:
+            r = read_by_sector[s]
+            table_out.add_row(str(s), "[green]OK[/green]", r["opened_with"], "")
+        elif s in failed_by_sector:
+            table_out.add_row(
+                str(s), "[red]FAILED[/red]", "—", failed_by_sector[s]["reason"]
+            )
+        else:
+            table_out.add_row(str(s), "[dim]—[/dim]", "—", "not read")
+    console.print(table_out)
+
+    console.print("")
+    print_info(
+        f"{len(sector_results)}/{sectors} sectors read"
+        + (f" — uid {uid}" if uid else "")
+    )
+    if interrupted:
+        print_warning("dump incomplete — interrupted before finishing")
+
+    raise SystemExit(0 if complete else 1)

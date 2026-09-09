@@ -177,9 +177,73 @@ A published (pre-FW-1) image, still on legacy text:
 
 ---
 
+### `tags mifare`
+
+> Mifare Classic auth/read/write/sector/check commands. Requires the **MifareClassic** firmware (not DetectTags — confirm with [`bombercat status`](../commands/status.md)).
+
+Tap a Mifare Classic card to let the firmware select it — `auth`, `read`, `write`, `sector` and `check` all wait for this automatically (default 5s, `-t/--timeout` to change it) if no card is selected yet. The card then stays selected for ~10s of inactivity between commands before the firmware closes the session and re-arms discovery.
+
+```sh
+bombercat tags mifare keys                                            # list built-in default keys, no card needed
+bombercat tags mifare auth --block 4 --key-type A --key FFFFFFFFFFFF  # authenticate a sector
+bombercat tags mifare read --block 4                                  # read a block from the authenticated sector
+bombercat tags mifare write --block 4 --data 00112233445566778899AABBCCDDEEFF
+bombercat tags mifare sector --sector 1 --key-type A --key FFFFFFFFFFFF --json
+```
+
+`auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call.
+
+---
+
+### `tags mifare check`
+
+> Dictionary attack: try known keys against every sector and report which ones open. This is the "check keys" phase of `mfoc`/`hf mf chk` — it demonstrates the well-known weakness of Mifare Classic, that most cards in the wild still answer to default or leaked vendor keys.
+
+> ⚠️ **Authorized use only.** Test only cards you own or have explicit permission to test.
+
+| Option | Description |
+|---|---|
+| `--keys FILE` | Key dictionary (`.keys`/`.dic`/`.md`), repeatable. Defaults to the bundled dictionary (2477 known keys); passing `--keys` **replaces** the bundled one — include it explicitly alongside your own file if you want both. |
+| `--sectors N` | Number of sectors to check (default `16` = 1K). Max `32`; 4K's 16-block sectors (32–39) aren't supported yet. |
+| `--key-type A\|B\|both` | Which key slot(s) to try (default `both`). |
+| `--json` | Emit one JSON object on stdout instead of the table. |
+| `--out FILE` | Write the recovered keys as a keyfile (one 12-hex key per line, mfoc/proxmark-compatible). |
+| `--force` | Overwrite `--out` if it already exists. |
+| `-t, --timeout SEC` | Seconds to wait for a card tap if none is selected yet (default `5`). |
+
+```sh
+bombercat tags mifare check
+bombercat tags mifare check --sectors 16 --key-type A --out recovered.keys
+bombercat tags mifare check --keys mine.dic --json
+```
+
+```
+ℹ Checking /dev/ttyACM0 — 16 sector(s) x 2 key type(s), 2477 keys — Ctrl-C for partial results
+
+   MifareClassic check @ /dev/ttyACM0
+┏━━━━━━━━┳━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Sector ┃ Key A        ┃ Key B        ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│      0 │ A0A1A2A3A4A5 │ A0A1A2A3A4A5 │
+│      1 │ FFFFFFFFFFFF │ FFFFFFFFFFFF │
+└────────┴──────────────┴──────────────┘
+
+ℹ 32/32 keys recovered — card exposes 16/16 sectors with known keys
+```
+
+A cell with no key in the dictionary shows `[unknown]` instead. `--json` emits one object: `{"sectors": [{"sector": 0, "key_a": "...", "key_b": null}, …], "recovered": n, "total": n}`.
+
+Known keys are tried first on later sectors — real cards commonly reuse the same key across sectors, so once one is recovered the sweep tries it before the rest of the dictionary. A progress bar tracks sectors completed; **Ctrl-C prints whatever was recovered so far** instead of losing it. Exit code is `0` only if every requested `(sector, key type)` was recovered — `1` if anything came back `unknown` or the sweep was interrupted.
+
+**Trailer-read key-B recovery.** When the dictionary opens a sector's key A but not its key B, `check` then reads that sector's trailer with key A. On cards whose access bits leave key B *readable with key A* (the common transport/default configuration — NXP MF1S50yyX Table 8, trailer configs `000`/`001`), key B is stored in the trailer in cleartext and comes back for free — reported as `sector N key B recovered via trailer read` and folded into the table, `--json`, `--out` and `-o`/`--output-keys` output like any dictionary hit. This is **not** the Crypto-1 *nested* attack: the onboard PN7150 performs Crypto-1 inside the chip and never surfaces an encrypted nonce, so no host-side cryptographic recovery is possible on this hardware. It is a plain authenticated read of a key the card is configured to hand over. Key A itself never reads back under any access condition, so only key B is recoverable this way.
+
+Worst case (a card using no known key) means trying the full dictionary against every sector/key-type — with the bundled 2477-key list and `both` key types over 16 sectors that's tens of thousands of auth round-trips, which can take minutes; the progress bar and Ctrl-C partial results make that tolerable for a one-off check.
+
+---
+
 ### Notes
 
-- Requires **DetectTags** firmware (confirm with [`bombercat status`](../commands/status.md)).
+- `read`/`watch`/`scan`/`info` require **DetectTags** firmware; `mifare …` requires **MifareClassic** firmware instead — confirm which is flashed with [`bombercat status`](../commands/status.md).
 - See [Device selection: `-d` / `-p`](../reference.md#device-selection) for selector rules.
 - Two things worth knowing:
   - **Every published `.uf2` today parses as legacy text**, not the newer structured `:tag` events — same detections, just without the `extra` fields the structured format can carry. `bombercat tags info` tells you which mode a given board is in.

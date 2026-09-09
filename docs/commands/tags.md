@@ -191,10 +191,11 @@ bombercat tags mifare write --block 4 --data 00112233445566778899AABBCCDDEEFF
 bombercat tags mifare sector --sector 1 --key-type A --key FFFFFFFFFFFF --json
 ```
 
-`auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call.
+`auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call. `sector` also accepts `-k, --keys-file FILE` instead of `--key`/`--key-type` — a `sector:keyA:keyB` file from `mifare check --output-keys` (tries key A, falls back to key B, and shows the real keys in the trailer line instead of the zeros the card reads back).
 
 ---
 
+<a id="tags-mifare-check"></a>
 ### `tags mifare check`
 
 > Dictionary attack: try known keys against every sector and report which ones open. This is the "check keys" phase of `mfoc`/`hf mf chk` — it demonstrates the well-known weakness of Mifare Classic, that most cards in the wild still answer to default or leaked vendor keys.
@@ -238,6 +239,74 @@ Known keys are tried first on later sectors — real cards commonly reuse the sa
 **Trailer-read key-B recovery.** When the dictionary opens a sector's key A but not its key B, `check` then reads that sector's trailer with key A. On cards whose access bits leave key B *readable with key A* (the common transport/default configuration — NXP MF1S50yyX Table 8, trailer configs `000`/`001`), key B is stored in the trailer in cleartext and comes back for free — reported as `sector N key B recovered via trailer read` and folded into the table, `--json`, `--out` and `-o`/`--output-keys` output like any dictionary hit. This is **not** the Crypto-1 *nested* attack: the onboard PN7150 performs Crypto-1 inside the chip and never surfaces an encrypted nonce, so no host-side cryptographic recovery is possible on this hardware. It is a plain authenticated read of a key the card is configured to hand over. Key A itself never reads back under any access condition, so only key B is recoverable this way.
 
 Worst case (a card using no known key) means trying the full dictionary against every sector/key-type — with the bundled 2477-key list and `both` key types over 16 sectors that's tens of thousands of auth round-trips, which can take minutes; the progress bar and Ctrl-C partial results make that tolerable for a one-off check.
+
+---
+
+### `tags mifare dump`
+
+> Read every sector of a card in one batch pass and save it to file. The bulk-extraction counterpart to `mifare sector` — `sector` inspects **one** sector interactively; `dump` reads the **whole** card non-interactively and writes it out. Neither replaces the other.
+
+Feed it a keyfile produced by [`mifare check --out`](#tags-mifare-check) (or hand-written as `sector:keyA:keyB` lines). A sector missing from the keyfile, or whose read fails, is recorded as a **gap** — `dump` never aborts the rest of the card for one bad sector.
+
+| Option | Description |
+|---|---|
+| `-k, --keys-file FILE` | **Required.** `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. |
+| `--sectors N` | Number of sectors to dump (default `16` = 1K). Max `32` (2K); 4K's 16-block sectors (32-39) aren't supported yet. |
+| `--out FILE` | Write the dump as canonical JSON — see format below. |
+| `--mfd FILE` | Write a raw binary dump (1024 bytes for 1K), Proxmark/mfoc `hf mf restore`-compatible. Gaps are filled with zeros. |
+| `--eml FILE` | Write a hex-per-line dump (32 chars/line), Proxmark `hf mf eload`-compatible. Gaps are filled with zeros. |
+| `--force` | Overwrite `--out`/`--mfd`/`--eml` if they already exist. |
+| `--json` | Emit the dump as JSON on stdout instead of the table. |
+| `-t, --timeout SEC` | Seconds to wait for a card tap if none is selected yet (default `5`). |
+
+```sh
+bombercat tags mifare dump -k recovered.keys --out card.json
+bombercat tags mifare dump -k recovered.keys --out card.json --mfd card.mfd --eml card.eml
+bombercat tags mifare dump -k recovered.keys --sectors 32 --json
+```
+
+```
+ℹ Dumping /dev/ttyACM0 — 16 sector(s) — Ctrl-C for partial results
+
+   MifareClassic dump @ /dev/ttyACM0
+┏━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━┳━━━━━━━━━━━━━━┓
+┃ Sector ┃ Status ┃ Opened with ┃ Reason       ┃
+┡━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━╇━━━━━━━━━━━━━━┩
+│      0 │ OK     │ A           │              │
+│      1 │ OK     │ A           │              │
+│     12 │ FAILED │ —           │ no key available │
+└────────┴────────┴─────────────┴──────────────┘
+
+ℹ 15/16 sectors read — uid DEADBEEF
+⚠ dump incomplete — interrupted before finishing
+```
+
+(The last warning line only shows on Ctrl-C; a run that finishes on its own just stops after the `N/total sectors read` line.)
+
+**Canonical JSON (`--out`/`--json`)** is the reference format — the only one that keeps a dump's provenance and its real keys:
+
+```json
+{
+  "uid": "DEADBEEF",
+  "size": "1K",
+  "sectors_read": 15,
+  "sectors_total": 16,
+  "read_at": "2026-09-09T12:00:00Z",
+  "source_keyfile": "recovered.keys",
+  "sectors": [
+    { "sector": 0, "opened_with": "A", "blocks": ["...", "...", "...", "..."] }
+  ],
+  "failed_sectors": [
+    { "sector": 12, "reason": "no key available" }
+  ]
+}
+```
+
+Key A never reads back from the card (it's always zeros in the raw trailer), so `dump` substitutes the real keys from the keyfile into each sector's trailer block before writing it out — same substitution `mifare sector` shows on screen. The access-bits bytes in the trailer are left exactly as read.
+
+**`--mfd`/`--eml` are not canonical** — they can't tell "not read" from real zeros and can't carry the recovered keys, so a gap is silently zero-filled in both. Prefer `--out` when you need to know what was actually read, or to round-trip into a future `mifare restore`.
+
+Exit code is `0` only if every requested sector was read and the run wasn't interrupted — `1` for any gap or a Ctrl-C partial, in both table and `--json` mode (same convention as `check`).
 
 ---
 

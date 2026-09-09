@@ -1590,3 +1590,361 @@ def mifare_dump_cmd(
         print_warning("dump incomplete — interrupted before finishing")
 
     raise SystemExit(0 if complete else 1)
+
+
+# ── restore ───────────────────────────────────────────────────────────────────
+#
+# `mifare restore` — write a `mifare dump` JSON back to a magic card (gen2/CUID).
+# docs/CLI_IMPROVEMENTS_MifareRestore.md §3 (F1: probe + block-0 confirmation +
+# per-sector data-block writes). Trailers are never written in this phase —
+# that's F2 (§3.4 access-bit validation + --skip-trailers).
+
+# The last data-block index of a 4-block sector is its trailer (index 3), which
+# F1 never writes; block 0 of sector 0 is the manufacturer/UID block, gated
+# behind --write-block0.
+_MIFARE_TRAILER_BLOCK_INDEX = 3
+_MIFARE_DATA_BLOCK_INDICES = (0, 1, 2)
+_MIFARE_ZERO_KEY = "0" * _MIFARE_KEY_HEX_LEN
+
+_RESTORE_BLOCK0_WARNING = (
+    "Writing block 0 rewrites the card's UID/BCC/SAK/ATQA — its identity. Only "
+    "do this on a magic card (gen2/CUID) you own or have permission to clone; on "
+    "a genuine MIFARE Classic block 0 is factory-OTP and the write will fail (in "
+    "the worst case bricking it). Continue?"
+)
+
+
+def _load_restore_dump(path: str) -> Dict[str, object]:
+    """Load and shape-check a `mifare dump` JSON for `restore`. Requires a
+    `sectors` list of `{sector, blocks}` entries, each with exactly 4 blocks of
+    32 hex chars — the same canonical shape `mifare dump --out` produces."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            dump = json.load(f)
+    except OSError as e:
+        print_error(f"could not read {path}: {e}")
+        raise SystemExit(1)
+    except json.JSONDecodeError as e:
+        print_error(f"{path} is not valid JSON: {e}")
+        raise SystemExit(1)
+
+    if not isinstance(dump, dict) or not isinstance(dump.get("sectors"), list):
+        print_error(f"{path} is not a mifare dump JSON (no 'sectors' list)")
+        raise SystemExit(1)
+    for entry in dump["sectors"]:
+        if (
+            not isinstance(entry, dict)
+            or not isinstance(entry.get("sector"), int)
+            or not isinstance(entry.get("blocks"), list)
+        ):
+            print_error(f"{path}: malformed sector entry: {entry!r}")
+            raise SystemExit(1)
+        blocks = entry["blocks"]
+        if len(blocks) != 4 or any(
+            not isinstance(b, str)
+            or _mifare_validate_hex(b, _MIFARE_BLOCK_HEX_LEN, "block")
+            for b in blocks
+        ):
+            print_error(
+                f"{path}: sector {entry['sector']} must have 4 blocks of "
+                f"{_MIFARE_BLOCK_HEX_LEN} hex chars each"
+            )
+            raise SystemExit(1)
+    return dump
+
+
+def _restore_sector_keys(blocks: List[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Pull the write keys out of a dump sector's trailer (block 3): key A is
+    the first 6 bytes, key B the last 6. An all-zero slot means "unknown" — the
+    card reads key A (and often key B) back as zeros — so it's returned as None
+    rather than attempted as a real key."""
+    trailer = blocks[_MIFARE_TRAILER_BLOCK_INDEX]
+    key_a = trailer[:_MIFARE_KEY_HEX_LEN]
+    key_b = trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    return (
+        key_a if key_a.upper() != _MIFARE_ZERO_KEY else None,
+        key_b if key_b.upper() != _MIFARE_ZERO_KEY else None,
+    )
+
+
+def _restore_block0(link, block0_hex: str) -> Tuple[bool, str]:
+    """Non-destructively probe sector 0's block 0, then write it (§3.1).
+
+    Reads the current block 0 and writes it back *unchanged*: only if that echo
+    write returns +OK is the card's block 0 actually writable (a magic card),
+    so it's safe to write the dump's UID over it. A genuine card (factory-OTP
+    block 0) or a wrong key fails the probe, and we abort without ever changing
+    the UID. Returns ``(written, note)``."""
+    r = link.command("mifare read 0")
+    if not r.ok:
+        return False, f"block 0 probe read failed: {r.message}"
+    current = r.data.get("mifare_data", "").partition(" ")[2]
+    if len(current) != _MIFARE_BLOCK_HEX_LEN:
+        return False, "block 0 probe read returned no data"
+
+    probe = link.command(f"mifare write 0 {current.upper()}")
+    if not probe.ok:
+        return False, (
+            "block 0 is not writable — genuine card or wrong key; refusing to "
+            f"write UID ({probe.message})"
+        )
+    w = link.command(f"mifare write 0 {block0_hex.upper()}")
+    if not w.ok:
+        return False, f"block 0 write failed: {w.message}"
+    return True, "ok"
+
+
+def _restore_one_sector(
+    link,
+    sector: int,
+    blocks: List[str],
+    timeout: float,
+    first: bool,
+    write_block0: bool,
+) -> Tuple[int, bool, str]:
+    """Authenticate SECTOR (key A, falling back to key B) and write its data
+    blocks — never the trailer (F2). Block 0 of sector 0 is written only if
+    `write_block0`, behind the non-destructive probe of `_restore_block0`.
+
+    Returns ``(written, block0_written, reason)``: `written` counts the data
+    blocks written, `reason` is "ok" or the firmware's failure message. A write
+    that's denied stops this sector and returns its reason — the caller keeps
+    going with the next sector (partials are first class, §3.3.4)."""
+    base = _sector_first_block(sector)
+    key_a, key_b = _restore_sector_keys(blocks)
+    attempts = [(kt, k) for kt, k in (("A", key_a), ("B", key_b)) if k]
+    if not attempts:
+        return 0, False, "no write key in dump trailer"
+
+    r = None
+    used_kt: Optional[str] = None
+    for kt, k in attempts:
+        line = f"mifare auth {base} {kt} {k.upper()}"
+        if first:
+            r = _run_mifare_command(link, line, timeout)
+            first = False
+        else:
+            r = link.command(line)
+        if r.ok:
+            used_kt = kt
+            break
+    if used_kt is None:
+        assert r is not None
+        return 0, False, r.message
+
+    written = 0
+    block0_written = False
+    for i in _MIFARE_DATA_BLOCK_INDICES:
+        if sector == 0 and i == 0:
+            if not write_block0:
+                continue
+            ok_b0, note = _restore_block0(link, blocks[0])
+            if not ok_b0:
+                return written, False, note
+            block0_written = True
+            written += 1
+            continue
+        w = link.command(f"mifare write {base + i} {blocks[i].upper()}")
+        if not w.ok:
+            return written, block0_written, w.message
+        written += 1
+    return written, block0_written, "ok"
+
+
+@mifare.command("restore", context_settings={"help_option_names": ["-h", "--help"]})
+@click.option(
+    "--dump",
+    "dump_file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False),
+    metavar="FILE",
+    help="A canonical `mifare dump --out` JSON to write back to the card.",
+)
+@click.option(
+    "--sectors",
+    type=click.IntRange(1, _MIFARE_CHECK_MAX_SECTORS),
+    default=None,
+    metavar="N",
+    help="Restore only sectors 0..N-1 (default: every sector in the dump).",
+)
+@click.option(
+    "--write-block0",
+    is_flag=True,
+    help="Also write sector 0's block 0 (UID/BCC/SAK/ATQA) — the card's "
+    "identity. Off by default; only works on a magic card (gen2/CUID), never "
+    "on a genuine card. A non-destructive probe runs first (see --help notes).",
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip the interactive confirmation before writing block 0 (for "
+    "scripted use). Still requires --write-block0.",
+)
+@click.option(
+    "--json", "as_json", is_flag=True, help="Emit the restore result as JSON."
+)
+@_MIFARE_TIMEOUT_OPTION
+@device_options
+@click.pass_context
+def mifare_restore_cmd(
+    ctx,
+    dump_file,
+    sectors,
+    write_block0,
+    yes,
+    as_json,
+    timeout,
+    verbose,
+    port,
+    device_id,
+):
+    """Write a `mifare dump` JSON back to a magic card, block by block.
+
+    \b
+    ⚠ AUTHORIZED USE ONLY. Clone only cards you own or have explicit
+    permission to clone, and only onto a magic card (gen2/CUID) — never a
+    genuine MIFARE Classic. On a genuine card block 0 is factory-OTP: writing
+    it fails, and in the worst case bricks the card permanently.
+
+    Reads the canonical JSON `mifare dump --out` produces and writes each
+    sector's data blocks back after authenticating with the sector's own keys
+    (from the dump trailer). This phase never writes sector trailers (access
+    bits + keys). Sector 0's block 0 (the UID) is skipped unless
+    --write-block0, and even then only after a non-destructive probe proves the
+    card's block 0 is actually writable. A sector whose key can't write is
+    recorded as a failure — it never aborts the rest. Ctrl-C stops and reports
+    what was written so far.
+    """
+    dump = _load_restore_dump(dump_file)
+    entries = sorted(dump["sectors"], key=lambda e: e["sector"])
+    limit = sectors if sectors is not None else dump.get("sectors_total")
+    if isinstance(limit, int):
+        entries = [e for e in entries if e["sector"] < limit]
+    if not entries:
+        print_error("nothing to restore: no sectors in the dump within range")
+        raise SystemExit(1)
+
+    if write_block0 and not yes and not as_json:
+        if not click.confirm(_RESTORE_BLOCK0_WARNING, default=False):
+            print_warning("aborted — block 0 not written")
+            raise SystemExit(1)
+
+    level = _verbosity(ctx, verbose)
+    results: List[Dict[str, object]] = []
+    interrupted = False
+    block0_written = False
+
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if not as_json:
+            print_info(
+                f"Restoring {len(entries)} sector(s) to {target} — Ctrl-C for "
+                "partial results"
+            )
+        progress = (
+            None
+            if as_json
+            else Progress(
+                SpinnerColumn(style="cyan"),
+                TextColumn("[cyan]sector {task.fields[sector]:>2}[/cyan]"),
+                BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
+                TextColumn(
+                    "[dim]{task.fields[ok]} ok · {task.fields[failed]} failed[/dim]"
+                ),
+                TimeRemainingColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            )
+        )
+        first = True
+        try:
+            with progress or nullcontext():
+                task = (
+                    progress.add_task("", total=len(entries), sector=0, ok=0, failed=0)
+                    if progress
+                    else None
+                )
+                ok_count = 0
+                failed_count = 0
+                for entry in entries:
+                    s = entry["sector"]
+                    written, wrote_b0, reason = _restore_one_sector(
+                        link, s, entry["blocks"], timeout, first, write_block0
+                    )
+                    first = False
+                    block0_written = block0_written or wrote_b0
+                    results.append(
+                        {
+                            "sector": s,
+                            "written": written,
+                            "block0": wrote_b0,
+                            "reason": reason,
+                        }
+                    )
+                    if reason == "ok":
+                        ok_count += 1
+                    else:
+                        failed_count += 1
+                    if progress:
+                        progress.update(
+                            task,
+                            advance=1,
+                            sector=s,
+                            ok=ok_count,
+                            failed=failed_count,
+                        )
+        except KeyboardInterrupt:
+            interrupted = True
+
+    if interrupted and not as_json:
+        print_warning("interrupted — showing partial results")
+
+    ok_sectors = [r for r in results if r["reason"] == "ok"]
+    failed_sectors = [r for r in results if r["reason"] != "ok"]
+    result = {
+        "target_sectors": len(entries),
+        "sectors_written": len(ok_sectors),
+        "block0_written": block0_written,
+        "interrupted": interrupted,
+        "source_dump": dump_file,
+        "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sectors": results,
+        "failed_sectors": failed_sectors,
+    }
+    complete = not interrupted and not failed_sectors
+
+    if as_json:
+        print(json.dumps(result))
+        raise SystemExit(0 if complete else 1)
+
+    console.print("")
+    table_out = Table(
+        title=f"MifareClassic restore @ {target}", header_style="cyan bold"
+    )
+    table_out.add_column("Sector", justify="right")
+    table_out.add_column("Status")
+    table_out.add_column("Blocks")
+    table_out.add_column("Reason")
+    for r in results:
+        if r["reason"] == "ok":
+            table_out.add_row(
+                str(r["sector"]), "[green]OK[/green]", str(r["written"]), ""
+            )
+        else:
+            table_out.add_row(
+                str(r["sector"]),
+                "[red]FAILED[/red]",
+                str(r["written"]),
+                r["reason"],
+            )
+    console.print(table_out)
+
+    console.print("")
+    print_info(
+        f"{len(ok_sectors)}/{len(entries)} sectors written"
+        + (" — block 0 written" if block0_written else "")
+    )
+    if interrupted:
+        print_warning("restore incomplete — interrupted before finishing")
+
+    raise SystemExit(0 if complete else 1)

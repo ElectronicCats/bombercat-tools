@@ -248,7 +248,7 @@ def _bootloader_help(image_name: str) -> None:
     )
 
 
-@click.command("flash", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("flash")
 @click.argument("firmware", required=False, shell_complete=complete_firmware)
 @click.option(
     "-l", "--list", "list_only", is_flag=True, help="List the available firmwares."

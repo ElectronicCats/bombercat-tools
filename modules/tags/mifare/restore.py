@@ -233,7 +233,7 @@ def _restore_one_sector(
     return written, block0_written, "ok", ""
 
 
-@click.command("restore", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("restore")
 @click.option(
     "--dump",
     "dump_file",

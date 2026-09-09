@@ -76,7 +76,7 @@ def _dump_blocks_hex(
     return blocks
 
 
-@click.command("dump", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("dump")
 @click.option(
     "-k",
     "--keys-file",

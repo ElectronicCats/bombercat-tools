@@ -59,7 +59,7 @@ from .session import (
 from .write_text import mifare_write_text_cmd
 
 
-@click.group("mifare", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("mifare")
 def mifare():
     """Mifare Classic auth/read/write/sector commands (requires the
     MifareClassic firmware).
@@ -71,7 +71,7 @@ def mifare():
     """
 
 
-@mifare.command("auth", context_settings={"help_option_names": ["-h", "--help"]})
+@mifare.command("auth")
 @click.option(
     "--block", type=click.IntRange(0, 255), required=True, help="Block number."
 )
@@ -99,7 +99,7 @@ def mifare_auth_cmd(ctx, block, key_type, key, timeout, verbose, port, device_id
     print_success(f"authenticated block {block} with key {key_type.upper()}")
 
 
-@mifare.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@mifare.command("read")
 @click.option(
     "--block", type=click.IntRange(0, 255), required=True, help="Block number."
 )
@@ -133,7 +133,7 @@ def mifare_read_cmd(ctx, block, as_json, timeout, verbose, port, device_id):
         _print_block0(b0)
 
 
-@mifare.command("write", context_settings={"help_option_names": ["-h", "--help"]})
+@mifare.command("write")
 @click.option(
     "--block", type=click.IntRange(0, 255), required=True, help="Block number."
 )
@@ -160,7 +160,7 @@ def mifare_write_cmd(ctx, block, data, timeout, verbose, port, device_id):
     print_success(f"wrote block {block}")
 
 
-@mifare.command("sector", context_settings={"help_option_names": ["-h", "--help"]})
+@mifare.command("sector")
 @click.option(
     "--sector", type=click.IntRange(0, 255), required=True, help="Sector number."
 )
@@ -251,7 +251,7 @@ def mifare_sector_cmd(
         _print_block0(b0)
 
 
-@mifare.command("keys", context_settings={"help_option_names": ["-h", "--help"]})
+@mifare.command("keys")
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per key.")
 @device_options
 @click.pass_context

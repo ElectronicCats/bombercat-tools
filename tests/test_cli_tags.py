@@ -434,7 +434,6 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
     assert link.closed
 
 
-
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 

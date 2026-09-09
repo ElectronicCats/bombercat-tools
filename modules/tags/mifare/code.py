@@ -56,7 +56,7 @@ def _encode_block_hex(payload: bytes, pad: int) -> List[str]:
     ]
 
 
-@click.command("code", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("code")
 @click.argument("text")
 @click.option(
     "--sector",

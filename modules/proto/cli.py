@@ -19,7 +19,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[2]
 GEN_PROTO = TOOLS_DIR / "gen_proto.sh"
 
 
-@click.group("proto", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("proto")
 def proto():
     """Nanopb protobuf sources for the NFCGate relay."""
 

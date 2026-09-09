@@ -88,7 +88,7 @@ def _blink(link: DeviceLink, target: str) -> None:
 # ── config group ──────────────────────────────────────────────────────────────
 
 
-@click.group("config", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("config")
 def config():
     """Configure the relay (WiFi + nfcgate parameters), persisted in flash."""
 
@@ -181,7 +181,7 @@ _RUN_POLL_INTERVAL = 0.5  # seconds between `status` polls
 _RUN_MAX_CONSECUTIVE_FAILURES = 6
 
 
-@click.command("run", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("run")
 @target_options
 def run_cmd(port, device_id):
     """Start the relay (associate WiFi, connect the server, begin the session)."""
@@ -261,7 +261,7 @@ def run_cmd(port, device_id):
         raise SystemExit(1)
 
 
-@click.command("stop", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("stop")
 @target_options
 def stop_cmd(port, device_id):
     """Stop the relay."""
@@ -273,7 +273,7 @@ def stop_cmd(port, device_id):
     print_success(f"relay stopped on {target}")
 
 
-@click.command("status", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("status")
 @target_options
 def status_cmd(port, device_id):
     """Show live relay status (state, link, peer, relayed count)."""
@@ -296,7 +296,7 @@ def status_cmd(port, device_id):
     console.print(table)
 
 
-@click.command("monitor", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("monitor")
 @target_options
 def monitor_cmd(port, device_id):
     """Stream the device's serial output live (relay logs + APDU hex). Ctrl-C to quit."""
@@ -344,7 +344,7 @@ def monitor_cmd(port, device_id):
 # root keeps hidden compat aliases for one deprecation cycle (§2.4).
 
 
-@click.group("relay", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("relay")
 def relay():
     """NFCGate relay: configure it, run it, and watch the APDU relay.
 

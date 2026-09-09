@@ -101,7 +101,7 @@ def _watch_wireshark(
 # ── capture group ─────────────────────────────────────────────────────────────
 
 
-@click.group("capture", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("capture")
 def capture():
     """Capture relayed APDUs to pcap (live Wireshark and/or a file)."""
 

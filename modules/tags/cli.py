@@ -63,7 +63,7 @@ _NOISE_RE = re.compile(
 _MAX_DEDUPE_KEYS = 10_000
 
 
-@click.group("tags", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("tags")
 def tags():
     """NFC tag detection commands (requires the DetectTags firmware)."""
 
@@ -112,7 +112,7 @@ def _emit_tag(tag: Tag, as_json: bool) -> None:
 # ── read ─────────────────────────────────────────────────────────────────────
 
 
-@tags.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@tags.command("read")
 @click.option(
     "-t",
     "--timeout",
@@ -164,7 +164,7 @@ def _watch_line(tag: Tag, repeat: int) -> str:
     )
 
 
-@tags.command("watch", context_settings={"help_option_names": ["-h", "--help"]})
+@tags.command("watch")
 @click.option(
     "--dedupe",
     is_flag=True,
@@ -250,7 +250,7 @@ def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
     _write_csv_base(path, rows, _CSV_FIELDS)
 
 
-@tags.command("scan", context_settings={"help_option_names": ["-h", "--help"]})
+@tags.command("scan")
 @click.option(
     "-t",
     "--timeout",
@@ -397,7 +397,7 @@ def scan_cmd(
 # ── info ─────────────────────────────────────────────────────────────────────
 
 
-@tags.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@tags.command("info")
 @device_options
 @click.pass_context
 def info_cmd(ctx, verbose, port, device_id):
@@ -443,4 +443,3 @@ def info_cmd(ctx, verbose, port, device_id):
 # they're the bulk of `tags` by volume and share nothing with the detection
 # commands above. The group is assembled there and attached to `tags` here.
 tags.add_command(_mifare)
-

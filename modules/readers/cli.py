@@ -53,7 +53,7 @@ _NOISE_RE = re.compile(
 )
 
 
-@click.group("readers", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("readers")
 def readers():
     """NFC reader/terminal detection commands (requires the DetectReaders firmware)."""
 
@@ -112,7 +112,7 @@ def _emit_reader(reader: Reader, as_json: bool) -> None:
 # ── read ─────────────────────────────────────────────────────────────────────
 
 
-@readers.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@readers.command("read")
 @click.option(
     "-t",
     "--timeout",
@@ -165,7 +165,7 @@ def _watch_line(reader: Reader, repeat: int) -> str:
     )
 
 
-@readers.command("watch", context_settings={"help_option_names": ["-h", "--help"]})
+@readers.command("watch")
 @click.option(
     "--dedupe",
     is_flag=True,
@@ -254,7 +254,7 @@ def _write_csv(path: str, rows: List[Dict[str, object]]) -> None:
     _write_csv_base(path, rows, _CSV_FIELDS)
 
 
-@readers.command("scan", context_settings={"help_option_names": ["-h", "--help"]})
+@readers.command("scan")
 @click.option(
     "-t",
     "--timeout",
@@ -372,7 +372,7 @@ def scan_cmd(ctx, timeout, json_file, csv_file, force, verbose, port, device_id)
 # ── info ─────────────────────────────────────────────────────────────────────
 
 
-@readers.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@readers.command("info")
 @device_options
 @click.pass_context
 def info_cmd(ctx, verbose, port, device_id):

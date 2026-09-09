@@ -156,7 +156,7 @@ def cli(ctx, verbose):
         logger.level = logging.INFO
 
 
-@click.command("identify", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("identify")
 @target_options
 def identify_cmd(port, device_id):
     """Blink a device's LED so you can tell which board an ID refers to."""
@@ -246,7 +246,7 @@ def _next_steps(detection):
     return steps
 
 
-@click.command("status", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("status")
 @click.option(
     "--no-sniff", is_flag=True, help="Skip boot-banner sniffing (levels 1 & 3 only)."
 )
@@ -343,7 +343,6 @@ def _config_alias():
     @click.group(
         "config",
         hidden=True,
-        context_settings={"help_option_names": ["-h", "--help"]},
         help="[deprecated] use `bombercat relay config …`.",
     )
     def _alias():
@@ -359,7 +358,7 @@ def _config_alias():
 # ===================== Shell Completion Commands =====================
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group()
 def completion():
     """Install shell tab completion for bombercat."""
     pass

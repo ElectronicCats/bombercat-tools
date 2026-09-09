@@ -515,8 +515,6 @@ def test_mifare_check_trailer_read_not_attempted_for_key_type_a(
     assert not any(s.startswith("mifare sector") for s in fake.sent)
 
 
-
-
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 
@@ -1125,7 +1123,8 @@ def test_mifare_restore_write_block0_yes_probes_then_writes_the_uid(
     dump = _restore_dump(tmp_path)
     current = "AA" * 16
     fake = use_link(
-        mifare_session, FakeLink(responses={"mifare read 0": ok(mifare_data="0 " + current)})
+        mifare_session,
+        FakeLink(responses={"mifare read 0": ok(mifare_data="0 " + current)}),
     )
 
     result = runner.invoke(
@@ -1255,7 +1254,8 @@ def test_mifare_restore_marks_a_sector_failed_when_a_write_is_denied(
         ],
     )
     fake = use_link(
-        mifare_session, FakeLink(responses={f"mifare write 5 {denied}": err("write denied")})
+        mifare_session,
+        FakeLink(responses={f"mifare write 5 {denied}": err("write denied")}),
     )
 
     result = runner.invoke(

@@ -97,7 +97,7 @@ def _resolve_write_keys(
     return None, key.upper()
 
 
-@click.command("write-text", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("write-text")
 @click.argument("text")
 @click.option(
     "--sector",

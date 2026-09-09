@@ -20,7 +20,7 @@ from ..utils.output import (
 )
 
 
-@click.group("device", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("device")
 def device():
     """Discover and inspect BomberCat devices over USB-serial."""
 

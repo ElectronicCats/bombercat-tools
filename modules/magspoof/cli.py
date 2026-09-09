@@ -69,7 +69,7 @@ def _button_label(mode: str) -> str:
     return _BUTTON_MODES.get(mode, mode)
 
 
-@click.group("magspoof", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("magspoof")
 def magspoof():
     """Magstripe emulation commands (requires the magspoof firmware)."""
 
@@ -104,7 +104,7 @@ def _report_error(verb: str, r: Response) -> None:
 # ── play ─────────────────────────────────────────────────────────────────────
 
 
-@magspoof.command("play", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.command("play")
 @device_options
 @click.pass_context
 def play_cmd(ctx, verbose, port, device_id):
@@ -250,7 +250,7 @@ def _group_pan(pan: str) -> str:
     return " ".join(pan[i : i + 4] for i in range(0, len(pan), 4))
 
 
-@magspoof.command("show", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.command("show")
 @click.option(
     "--json",
     "as_json",
@@ -369,7 +369,7 @@ def _watch_line(event: MagEvent) -> str:
     return f"▶ track {track} @ {ts}"
 
 
-@magspoof.command("watch", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.command("watch")
 @click.option(
     "--quiet-noise/--no-quiet-noise",
     default=True,
@@ -425,7 +425,7 @@ def watch_cmd(ctx, quiet_noise, as_json, verbose, port, device_id):
 # ── info ─────────────────────────────────────────────────────────────────────
 
 
-@magspoof.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.command("info")
 @device_options
 @click.pass_context
 def info_cmd(ctx, verbose, port, device_id):
@@ -482,12 +482,12 @@ _NFC_VISA_READ_TIMEOUT = 17.0
 _NFC_READ_READ_TIMEOUT = 12.0
 
 
-@magspoof.group("nfc", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.group("nfc")
 def nfc():
     """NFC (PN7150) commands (requires the magspoof firmware)."""
 
 
-@nfc.command("selres", context_settings={"help_option_names": ["-h", "--help"]})
+@nfc.command("selres")
 @click.argument("mode", type=click.Choice(["chip", "nochip"]))
 @device_options
 @click.pass_context
@@ -509,7 +509,7 @@ def nfc_selres_cmd(ctx, mode, verbose, port, device_id):
     print_success(f"SEL_RES set to {mode}")
 
 
-@nfc.command("visa", context_settings={"help_option_names": ["-h", "--help"]})
+@nfc.command("visa")
 @device_options
 @click.pass_context
 def nfc_visa_cmd(ctx, verbose, port, device_id):
@@ -533,7 +533,7 @@ def nfc_visa_cmd(ctx, verbose, port, device_id):
     print_success("VISA MSD emulation complete")
 
 
-@nfc.command("read", context_settings={"help_option_names": ["-h", "--help"]})
+@nfc.command("read")
 @click.argument("name")
 @device_options
 @click.pass_context
@@ -566,7 +566,7 @@ def nfc_read_cmd(ctx, name, verbose, port, device_id):
     print_success(f"{verb} {stored_name} — stored track 2: {r.data.get('t2', '')}")
 
 
-@nfc.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@nfc.command("info")
 @device_options
 @click.pass_context
 def nfc_info_cmd(ctx, verbose, port, device_id):
@@ -667,7 +667,7 @@ def complete_card_name(ctx, param, incomplete):
     return [CompletionItem(name) for name in names if name.lower().startswith(wanted)]
 
 
-@magspoof.group("card", context_settings={"help_option_names": ["-h", "--help"]})
+@magspoof.group("card")
 def card():
     """Manage the persistent multi-card store (requires flash-storage firmware).
 
@@ -678,7 +678,7 @@ def card():
     """
 
 
-@card.command("list", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("list")
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per card.")
 @device_options
 @click.pass_context
@@ -732,7 +732,7 @@ def card_list_cmd(ctx, as_json, verbose, port, device_id):
     console.print(table)
 
 
-@card.command("add", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("add")
 @click.argument("name")
 @click.option("--t1", "track1", help="Track 1 data (starts with '%', ends with '?').")
 @click.option("--t2", "track2", help="Track 2 data (starts with ';', ends with '?').")
@@ -813,7 +813,7 @@ def card_add_cmd(ctx, name, track1, track2, normalize_sc, verbose, port, device_
     print_success(msg)
 
 
-@card.command("del", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("del")
 @click.argument("name", shell_complete=complete_card_name)
 @device_options
 @click.pass_context
@@ -829,7 +829,7 @@ def card_del_cmd(ctx, name, verbose, port, device_id):
     print_success(f"deleted card {name}")
 
 
-@card.command("set", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("set")
 @click.argument("name", shell_complete=complete_card_name)
 @click.option("--t1", "track1", help="New track 1 (starts with '%', ends with '?').")
 @click.option("--t2", "track2", help="New track 2 (starts with ';', ends with '?').")
@@ -919,7 +919,7 @@ def card_set_cmd(
     print_success(msg)
 
 
-@card.command("select", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("select")
 @click.argument("name", shell_complete=complete_card_name)
 @device_options
 @click.pass_context
@@ -935,7 +935,7 @@ def card_select_cmd(ctx, name, verbose, port, device_id):
     print_success(f"active card is now {r.data.get('active', name)}")
 
 
-@card.command("get", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("get")
 @click.argument("name", required=False, shell_complete=complete_card_name)
 @click.option(
     "--json",
@@ -984,7 +984,7 @@ def card_get_cmd(ctx, name, as_json, verbose, port, device_id):
     _print_field("nfc selres", nfc_mode or "[dim]—[/dim]")
 
 
-@card.command("info", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("info")
 @device_options
 @click.pass_context
 def card_info_cmd(ctx, verbose, port, device_id):
@@ -1148,7 +1148,7 @@ def _card_sc_rewrite(
     print_success(f"service code {past} on {card_name or name}: {sc} → {sc_new}")
 
 
-@card.command("normalize-sc", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("normalize-sc")
 @click.argument("name", required=False, shell_complete=complete_card_name)
 @click.option(
     "--apply", is_flag=True, help="Write the normalized Track 2 back to the card."
@@ -1213,7 +1213,7 @@ def card_normalize_sc_cmd(
     )
 
 
-@card.command("require-sc", context_settings={"help_option_names": ["-h", "--help"]})
+@card.command("require-sc")
 @click.argument("name", required=False, shell_complete=complete_card_name)
 @click.option(
     "--apply", is_flag=True, help="Write the hardened Track 2 back to the card."

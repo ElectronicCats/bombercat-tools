@@ -126,7 +126,7 @@ def _recover_key_b_via_trailer(
     return key_b, "ok"
 
 
-@click.command("check", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("check")
 @click.option(
     "--keys",
     "keyfiles",

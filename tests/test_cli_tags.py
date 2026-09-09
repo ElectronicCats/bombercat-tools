@@ -883,6 +883,36 @@ def test_mifare_check_trailer_read_skips_when_key_b_not_exposed(
     assert payload["sectors"] == [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": None}]
 
 
+def test_mifare_check_trailer_read_reports_protected_key_b(runner, use_link, tmp_path):
+    # The card's access bits protect key B (008088 -> key_b_read = never), the
+    # secure configuration. Recovery can't read it and says so plainly, so the
+    # user can tell "the card protects it" from "the read failed". This is the
+    # real limit — the Crypto-1 nested attack the PN7150 can't do would be the
+    # only way to get such a key.
+    keyfile = tmp_path / "keys.keys"
+    keyfile.write_text("FFFFFFFFFFFF\n")
+    # key B bytes are present in the dump but unreachable per the access bits.
+    protected = "00" * 48 + "000000000000" "008088" "00" "B0B1B2B3B4B5"
+    use_link(
+        tagscli,
+        FakeLink(
+            responses={
+                "mifare auth 0 A FFFFFFFFFFFF": ok(),
+                "mifare auth 0 B FFFFFFFFFFFF": err("authentication failed"),
+                "mifare sector 0 A FFFFFFFFFFFF": ok(mifare_sector=protected),
+            }
+        ),
+    )
+    result = runner.invoke(mifare_check_cmd, ["--keys", str(keyfile), "--sectors", "1"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 1
+    assert "key B not recovered" in out
+    assert "protected by the access bits" in out
+    # the protected key B was NOT leaked into the output
+    assert "B0B1B2B3B4B5" not in out
+
+
 def test_mifare_check_trailer_read_not_attempted_for_key_type_a(
     runner, use_link, tmp_path
 ):

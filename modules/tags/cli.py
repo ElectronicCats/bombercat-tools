@@ -1330,6 +1330,22 @@ def _write_dump_json(path: str, dump: Dict[str, object]) -> None:
         f.write("\n")
 
 
+def _dump_blocks_hex(
+    sector_results: List[Dict[str, object]], sectors: int
+) -> List[str]:
+    """Full sectors*4 block list, hex-encoded, in card order. Sectors missing
+    from `sector_results` (gaps) are filled with zeroed blocks — required by
+    the raw --mfd/--eml formats, which can't distinguish "not read" from
+    real zeros (see docs/CLI_IMPROVEMENTS_MifareDump.md §6.2)."""
+    zero_block = "0" * _MIFARE_BLOCK_HEX_LEN
+    blocks = [zero_block] * (sectors * 4)
+    for r in sector_results:
+        s = r["sector"]
+        for i, block in enumerate(r["blocks"]):
+            blocks[s * 4 + i] = block
+    return blocks
+
+
 @mifare.command("dump", context_settings={"help_option_names": ["-h", "--help"]})
 @click.option(
     "-k",
@@ -1358,7 +1374,29 @@ def _write_dump_json(path: str, dump: Dict[str, object]) -> None:
     help="Write the dump as canonical JSON (uid, per-sector blocks with real "
     "keys substituted into the trailer, and failed_sectors for any gap).",
 )
-@click.option("--force", is_flag=True, help="Overwrite --out if it already exists.")
+@click.option(
+    "--mfd",
+    "mfd_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write a raw binary dump (Proxmark/mfoc `hf mf restore` compatible). "
+    "Unread sectors are filled with zeros — not a canonical format, see --out.",
+)
+@click.option(
+    "--eml",
+    "eml_file",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    metavar="FILE",
+    help="Write a hex-per-line dump (Proxmark `hf mf eload` compatible). "
+    "Unread sectors are filled with zeros — not a canonical format, see --out.",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Overwrite --out/--mfd/--eml if they already exist.",
+)
 @click.option(
     "--json", "as_json", is_flag=True, help="Emit the dump as JSON on stdout."
 )
@@ -1366,7 +1404,18 @@ def _write_dump_json(path: str, dump: Dict[str, object]) -> None:
 @device_options
 @click.pass_context
 def mifare_dump_cmd(
-    ctx, keys_file, sectors, out_file, force, as_json, timeout, verbose, port, device_id
+    ctx,
+    keys_file,
+    sectors,
+    out_file,
+    mfd_file,
+    eml_file,
+    force,
+    as_json,
+    timeout,
+    verbose,
+    port,
+    device_id,
 ):
     """Read every sector of a card in one session and dump it to file/stdout.
 
@@ -1377,6 +1426,10 @@ def mifare_dump_cmd(
     """
     if out_file:
         _refuse_overwrite(out_file, force)
+    if mfd_file:
+        _refuse_overwrite(mfd_file, force)
+    if eml_file:
+        _refuse_overwrite(eml_file, force)
 
     try:
         table = load_sector_keys(keys_file)
@@ -1480,6 +1533,27 @@ def mifare_dump_cmd(
             raise SystemExit(1)
         if not as_json:
             print_info(f"wrote {out_file}")
+
+    if mfd_file or eml_file:
+        blocks_hex = _dump_blocks_hex(sector_results, sectors)
+        if mfd_file:
+            try:
+                with open(mfd_file, "wb") as f:
+                    f.write(b"".join(bytes.fromhex(b) for b in blocks_hex))
+            except OSError as e:
+                print_error(f"could not write {mfd_file}: {e}")
+                raise SystemExit(1)
+            if not as_json:
+                print_info(f"wrote {mfd_file}")
+        if eml_file:
+            try:
+                with open(eml_file, "w", encoding="utf-8") as f:
+                    f.write("\n".join(blocks_hex) + "\n")
+            except OSError as e:
+                print_error(f"could not write {eml_file}: {e}")
+                raise SystemExit(1)
+            if not as_json:
+                print_info(f"wrote {eml_file}")
 
     complete = not interrupted and len(sector_results) == sectors
 

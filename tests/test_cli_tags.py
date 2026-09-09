@@ -947,6 +947,7 @@ def test_mifare_group_exposes_all_subcommands():
         "sector",
         "keys",
         "check",
+        "dump",
     }
 
 

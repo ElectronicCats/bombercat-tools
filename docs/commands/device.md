@@ -36,7 +36,7 @@ bombercat device list -a
 │ #1 │ /dev/ttyACM1 │ ✓         │ 36A864E62A367EA3 │ USB VID:PID=…       │
 │ #2 │ /dev/ttyACM0 │ ✓         │ E6614C775B4F2A21 │ USB VID:PID=…       │
 └────┴──────────────┴───────────┴──────────────────┴─────────────────────┘
-Target one with:  bombercat <command> -d <ID>   (e.g. bombercat config show -d 1)
+Target one with:  bombercat <command> -d <ID>   (e.g. bombercat relay config show -d 1)
 ```
 
 **BomberCat column:**

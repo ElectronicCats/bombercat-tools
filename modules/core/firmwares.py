@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 
@@ -218,15 +218,7 @@ def _enriched(fw: Firmware, descriptions: Dict[str, str]) -> Firmware:
     desc = descriptions.get(fw.uf2.lower())
     if not desc:
         return fw
-    return Firmware(
-        id=fw.id,
-        display=fw.display,
-        uf2=fw.uf2,
-        has_repl=fw.has_repl,
-        capabilities=fw.capabilities,
-        banners=fw.banners,
-        description=desc,
-    )
+    return replace(fw, description=desc)
 
 
 # ── Lookup helpers ───────────────────────────────────────────────────────────

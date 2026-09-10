@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 
+from modules.firmware.releases import parse_descriptions
+
 # ── Capabilities vocabulary ──────────────────────────────────────────────────
 # What a firmware lets the host *do*. `status` uses this to suggest the next
 # command; commands can use it to refuse/degrade gracefully.
@@ -202,30 +204,11 @@ def _candidate_description_paths() -> Tuple[Path, ...]:
     return tuple(paths)
 
 
-def _parse_descriptions(payload: bytes) -> Dict[str, str]:
-    """{board: [{filename, description}]} -> {filename.lower(): description}."""
-    try:
-        data = json.loads(payload)
-    except (ValueError, TypeError):
-        return {}
-    if not isinstance(data, dict):
-        # Reachable in practice: this reads user-editable, remote-persisted
-        # cache files, not just malicious JSON (docs/AUDIT_ERROR_HANDLING.md M2).
-        return {}
-    out: Dict[str, str] = {}
-    for entries in data.values():
-        for entry in entries or []:
-            filename = (entry or {}).get("filename")
-            if filename:
-                out[filename.lower()] = entry.get("description", "")
-    return out
-
-
 def load_descriptions() -> Dict[str, str]:
     """First readable descriptions.json wins; {} if none is found."""
     for path in _candidate_description_paths():
         try:
-            return _parse_descriptions(path.read_bytes())
+            return parse_descriptions(path.read_bytes())
         except OSError:
             continue
     return {}

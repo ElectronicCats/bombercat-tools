@@ -1,0 +1,69 @@
+name: Build Arch package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "bombercat.py"
+      - "packaging/**"
+      - "*.spec"
+      - "requirements.txt"
+      - "VERSION"
+      - ".github/workflows/build-*.yml"
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release al que subir el asset (ej: v1.2.0)"
+        required: true
+        default: "v1.2.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .pkg.tar.zst
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git python python-pip \
+            python-click python-rich python-pyserial python-pygments sudo
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < VERSION || echo latest)" >> "$GITHUB_OUTPUT"
+
+      # El script detecta la versión de Python en tiempo de build, genera el
+      # PKGBUILD (options=('!debug')) y corre makepkg como usuario sin privilegios.
+      - name: Build package
+        run: bash packaging/build_arch.sh "${{ steps.version.outputs.value }}"
+
+      - name: Move package to workspace root
+        run: mv packaging/*.pkg.tar.zst "bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombercat-arch
+          path: bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst

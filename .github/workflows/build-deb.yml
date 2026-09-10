@@ -1,0 +1,64 @@
+name: Build Debian package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "bombercat.py"
+      - "packaging/**"
+      - "*.spec"
+      - "requirements.txt"
+      - "VERSION"
+      - ".github/workflows/build-*.yml"
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release al que subir el asset (ej: v1.2.0)"
+        required: true
+        default: "v1.2.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .deb
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < VERSION || echo latest)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Toda la receta (montar el árbol, vendorizar dependencias, dpkg-deb)
+      # vive en el script: reproducible en local, no solo en CI.
+      - name: Build package
+        run: bash packaging/build_deb.sh "${{ steps.version.outputs.value }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombercat-deb
+          path: bombercat-${{ steps.version.outputs.value }}.deb
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: bombercat-${{ steps.version.outputs.value }}.deb

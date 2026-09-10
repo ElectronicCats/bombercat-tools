@@ -1,0 +1,88 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "modules/**"
+      - "bombercat.py"
+      - "packaging/**"
+      - "*.spec"
+      - "requirements.txt"
+      - "VERSION"
+      - ".github/workflows/build-*.yml"
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release al que subir el asset (ej: v1.2.0)"
+        required: true
+        default: "v1.2.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .exe
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        shell: bash
+        run: echo "value=$(tr -d '[:space:]' < VERSION || echo latest)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Sin 7-Zip, sin libusb, sin OpenOCD, sin script de drivers: la placa
+      # enumera como CDC estándar y Windows 10/11 la toma con el `usbser`
+      # nativo, sin .inf (§2 del plan de empaquetado).
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pywin32
+
+      - name: Build executable
+        run: pyinstaller bombercat_windows.spec
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Render installer script
+        shell: bash
+        run: |
+          sed "s/@VERSION@/${{ steps.version.outputs.value }}/" \
+            packaging/windows/bombercat_installer.iss \
+            > packaging/windows/bombercat_installer.rendered.iss
+
+      - name: Build installer
+        run: ISCC.exe packaging\windows\bombercat_installer.rendered.iss
+
+      - name: Rename installer
+        shell: bash
+        run: mv dist/BomberCat-Setup.exe "bombercat-${{ steps.version.outputs.value }}.exe"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombercat-windows
+          path: bombercat-${{ steps.version.outputs.value }}.exe
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: bombercat-${{ steps.version.outputs.value }}.exe

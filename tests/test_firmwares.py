@@ -37,6 +37,7 @@ def test_exactly_the_repl_firmwares_are_flagged():
     assert repl == {
         "nfcgate",
         "detecttags",
+        "mifareclassic",
         "detectreaders",
         "magspoof",
         "magspoofcvsattack",
@@ -96,6 +97,23 @@ def test_only_detecttags_claims_the_tags_capability():
     for f in fw.all_firmwares(enrich=False):
         if f.can(fw.CAP_TAGS):
             assert f.id == "detecttags"
+
+
+def test_mifareclassic_claims_the_mifare_capability():
+    mifareclassic = fw.by_id("mifareclassic")
+    assert mifareclassic.can(fw.CAP_MIFARE)
+    assert mifareclassic.has_repl
+
+
+def test_only_mifareclassic_claims_the_mifare_capability():
+    """MifareClassic also emits ':tag', but CAP_TAGS stays detecttags-only
+    (see test_only_detecttags_claims_the_tags_capability) — it gets its own
+    capability instead."""
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_MIFARE):
+            assert f.id == "mifareclassic"
+        if f.id == "mifareclassic":
+            assert not f.can(fw.CAP_TAGS)
 
 
 def test_detectreaders_claims_the_readers_capability():

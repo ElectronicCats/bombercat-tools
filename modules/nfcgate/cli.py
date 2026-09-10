@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# `bombercat config|run|stop|status|monitor` — configure and drive the NFCGate
-# relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6).
+# `bombercat relay config|run|stop|status|monitor` — configure and drive the
+# NFCGate relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6).
 # Distributed as-is; no warranty is given.
 
 import time
-from contextlib import contextmanager
-from typing import Iterator, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import click
 from rich.table import Table
@@ -25,18 +24,14 @@ from ..utils.output import (
 )
 
 
-@contextmanager
-def _device_session(
-    port: Optional[str], device_id: Optional[int] = None
-) -> Iterator[Tuple[str, DeviceLink]]:
-    """Open a verified link for the relay commands, yield ``(target, link)``,
-    and always close it. Thin, nfcgate-flavored wrapper around
-    `detection_cli.device_session` — `resolve_port`/`DeviceLink` are passed
-    in explicitly so tests can still monkeypatch this module's copies."""
-    with device_session(
+def _device_session(port: Optional[str], device_id: Optional[int] = None):
+    """Open a verified link for the relay commands, naming the NFCGate
+    firmware in its error message. `resolve_port`/`DeviceLink` are looked up
+    by name at call time so tests (and modules.capture.cli, which imports
+    this) can monkeypatch this module's copies."""
+    return device_session(
         resolve_port, DeviceLink, "nfcgate", "NFCGate", port, device_id
-    ) as pair:
-        yield pair
+    )
 
 
 def _apply(link: DeviceLink, pairs: List[Tuple[str, str]], save: bool) -> None:
@@ -88,7 +83,7 @@ def _blink(link: DeviceLink, target: str) -> None:
 # ── config group ──────────────────────────────────────────────────────────────
 
 
-@click.group("config", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("config")
 def config():
     """Configure the relay (WiFi + nfcgate parameters), persisted in flash."""
 
@@ -181,7 +176,7 @@ _RUN_POLL_INTERVAL = 0.5  # seconds between `status` polls
 _RUN_MAX_CONSECUTIVE_FAILURES = 6
 
 
-@click.command("run", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("run")
 @target_options
 def run_cmd(port, device_id):
     """Start the relay (associate WiFi, connect the server, begin the session)."""
@@ -197,7 +192,7 @@ def run_cmd(port, device_id):
             raise SystemExit(1)
         if not r.ok:
             print_error(f"relay rejected 'run': {r.message}")
-            print_info("check the configuration with:  bombercat config show")
+            print_info("check the configuration with:  bombercat relay config show")
             raise SystemExit(1)
 
         # Phase 2: poll `status` and report progress until the relay reaches
@@ -235,13 +230,15 @@ def run_cmd(port, device_id):
 
             if state == "relaying":
                 print_success(f"relay started on {target}")
-                print_info("watch it with:  bombercat monitor   /   bombercat status")
+                print_info(
+                    "watch it with:  bombercat relay monitor   /   bombercat status"
+                )
                 return
             if state == "error":
                 print_error(f"relay failed to start: {detail or 'bring-up error'}")
                 print_info(
                     "check WiFi credentials and the nfcgate-server host/port "
-                    "(bombercat config show)"
+                    "(bombercat relay config show)"
                 )
                 raise SystemExit(1)
             time.sleep(_RUN_POLL_INTERVAL)
@@ -253,15 +250,15 @@ def run_cmd(port, device_id):
         print_info(
             f"still '{last_detail or 'connecting'}' after {int(_RUN_BRINGUP_TIMEOUT)}s"
             " — the bring-up is slow or stuck (the device is still responsive).\n"
-            "  • keep watching:  bombercat status   /   bombercat monitor\n"
+            "  • keep watching:  bombercat status   /   bombercat relay monitor\n"
             "  • is the nfcgate-server listening?  (nc -vz <host> <port>)\n"
-            "  • is the PN7150 responding?  watch:  bombercat monitor\n"
-            "  • confirm host/port with:  bombercat config show"
+            "  • is the PN7150 responding?  watch:  bombercat relay monitor\n"
+            "  • confirm host/port with:  bombercat relay config show"
         )
         raise SystemExit(1)
 
 
-@click.command("stop", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("stop")
 @target_options
 def stop_cmd(port, device_id):
     """Stop the relay."""
@@ -273,7 +270,7 @@ def stop_cmd(port, device_id):
     print_success(f"relay stopped on {target}")
 
 
-@click.command("status", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("status")
 @target_options
 def status_cmd(port, device_id):
     """Show live relay status (state, link, peer, relayed count)."""
@@ -296,7 +293,7 @@ def status_cmd(port, device_id):
     console.print(table)
 
 
-@click.command("monitor", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("monitor")
 @target_options
 def monitor_cmd(port, device_id):
     """Stream the device's serial output live (relay logs + APDU hex). Ctrl-C to quit."""
@@ -344,7 +341,7 @@ def monitor_cmd(port, device_id):
 # root keeps hidden compat aliases for one deprecation cycle (§2.4).
 
 
-@click.group("relay", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("relay")
 def relay():
     """NFCGate relay: configure it, run it, and watch the APDU relay.
 

@@ -438,4 +438,4 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
 
 
 def test_tags_group_exposes_all_subcommands():
-    assert set(tags.commands) == {"read", "watch", "scan", "info"}
+    assert set(tags.commands) == {"read", "watch", "scan", "info", "mifare"}

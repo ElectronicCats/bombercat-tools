@@ -20,7 +20,7 @@ from ..utils.output import (
 )
 
 
-@click.group("device", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("device")
 def device():
     """Discover and inspect BomberCat devices over USB-serial."""
 
@@ -74,7 +74,7 @@ def list_cmd(show_all):
     if devices:
         print_info(
             "Target one with:  bombercat <command> -d <ID>   "
-            "(e.g. bombercat config show -d 1)"
+            "(e.g. bombercat relay config show -d 1)"
         )
     if untagged:
         print_warning(
@@ -85,9 +85,7 @@ def list_cmd(show_all):
     if not responders and usb_only:
         print_info(
             "A BomberCat is present by USB id but did not answer the "
-            "handshake — it may be running a firmware without the control "
-            "REPL (only the NFCGate relay answers). See what's flashed with:  "
-            "bombercat status"
+            "handshake — check what's flashed with:  bombercat status"
         )
     elif not responders:
         print_info(

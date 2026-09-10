@@ -182,6 +182,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`relay`](commands/relay.md) | NFCGate relay: configure it, run it, and watch the APDU relay. | `config wifi/nfcgate/show`, `run`, `stop`, `status`, `monitor` |
 | [`capture`](commands/capture.md) | Capture relayed APDUs to pcap (live Wireshark and/or a file). | `capture start`, `capture stop` |
 | [`tags`](commands/tags.md) | NFC tag detection over the DetectTags firmware's PN7150 reader. | `read`, `watch`, `scan`, `info` |
+| [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `restore`, `code`, `write-text` |
 | [`readers`](commands/readers.md) | NFC reader/terminal detection over the DetectReaders firmware. | `read`, `watch`, `scan`, `info` |
 | [`magspoof`](commands/magspoof.md) | Magstripe emulation: play, show, watch, NFC, and multi-card store. | `play`, `show`, `watch`, `info`, `nfc *`, `card *` |
 | [`proto`](commands/proto.md) | Nanopb protobuf sources for the NFCGate relay. | `proto gen` |
@@ -249,6 +250,12 @@ Before this file was split into `docs/commands/*.md`, every command lived here a
 | <a id="tags-watch"></a>`#tags-watch` | [`tags watch`](commands/tags.md#tags-watch) |
 | <a id="tags-scan"></a>`#tags-scan` | [`tags scan`](commands/tags.md#tags-scan) |
 | <a id="tags-info"></a>`#tags-info` | [`tags info`](commands/tags.md#tags-info) |
+| <a id="tags-mifare"></a>`#tags-mifare` | [`tags mifare`](commands/tags.md#tags-mifare) (`auth`/`read`/`write`/`sector`/`keys`) |
+| <a id="tags-mifare-check"></a>`#tags-mifare-check` | [`tags mifare check`](commands/tags.md#tags-mifare-check) |
+| <a id="tags-mifare-dump"></a>`#tags-mifare-dump` | [`tags mifare dump`](commands/tags.md#tags-mifare-dump) |
+| <a id="tags-mifare-restore"></a>`#tags-mifare-restore` | [`tags mifare restore`](commands/tags.md#tags-mifare-restore) |
+| <a id="tags-mifare-code"></a>`#tags-mifare-code` | [`tags mifare code`](commands/tags.md#tags-mifare-code) |
+| <a id="tags-mifare-write-text"></a>`#tags-mifare-write-text` | [`tags mifare write-text`](commands/tags.md#tags-mifare-write-text) |
 | <a id="readers"></a>`#readers` | [`readers`](commands/readers.md) |
 | <a id="readers-read"></a>`#readers-read` | [`readers read`](commands/readers.md#readers-read) |
 | <a id="readers-watch"></a>`#readers-watch` | [`readers watch`](commands/readers.md#readers-watch) |

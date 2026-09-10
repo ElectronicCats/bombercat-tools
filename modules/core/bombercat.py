@@ -293,8 +293,8 @@ def resolve_port(
         p = tagged[0]
         raise DeviceError(
             f"a BomberCat is connected at {p.device} (USB {p.hwid}) but it did "
-            "not answer the handshake — is it running the NFCGate relay "
-            "firmware?"
+            "not answer the handshake — check what's flashed with:  "
+            "bombercat status"
         )
     if len(tagged) > 1:
         raise DeviceError(

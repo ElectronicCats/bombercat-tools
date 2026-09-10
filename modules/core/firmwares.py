@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
+
+from modules.firmware.releases import parse_descriptions as _parse_descriptions
 
 # ── Capabilities vocabulary ──────────────────────────────────────────────────
 # What a firmware lets the host *do*. `status` uses this to suggest the next
@@ -33,6 +35,7 @@ CAP_READERS = (
     "readers"  # NFC reader/terminal detection (`bombercat readers read/watch`)
 )
 CAP_MAGSPOOF = "magspoof"  # magstripe emulation control (`bombercat magspoof …`)
+CAP_MIFARE = "mifare"  # Mifare Classic auth/read/write (`bombercat tags mifare …`)
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,17 @@ _ENTRIES = (
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
         capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_TAGS}),
         banners=("Detect NFC tags with PN7150", "Detect NFC tags"),
+    ),
+    Firmware(
+        id="mifareclassic",
+        display="MifareClassic",
+        uf2="MifareClassic.uf2",
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        # Not CAP_TAGS: it emits ':tag' too, but `tags read/watch` is not this
+        # firmware's point and `test_only_detecttags_claims_the_tags_capability`
+        # keeps that capability exclusive to DetectTags.
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_MIFARE}),
+        banners=("Mifare Classic reader with PN7150/60",),
     ),
     Firmware(
         id="detectreaders",
@@ -190,25 +204,6 @@ def _candidate_description_paths() -> Tuple[Path, ...]:
     return tuple(paths)
 
 
-def _parse_descriptions(payload: bytes) -> Dict[str, str]:
-    """{board: [{filename, description}]} -> {filename.lower(): description}."""
-    try:
-        data = json.loads(payload)
-    except (ValueError, TypeError):
-        return {}
-    if not isinstance(data, dict):
-        # Reachable in practice: this reads user-editable, remote-persisted
-        # cache files, not just malicious JSON (docs/AUDIT_ERROR_HANDLING.md M2).
-        return {}
-    out: Dict[str, str] = {}
-    for entries in data.values():
-        for entry in entries or []:
-            filename = (entry or {}).get("filename")
-            if filename:
-                out[filename.lower()] = entry.get("description", "")
-    return out
-
-
 def load_descriptions() -> Dict[str, str]:
     """First readable descriptions.json wins; {} if none is found."""
     for path in _candidate_description_paths():
@@ -223,15 +218,7 @@ def _enriched(fw: Firmware, descriptions: Dict[str, str]) -> Firmware:
     desc = descriptions.get(fw.uf2.lower())
     if not desc:
         return fw
-    return Firmware(
-        id=fw.id,
-        display=fw.display,
-        uf2=fw.uf2,
-        has_repl=fw.has_repl,
-        capabilities=fw.capabilities,
-        banners=fw.banners,
-        description=desc,
-    )
+    return replace(fw, description=desc)
 
 
 # ── Lookup helpers ───────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ from .firmwares import (
     NONE,
     USB,
     CAP_MAGSPOOF,
+    CAP_MIFARE,
     CAP_MONITOR,
     CAP_PASSTHROUGH,
     CAP_READERS,
@@ -33,12 +34,8 @@ from .firmwares import (
 )
 from ..device.cli import device as _device
 from ..nfcgate.cli import (
-    config as _config,
-    monitor_cmd as _monitor,
     relay as _relay,
-    run_cmd as _run,
     status_cmd as _status,
-    stop_cmd as _stop,
 )
 from ..capture.cli import capture as _capture
 from ..firmware.cli import flash as _flash
@@ -62,9 +59,7 @@ from ..utils.output import (
     print_error,
     print_info,
     print_dim,
-    print_empty_line,
     print_example,
-    print_warning,
 )
 
 import platform
@@ -155,7 +150,7 @@ def cli(ctx, verbose):
         logger.level = logging.INFO
 
 
-@click.command("identify", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("identify")
 @target_options
 def identify_cmd(port, device_id):
     """Blink a device's LED so you can tell which board an ID refers to."""
@@ -223,6 +218,11 @@ def _next_steps(detection):
         steps.append(
             "passthrough firmware: bridge the ESP32 with an external serial tool"
         )
+    elif fw.can(CAP_MIFARE):
+        steps.append("bombercat tags mifare keys     — list the built-in default keys")
+        steps.append(
+            "bombercat tags mifare auth ... — authenticate a sector (tap a card)"
+        )
     elif fw.can(CAP_TAGS):
         steps.append("bombercat tags read       — detect a single NFC tag")
         steps.append("bombercat tags watch      — stream tag detections")
@@ -240,7 +240,7 @@ def _next_steps(detection):
     return steps
 
 
-@click.command("status", context_settings={"help_option_names": ["-h", "--help"]})
+@click.command("status")
 @click.option(
     "--no-sniff", is_flag=True, help="Skip boot-banner sniffing (levels 1 & 3 only)."
 )
@@ -298,62 +298,16 @@ def firmware_status_cmd(no_sniff, port, device_id):
                 "names a firmware this CLI does not know."
             )
 
-    print_empty_line()
+    console.print("")
     print_info("Next:")
     for step in _next_steps(detection):
         print_example(step)
 
 
-# ===================== Deprecated compatibility aliases =====================
-#
-# The relay commands used to live at the root; they now live under `relay`.
-# For one deprecation cycle the old spellings keep working as HIDDEN aliases
-# that forward to the new location and warn once. See GENERALIZE_CLI_PLAN §2.4.
-
-
-def _relay_alias(cmd, new_path):
-    """A hidden root command mirroring `cmd` that warns and forwards to `relay`."""
-
-    @click.command(
-        cmd.name,
-        hidden=True,
-        params=list(cmd.params),
-        context_settings=cmd.context_settings,
-        help=(cmd.help or "") + f"\n\n[deprecated] use `bombercat {new_path}`.",
-    )
-    @click.pass_context
-    def _wrapper(ctx, **kwargs):
-        print_warning(
-            f"`bombercat {cmd.name}` is deprecated — use `bombercat {new_path}`."
-        )
-        return ctx.invoke(cmd.callback, **kwargs)
-
-    return _wrapper
-
-
-def _config_alias():
-    """Hidden `config` group forwarding to `relay config` with a deprecation warning."""
-
-    @click.group(
-        "config",
-        hidden=True,
-        context_settings={"help_option_names": ["-h", "--help"]},
-        help="[deprecated] use `bombercat relay config …`.",
-    )
-    def _alias():
-        print_warning(
-            "`bombercat config …` is deprecated — use `bombercat relay config …`."
-        )
-
-    for name, sub in _config.commands.items():
-        _alias.add_command(sub, name)
-    return _alias
-
-
 # ===================== Shell Completion Commands =====================
 
 
-@click.group(context_settings={"help_option_names": ["-h", "--help"]})
+@click.group()
 def completion():
     """Install shell tab completion for bombercat."""
     pass
@@ -584,7 +538,7 @@ def completion_install(shell):
         else:
             print_dim("~/.zfunc already in fpath — skipping .zshrc edit")
 
-    print_empty_line()
+    console.print("")
     if shell == "bash":
         print_info("Restart your shell or run:")
         print_example(f"source {target}")
@@ -611,13 +565,6 @@ def main_cli() -> None:
     cli.add_command(_tags)
     cli.add_command(_readers)
     cli.add_command(_magspoof)
-
-    # Deprecated compatibility aliases (hidden): old root spellings still work
-    # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).
-    cli.add_command(_config_alias())
-    cli.add_command(_relay_alias(_run, "relay run"))
-    cli.add_command(_relay_alias(_stop, "relay stop"))
-    cli.add_command(_relay_alias(_monitor, "relay monitor"))
 
     # Dev tooling under tools/
     cli.add_command(_proto)

@@ -249,46 +249,43 @@ def wireshark_installed(monkeypatch, tmp_path):
     return exe
 
 
-def test_launcher_reads_the_fifo_as_a_live_interface(wireshark_installed):
-    cmd = Wireshark("/tmp/fbombercat").get_wireshark_cmd()
-    assert cmd == [str(wireshark_installed), "-k", "-i", "/tmp/fbombercat"]
-
-
-def test_launcher_passes_a_configuration_profile(wireshark_installed):
-    cmd = Wireshark("/tmp/fbombercat", profile="nfc").get_wireshark_cmd()
-    assert cmd[-2:] == ["-C", "nfc"]
-
-
 def test_launcher_defaults_to_the_platform_pipe_path(monkeypatch, wireshark_installed):
     monkeypatch.setattr(pipes.platform, "system", lambda: "Linux")
-    assert Wireshark().get_wireshark_pipepath() == pipes.DEFAULT_UNIX_PATH
+    assert Wireshark().pipe_name == pipes.DEFAULT_UNIX_PATH
 
 
-def test_launcher_has_no_command_without_wireshark(monkeypatch):
+def test_launcher_reports_missing_wireshark(monkeypatch):
     monkeypatch.setattr(pipes, "find_wireshark_path", lambda: None)
-    assert Wireshark("/tmp/fbombercat").get_wireshark_cmd() is None
+    ws = Wireshark("/tmp/fbombercat")
+    ws.start()
+
+    assert ws.wireshark_process is None
+    assert ws.spawn_error == "executable not found"
 
 
-def test_launcher_starts_the_process_and_waits_for_it(monkeypatch, wireshark_installed):
+def test_launcher_starts_the_process(monkeypatch, wireshark_installed):
     started = {}
 
     class _Proc:
         def __init__(self, cmd):
             started["cmd"] = cmd
-            self.waited = False
-
-        def wait(self):
-            self.waited = True
 
         def poll(self):
-            return 0 if self.waited else None
+            return None
 
     monkeypatch.setattr(subprocess, "Popen", _Proc)
-    ws = Wireshark("/tmp/fbombercat")
-    ws.run()
+    ws = Wireshark("/tmp/fbombercat", profile="nfc")
+    ws.start()
 
-    assert started["cmd"][-1] == "/tmp/fbombercat"
-    assert ws.wireshark_process.waited
+    assert started["cmd"] == [
+        str(wireshark_installed),
+        "-k",
+        "-i",
+        "/tmp/fbombercat",
+        "-C",
+        "nfc",
+    ]
+    assert ws.wireshark_process is not None
 
 
 def test_launcher_survives_a_process_that_will_not_start(
@@ -300,7 +297,7 @@ def test_launcher_survives_a_process_that_will_not_start(
         lambda *a, **k: (_ for _ in ()).throw(PermissionError("denied")),
     )
     ws = Wireshark("/tmp/fbombercat")
-    ws.run()  # logged, not raised: the capture continues to its file
+    ws.start()  # logged, not raised: the capture continues to its file
 
     assert ws.wireshark_process is None
 

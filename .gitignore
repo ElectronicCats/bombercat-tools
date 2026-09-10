@@ -33,3 +33,10 @@ htmlcov/
 # host codec test binary
 testserver/codec_hosttest/hosttest
 .venv-smoke/
+
+# Mifare key files and card dumps
+MK1Keys*.txt
+MK1*.json
+*.mfd
+*.eml
+*.dump

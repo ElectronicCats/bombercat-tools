@@ -101,7 +101,7 @@ def _watch_wireshark(
 # ── capture group ─────────────────────────────────────────────────────────────
 
 
-@click.group("capture", context_settings={"help_option_names": ["-h", "--help"]})
+@click.group("capture")
 def capture():
     """Capture relayed APDUs to pcap (live Wireshark and/or a file)."""
 
@@ -144,7 +144,7 @@ def capture_start(output, wireshark, profile, force, strict, port, device_id):
         bombercat capture start -ws -o emv.pcap     # live Wireshark + file
         bombercat capture start -o emv.pcap         # file only
 
-    Run the relay (`bombercat run`) and tap a terminal on the card so APDUs
+    Run the relay (`bombercat relay run`) and tap a terminal on the card so APDUs
     flow; each command/response pair appears as an ISO 14443 frame. Capture the
     reader side for the pre-mutation APDU, the card side for the post-mutation
     one.

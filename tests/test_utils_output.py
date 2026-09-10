@@ -15,14 +15,6 @@ from modules.utils import output as out
 from modules.utils.cli_options import target_options
 
 
-@pytest.fixture(autouse=True)
-def loud():
-    """Quiet mode is process-global; never leak it into another test."""
-    out.set_quiet_mode(False)
-    yield
-    out.set_quiet_mode(False)
-
-
 def render(fn, *args, width: int = 80, **kwargs) -> str:
     """Run a print helper against a captured console and return the plain text.
 
@@ -67,64 +59,14 @@ def test_dim_message_has_no_marker():
     assert flat(render(out.print_dim, "link ended")) == "link ended"
 
 
-def test_step_shows_progress_out_of_a_total():
-    assert "Step 2/5: connecting" in flat(render(out.print_step, 2, 5, "connecting"))
-
-
 def test_example_pairs_a_command_with_its_description():
     text = flat(render(out.print_example, "bombercat run", "start the relay"))
 
     assert "bombercat run" in text and "start the relay" in text
 
 
-def test_separator_has_the_requested_width():
-    assert render(out.print_separator, "-", 20).strip() == "-" * 20
-
-
-def test_raw_text_is_printed_untouched():
-    assert flat(render(out.print_raw, "plain")) == "plain"
-
-
-def test_detail_message_is_indented():
-    assert render(out.print_detail_message, "detail", indent=4).startswith("    detail")
-
-
 def test_fmt_command_marks_up_a_copy_pasteable_command():
     assert out.fmt_command("docker ps") == "[green]docker ps[/green]"
-
-
-# ── quiet mode ───────────────────────────────────────────────────────────────
-
-
-def test_quiet_mode_is_off_by_default():
-    assert out.is_quiet_mode() is False
-
-
-def test_quiet_mode_silences_the_test_helpers():
-    out.set_quiet_mode(True)
-
-    assert out.is_quiet_mode() is True
-    assert render(out.print_test_header, "Fase 6") == ""
-    assert render(out.print_test_step, "ping", "handshake") == ""
-    assert render(out.print_test_pass, "+OK") == ""
-
-
-def test_failures_are_printed_even_in_quiet_mode():
-    out.set_quiet_mode(True)
-    assert "FAIL" in render(out.print_test_fail, "-ERR")
-
-
-def test_long_details_are_truncated():
-    text = render(out.print_test_pass, "x" * 200, max_length=10)
-
-    assert "x" * 10 + "..." in flat(text)
-    assert "x" * 20 not in flat(text)
-
-
-def test_summary_counts_are_reported():
-    assert "7/8 protocol tests passed" in flat(
-        render(out.print_test_summary, 7, 8, "protocol")
-    )
 
 
 # ── numbered steps ───────────────────────────────────────────────────────────

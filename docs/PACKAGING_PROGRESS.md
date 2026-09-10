@@ -6,17 +6,17 @@ Bitácora del trabajo de empaquetado multiplataforma (`.deb`, `.pkg.tar.zst`,
 entrada para retomar el trabajo**: qué está hecho, qué falta y por qué se
 decidió lo que se decidió.
 
-**Estado global: Fases 0 (análisis) y 1 (configuración base) completas.**
-Siguiente: Fase 3 parcial (`packaging/build_deb.sh`) para validar el `.deb`
-en Docker antes de escribir ningún workflow.
+**Estado global: Fases 0, 1, 2 y 3 completas.**
+Siguiente: Fase 4 — validar `.pkg` (macOS) y `.exe` (Windows) en CI real
+(sin hardware de esas plataformas en este entorno), y Fase 5 (documentación).
 
 | Fase | Estado | Notas |
 |---|---|---|
 | 0. Análisis de CatSniffer-Tools | ✅ Completa | 2026-09-10 |
 | 1. Configuración base | ✅ Completa | 2026-09-10 · F1.1–F1.7 |
-| 2. Workflows CI | ⬜ Pendiente | Depende de F1 |
-| 3. Scripts locales | 🔜 Siguiente | Empezar por `build_deb.sh` (valida el patrón entero) |
-| 4. Testing y validación | ⬜ Pendiente | |
+| 2. Workflows CI | ✅ Completa | 2026-09-10 · los 4 `build-*.yml` ya invocan los scripts de la Fase 3 |
+| 3. Scripts locales | ✅ Completa | 2026-09-10 · `.deb`/`.pkg.tar.zst` validados en Docker; `.pkg`/`.exe` sin validar (sin macOS/Windows aquí) |
+| 4. Testing y validación | 🔜 Parcial | Debian/Arch verificados extremo a extremo; falta macOS/Windows |
 | 5. Documentación y release | ⬜ Pendiente | |
 
 ---
@@ -234,3 +234,71 @@ Wheel verificado: entra `bombercat.py`, `modules/**` y el `.keys`; **no** entran
 4. Specs de PyInstaller + `build_mac.sh` / `build_windows.bat` y sus workflows;
    validación por artefactos de `workflow_dispatch` sobre una rama de prueba.
 5. Fase 5: `docs/packaging.md`, `docs/release.md`, sección Install del README.
+
+---
+
+## Sesión 2026-09-10 (3) — Fase 3: scripts locales
+
+Al retomar la sesión, los 4 workflows de la Fase 2 (`build-deb.yml`,
+`build-arch.yml`, `build-mac.yml`, `build-windows.yml`) ya estaban commiteados
+(`8a04461`, `90c55d9`) e invocan scripts que todavía no existían — esta
+bitácora no se había actualizado tras esa sesión. Se escribieron los scripts
+que faltaban y se validaron dos de los cuatro artefactos de punta a punta.
+
+### Archivos creados
+
+| Archivo | Rol |
+|---|---|
+| `packaging/build_deb.sh` | Receta completa del `.deb` (monta el árbol, vendoriza, `dpkg-deb --build`) |
+| `packaging/build_arch.sh` | Equivalente para `makepkg`: detecta la versión de Python, genera el `PKGBUILD`, crea el usuario `builder` |
+| `build_mac.sh` | PyInstaller `--onedir` + `pkgbuild`, sin `.spec` (flags directos, como pide el plan) |
+| `bombercat_windows.spec` | Faltaba — lo referencia `build-windows.yml` desde que se escribió, y no existía. `--onedir`, `hiddenimports` de pywin32 |
+| `build_windows.bat` | Espejo local del workflow; construye el `.exe` con Inno Setup solo si `ISCC.exe` está en el PATH |
+| `Makefile` | Targets `help`/`deb`/`arch`/`mac`/`install`/`uninstall`/`version`/`clean` |
+
+### Bug encontrado y arreglado: `preflight.py` no compilaba en Python 3.11
+
+Al validar el `.deb` en `docker run debian:12` (que trae Python 3.11, no 3.12),
+`bombercat --help` reventaba con
+`SyntaxError: f-string expression part cannot include a backslash` en
+`modules/testserver/preflight.py:246`. Es sintaxis de f-strings de PEP 701
+(Python 3.12, PEP 701) usada sin querer — `grep`/`compileall` bajo
+`python:3.11-slim` confirmó que era la **única** ocurrencia en todo el repo.
+Arreglado extrayendo el string a una variable (`docker_group_cmd`) antes del
+f-string, sin cambiar el mensaje mostrado al usuario. `pytest` sigue en verde
+(818 pasando) y `compileall` bajo 3.11 ya no falla.
+
+Esto importa porque Debian 12 (bookworm, estable) trae Python 3.11, y es
+justo la distro que el plan usa en la tabla de la Fase 4 — sin este fix el
+`.deb` se instalaba pero el binario no arrancaba en ningún Debian estable
+actual. `setup.py` sigue declarando `python_requires=">=3.12"` (afecta solo a
+`pip install .`, no al `.deb`, que vendoriza); no se tocó a propósito, es una
+decisión de política aparte.
+
+### Validado en Docker (extremo a extremo)
+
+- **`.deb`**: `dpkg-deb -I` / `-c` limpios (sin `tests/`, `.venv*`,
+  `__pycache__`, `MK1Keys*`); instalado con `apt install` en `debian:12`;
+  `bombercat --help`, `bombercat flash --help` y
+  `bombercat tags mifare keys` (default keys empaquetadas) funcionan;
+  `proto`/`testserver` ocultos por defecto y visibles con `BOMBERCAT_DEV=1`.
+- **`.pkg.tar.zst`**: `packaging/build_arch.sh` corrido dentro de
+  `archlinux:latest` (mismas dependencias que instala `build-arch.yml`);
+  `makepkg` como usuario `builder` sin privilegios; instalado con
+  `pacman -U` en un contenedor limpio; mismos smokes en verde.
+- **`.pkg` (macOS) y `.exe` (Windows)**: **sin validar** — no hay macOS ni
+  Windows en este entorno. `build_mac.sh` y `build_windows.bat` pasan
+  `bash -n` / se revisaron a mano contra sus workflows, pero necesitan
+  correrse de verdad (o vía `workflow_dispatch` en una rama de prueba) antes
+  de darlos por buenos.
+
+### Próximos pasos
+
+1. **Fase 4** — correr `build-mac.yml` y `build-windows.yml` vía
+   `workflow_dispatch` sobre una rama de prueba y revisar los artefactos
+   (no hay forma de validarlos en local aquí).
+2. Añadir el job `verify-install` (Fase 4) a `build-deb.yml`/`build-arch.yml`
+   que consuma el artefacto del build con `actions/download-artifact@v4` y
+   repita los smokes de esta sesión dentro del propio workflow.
+3. **Fase 5** — `docs/packaging.md`, `docs/release.md`, sección Install del
+   README, y un release de prueba (`v1.2.0.1`) end-to-end.

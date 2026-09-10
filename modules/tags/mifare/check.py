@@ -47,7 +47,6 @@ from .common import (
     _MIFARE_HEX_RE,
     _MIFARE_KEY_HEX_LEN,
     _MIFARE_TRAILER_AC_LEN,
-    _MIFARE_TRAILER_KEY_LEN,
     _sector_first_block,
 )
 from .session import (
@@ -90,11 +89,11 @@ def _write_sector_keyfile(
 # the 4th block, laid out key A (bytes 0-5) | access+GPB (6-9) | key B (10-15).
 _TRAILER_HEX_START = 3 * _MIFARE_BLOCK_HEX_LEN
 _TRAILER_AC_HEX = slice(
-    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN,
-    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN + 6,
+    _TRAILER_HEX_START + _MIFARE_KEY_HEX_LEN,
+    _TRAILER_HEX_START + _MIFARE_KEY_HEX_LEN + 6,
 )
 _TRAILER_KEYB_HEX = slice(
-    _TRAILER_HEX_START + _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN,
+    _TRAILER_HEX_START + _MIFARE_KEY_HEX_LEN + _MIFARE_TRAILER_AC_LEN,
     _TRAILER_HEX_START + _MIFARE_BLOCK_HEX_LEN,
 )
 

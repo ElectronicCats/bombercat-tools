@@ -18,7 +18,6 @@ _MIFARE_BLOCK_HEX_LEN = 32  # 16-byte block, hex-encoded
 _MIFARE_HEX_RE = re.compile(r"^[0-9A-Fa-f]+$")
 
 
-_MIFARE_TRAILER_KEY_LEN = 12  # 6-byte key, hex-encoded
 _MIFARE_TRAILER_AC_LEN = 8  # 4-byte access conditions, hex-encoded
 
 

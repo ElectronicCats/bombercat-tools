@@ -41,7 +41,6 @@ from .common import (
     _MIFARE_KEY_HEX_LEN,
     _MIFARE_TRAILER_AC_LEN,
     _MIFARE_TRAILER_BLOCK_INDEX,
-    _MIFARE_TRAILER_KEY_LEN,
     _mifare_validate_hex,
     _sector_first_block,
 )
@@ -51,7 +50,7 @@ from .session import _mifare_session, _MIFARE_TIMEOUT_OPTION, _auth_sector
 _MIFARE_ZERO_KEY = "0" * _MIFARE_KEY_HEX_LEN
 # The 3 access-condition bytes (C1/C2/C3) sit right after key A in a trailer
 # block: hex chars 12-17 (byte 9, the GPB, is not an access condition).
-_MIFARE_TRAILER_AC_COND = slice(_MIFARE_TRAILER_KEY_LEN, _MIFARE_TRAILER_KEY_LEN + 6)
+_MIFARE_TRAILER_AC_COND = slice(_MIFARE_KEY_HEX_LEN, _MIFARE_KEY_HEX_LEN + 6)
 
 _RESTORE_BLOCK0_WARNING = (
     "Writing block 0 rewrites the card's UID/BCC/SAK/ATQA — its identity. Only "
@@ -107,7 +106,7 @@ def _restore_sector_keys(blocks: List[str]) -> Tuple[Optional[str], Optional[str
     rather than attempted as a real key."""
     trailer = blocks[_MIFARE_TRAILER_BLOCK_INDEX]
     key_a = trailer[:_MIFARE_KEY_HEX_LEN]
-    key_b = trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    key_b = trailer[_MIFARE_KEY_HEX_LEN + _MIFARE_TRAILER_AC_LEN :]
     return (
         key_a if key_a.upper() != _MIFARE_ZERO_KEY else None,
         key_b if key_b.upper() != _MIFARE_ZERO_KEY else None,

@@ -18,8 +18,8 @@ from .block0 import Block0, parse_block0
 from .common import (
     _MIFARE_BLOCK_HEX_LEN,
     _MIFARE_DATA_BLOCK_INDICES,
+    _MIFARE_KEY_HEX_LEN,
     _MIFARE_TRAILER_AC_LEN,
-    _MIFARE_TRAILER_KEY_LEN,
     _sector_first_block,
 )
 
@@ -31,11 +31,9 @@ def _substitute_trailer_keys(
     keys from a keyfile in place of the zeros a card reads back for them. A
     card never reads Key A back (and often not Key B either); the
     access-conditions bytes in the middle always stay exactly as read."""
-    shown_a = key_a or trailer[:_MIFARE_TRAILER_KEY_LEN]
-    ac = trailer[
-        _MIFARE_TRAILER_KEY_LEN : _MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN
-    ]
-    shown_b = key_b or trailer[_MIFARE_TRAILER_KEY_LEN + _MIFARE_TRAILER_AC_LEN :]
+    shown_a = key_a or trailer[:_MIFARE_KEY_HEX_LEN]
+    ac = trailer[_MIFARE_KEY_HEX_LEN : _MIFARE_KEY_HEX_LEN + _MIFARE_TRAILER_AC_LEN]
+    shown_b = key_b or trailer[_MIFARE_KEY_HEX_LEN + _MIFARE_TRAILER_AC_LEN :]
     return shown_a, ac, shown_b
 
 

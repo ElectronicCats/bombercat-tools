@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_cli_status.py — `bombercat status` (modules/core/cli.py), the new
-# firmware-reporting status, plus the hidden deprecation aliases that forward
-# the old root spellings to `relay …`. docs/GENERALIZE_CLI_PLAN.md §2.3–2.4, §5.2.
+# test_cli_status.py — `bombercat status` (modules/core/cli.py), the
+# firmware-reporting status command. docs/GENERALIZE_CLI_PLAN.md §2.3, §5.2.
 
 import pytest
 
-from conftest import DeviceError, FakeLink, flat, ok
+from conftest import DeviceError, flat
 from modules.core import cli as root
 from modules.core import firmwares as fw
 from modules.core.cli import firmware_status_cmd
@@ -156,37 +155,3 @@ def test_status_passes_no_sniff_through_to_detection(runner, monkeypatch):
     runner.invoke(firmware_status_cmd, ["--no-sniff"])
 
     assert seen["sniff"] is False
-
-
-# ── deprecation aliases ──────────────────────────────────────────────────────
-
-
-def test_run_alias_forwards_and_warns(runner, use_link, monkeypatch):
-    # The alias reuses the real `run` callback, which reaches hardware through
-    # the nfcgate module; patch there (and don't wait on the status poll).
-    from modules.nfcgate import cli as nfc
-
-    use_link(nfc, FakeLink({"run": ok("accepted"), "status": ok(state="relaying")}))
-    monkeypatch.setattr(nfc.time, "sleep", lambda _s: None)
-
-    alias = root._relay_alias(root._run, "relay run")
-    result = runner.invoke(alias, [])
-    out = flat(result.output)
-
-    assert result.exit_code == 0
-    assert "deprecated" in out and "bombercat relay run" in out
-    assert "relay started" in out
-
-
-def test_config_alias_group_warns_and_keeps_subcommands(runner, use_link):
-    from modules.nfcgate import cli as nfc
-
-    use_link(nfc, FakeLink())
-    alias = root._config_alias()
-    assert set(alias.commands) == {"wifi", "nfcgate", "show"}
-
-    result = runner.invoke(alias, ["wifi", "--ssid", "HomeNet"])
-    out = flat(result.output)
-    assert result.exit_code == 0
-    assert "deprecated" in out and "relay config" in out
-    assert "saved to flash" in out

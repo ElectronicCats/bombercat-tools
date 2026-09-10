@@ -275,7 +275,7 @@ def test_run_reports_a_rejected_request(runner, use_link):
 
     assert result.exit_code == 1
     assert "relay rejected 'run': no ssid configured" in out
-    assert "bombercat config show" in out
+    assert "bombercat relay config show" in out
 
 
 def test_run_reports_a_link_error_on_the_request(runner, use_link):

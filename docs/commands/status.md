@@ -63,6 +63,7 @@ bombercat status -d 2
 |---|---|---|
 | **NFCGate** | ✅ handshake | relay, config, monitor, identify, capture |
 | DetectTags | ✅ handshake | monitor, identify, tags ([`tags read`/`watch`/`scan`/`info`](../commands/tags.md)) |
+| MifareClassic | ✅ handshake | monitor, identify, mifare ([`tags mifare auth`/`read`/`write`/`sector`/`keys`/`check`/`dump`/`restore`/`code`/`write-text`](../commands/tags.md#tags-mifare)) |
 | DetectReaders | ✅ handshake | monitor, identify, readers ([`readers read`/`watch`/`scan`/`info`](../commands/readers.md)) |
 | magspoof | ✅ handshake | monitor, identify, magspoof ([`magspoof play`/`show`/`watch`/`info`/`nfc`/`card`](../commands/magspoof.md)) |
 | MagspoofCVSAttack | ✅ handshake | monitor, identify |

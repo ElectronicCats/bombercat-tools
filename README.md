@@ -16,7 +16,8 @@ A `click`/`rich` command-line tool for BomberCat firmwares. It talks to a
 BomberCat over **USB-serial** to configure it, start/stop the NFCGate relay,
 watch it live, capture the relayed APDUs to Wireshark; on the
 **DetectTags** firmware — read NFC tags directly with the board's PN7150; on
-**DetectReaders** — detect the readers/terminals that probe it; and on
+**MifareClassic** — authenticate, read, write, dump and restore Mifare Classic
+cards; on **DetectReaders** — detect the readers/terminals that probe it; and on
 **magspoof** — control magstripe emulation: play/inspect the active card,
 manage a flash-resident multi-card store, and emulate/read EMV cards over NFC.
 
@@ -86,6 +87,19 @@ bombercat tags scan -t 20             # sample for 20s, aggregated summary
 
 See [Detecting NFC tags](docs/commands/tags.md).
 
+Working with Mifare Classic cards? `bombercat flash MifareClassic` — authenticate,
+read/write blocks, and dump or restore a whole card:
+
+```sh
+bombercat tags mifare keys                                       # list built-in default keys
+bombercat tags mifare check -o card.keys                         # recover each sector's keys to a keyfile
+bombercat tags mifare dump --keys-file card.keys --out card.json # read the whole card to file
+bombercat tags mifare restore --dump card.json                   # write a dump back (magic card)
+```
+
+See [`tags mifare`](docs/commands/tags.md#tags-mifare). Reading/writing another
+party's cards is **for authorized security testing only**.
+
 Or flip it around: `bombercat flash DetectReaders` and detect the
 readers/terminals that probe the board's emulated card — no server, no
 second board:
@@ -127,7 +141,7 @@ one by its ID with `-d/--device`. See the
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`, `mifare *`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags`/`readers` workflows on DetectTags/DetectReaders. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/commands/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |

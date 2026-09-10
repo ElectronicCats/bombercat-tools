@@ -34,7 +34,6 @@ from ...utils.output import (
     make_tracer,
     print_error,
     print_info,
-    print_title,
     print_warning,
 )
 from .block0 import parse_block0
@@ -328,7 +327,7 @@ def mifare_dump_cmd(
         print_warning("dump incomplete — interrupted before finishing")
 
     if decode and sector_results:
-        print_title("Decoded sectors")
+        console.print("\n[cyan bold]Decoded sectors[/cyan bold]")
         for entry in sector_results:
             _print_decoded_sector(entry)
 

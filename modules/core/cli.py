@@ -59,7 +59,6 @@ from ..utils.output import (
     print_error,
     print_info,
     print_dim,
-    print_empty_line,
     print_example,
 )
 
@@ -299,7 +298,7 @@ def firmware_status_cmd(no_sniff, port, device_id):
                 "names a firmware this CLI does not know."
             )
 
-    print_empty_line()
+    console.print("")
     print_info("Next:")
     for step in _next_steps(detection):
         print_example(step)
@@ -539,7 +538,7 @@ def completion_install(shell):
         else:
             print_dim("~/.zfunc already in fpath — skipping .zshrc edit")
 
-    print_empty_line()
+    console.print("")
     if shell == "bash":
         print_info("Restart your shell or run:")
         print_example(f"source {target}")

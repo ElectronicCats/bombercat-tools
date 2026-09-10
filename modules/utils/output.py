@@ -101,14 +101,6 @@ def print_dim(message: str) -> None:
     safe_print(f"  {message}", style=STYLES["dim"])
 
 
-def print_empty_line() -> None:
-    console.print("")
-
-
-def print_title(message: str) -> None:
-    console.print(f"\n[cyan bold]{message}[/cyan bold]")
-
-
 def print_subtitle(message: str) -> None:
     console.print(f"\n  [yellow]{message}[/yellow]")
 

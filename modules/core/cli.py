@@ -135,6 +135,7 @@ def print_header(module=None):
 
 
 @click.group("bombercat", context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(version=VERSION_NUMBER, prog_name="bombercat")
 @click.option(
     "-v",
     "--verbose",

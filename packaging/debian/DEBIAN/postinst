@@ -1,0 +1,22 @@
+#!/bin/sh
+# BomberCat post-install: make the serial port and the BOOTSEL volume reachable
+# without root. Never fails the installation — a missing groupadd or udevadm is
+# an inconvenience, not a reason to leave the package half-configured.
+set -e
+
+for group in dialout plugdev; do
+    if ! getent group "$group" >/dev/null 2>&1; then
+        groupadd "$group" >/dev/null 2>&1 || true
+    fi
+done
+
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=tty --subsystem-match=block >/dev/null 2>&1 || true
+fi
+
+echo "bombercat installed. Add yourself to the 'dialout' and 'plugdev' groups"
+echo "if you are not already a member, then log out and back in:"
+echo "    sudo usermod -aG dialout,plugdev \$USER"
+
+exit 0

@@ -549,6 +549,21 @@ def completion_install(shell):
         print_info("Completion is active immediately in new fish sessions.")
 
 
+# ===================== Dev tooling gate =====================
+#
+# `proto` and `testserver` are wrappers around files that only exist in a
+# source checkout (gen_proto.sh, testserver/, firmware/). A packaged install
+# (.deb, .pkg, .exe) ships none of them, so registering the commands there
+# would only advertise two ways to fail. Set BOMBERCAT_DEV=1 to force them on.
+
+
+def _dev_checkout() -> bool:
+    """True when the CLI runs from a source checkout, where dev tools exist."""
+    if os.environ.get("BOMBERCAT_DEV"):
+        return True
+    return (Path(__file__).resolve().parents[2] / "gen_proto.sh").exists()
+
+
 def main_cli() -> None:
     if not os.environ.get("_BOMBERCAT_COMPLETE"):
         module = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
@@ -566,9 +581,10 @@ def main_cli() -> None:
     cli.add_command(_readers)
     cli.add_command(_magspoof)
 
-    # Dev tooling under tools/
-    cli.add_command(_proto)
-    cli.add_command(_testserver)
+    # Dev tooling under tools/ — only where the checkout it drives is present.
+    if _dev_checkout():
+        cli.add_command(_proto)
+        cli.add_command(_testserver)
 
     if platform.system() in ["Linux", "Darwin"]:
         cli.add_command(completion)

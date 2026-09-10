@@ -1,0 +1,13 @@
+Package: bombercat
+Version: @VERSION@
+Section: utils
+Priority: optional
+Architecture: all
+Maintainer: Electronic Cats <support@electroniccats.com>
+Depends: python3
+Suggests: wireshark, docker.io
+Homepage: https://github.com/ElectronicCats/bombercat-tools
+Description: BomberCat CLI — NFC relay, tag/reader detection and magspoof
+ Command line tools for the BomberCat board: NFCGate relay control, APDU
+ capture to pcap, Mifare Classic operations, NFC tag and reader detection,
+ magstripe emulation and UF2 firmware flashing.

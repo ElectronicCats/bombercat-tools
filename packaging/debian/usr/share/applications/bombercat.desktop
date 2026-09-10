@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=BomberCat
+GenericName=BomberCat CLI
+Comment=NFC relay, tag/reader detection, magspoof and UF2 flashing for the BomberCat board
+Exec=bombercat
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;
+Keywords=nfc;rfid;bombercat;magspoof;relay;

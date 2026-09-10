@@ -1,11 +1,11 @@
+# Runtime dependencies of the bombercat CLI.
+# Pure Python: nothing here needs a compiler or a system library, which is what
+# keeps the .deb/.pkg/.exe recipes simple. Dev-only tools live in
+# requirements-dev.txt so `pip install --target …/vendor` never ships them.
 click==8.4.2
 markdown-it-py==4.2.0
 mdurl==0.1.2
 Pygments==2.20.0
 pyserial==3.5
 rich==15.0.0
-python-magic>=0.4.27; sys_platform != "win32"
-python-magic-bin>=0.4.14; sys_platform == "win32"
 pywin32>=311; sys_platform == "win32"
-pytest>=9.1.1;
-pytest-cov>=7.1.0;

@@ -87,6 +87,34 @@ def test_every_command_is_registered(monkeypatch, name):
     assert name in cli.commands
 
 
+def test_dev_commands_are_hidden_outside_a_checkout(monkeypatch):
+    """A packaged install has no gen_proto.sh / testserver/ to drive."""
+    monkeypatch.setattr(root, "_dev_checkout", lambda: False)
+    monkeypatch.delitem(cli.commands, "proto", raising=False)
+    monkeypatch.delitem(cli.commands, "testserver", raising=False)
+    monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
+    with pytest.raises(SystemExit):
+        main_cli()
+
+    assert "proto" not in cli.commands
+    assert "testserver" not in cli.commands
+
+
+def test_dev_checkout_follows_gen_proto_sh(monkeypatch, tmp_path):
+    monkeypatch.delenv("BOMBERCAT_DEV", raising=False)
+    monkeypatch.setattr(root, "__file__", str(tmp_path / "modules/core/cli.py"))
+    assert root._dev_checkout() is False
+
+    (tmp_path / "gen_proto.sh").write_text("#!/bin/bash\n")
+    assert root._dev_checkout() is True
+
+
+def test_dev_checkout_can_be_forced_by_the_env_var(monkeypatch, tmp_path):
+    monkeypatch.setattr(root, "__file__", str(tmp_path / "modules/core/cli.py"))
+    monkeypatch.setenv("BOMBERCAT_DEV", "1")
+    assert root._dev_checkout() is True
+
+
 def test_relay_group_holds_the_nfcgate_subcommands(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
     with pytest.raises(SystemExit):

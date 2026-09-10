@@ -317,9 +317,8 @@ class WindowsPipe:
             show_generic_error("Writing Pipeline", e)
 
 
-class Wireshark(threading.Thread):
+class Wireshark:
     def __init__(self, pipe_name=None, profile=None):
-        super().__init__(daemon=True)
         self.system = platform.system()
         if pipe_name is None:
             self.pipe_name = (
@@ -329,15 +328,11 @@ class Wireshark(threading.Thread):
             self.pipe_name = pipe_name
         self.profile = profile
         self.wireshark_process: subprocess.Popen | None = None
-        # Set by run() when the launch itself fails (binary vanished after the
+        # Set by start() when the launch itself fails (binary vanished after the
         # caller's find_wireshark_path() check, exec failure, ...), so a caller
         # blocked waiting on the FIFO can report the real cause instead of a
         # generic "did not attach in time" timeout.
         self.spawn_error: str | None = None
-
-    def get_wireshark_path(self):
-        """The Wireshark executable (Path), or None when it is not installed."""
-        return find_wireshark_path()
 
     def has_exited(self) -> bool:
         """True once Wireshark was launched AND has quit. A FIFO write end only
@@ -346,28 +341,17 @@ class Wireshark(threading.Thread):
         proc = self.wireshark_process
         return proc is not None and proc.poll() is not None
 
-    def get_wireshark_pipepath(self):
-        return self.pipe_name
-
-    def get_wireshark_cmd(self):
-        exe_path = self.get_wireshark_path()
+    def start(self):
+        exe_path = find_wireshark_path()
         if exe_path is None:
-            return None
-        cmd = [str(exe_path), "-k", "-i", self.get_wireshark_pipepath()]
-        if self.profile:
-            cmd += ["-C", self.profile]
-        return cmd
-
-    def run(self):
-        cmd = self.get_wireshark_cmd()
-        if cmd is None:
             self.spawn_error = "executable not found"
             show_generic_error("Can't start Wireshark", self.spawn_error)
             return
+        cmd = [str(exe_path), "-k", "-i", self.pipe_name]
+        if self.profile:
+            cmd += ["-C", self.profile]
         try:
             self.wireshark_process = subprocess.Popen(cmd)
-            # Wait for the process to finish, otherwise the thread exits immediately
-            self.wireshark_process.wait()
         except Exception as e:
             self.spawn_error = str(e)
             show_generic_error("Can't start Wireshark", e)

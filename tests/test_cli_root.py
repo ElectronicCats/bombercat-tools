@@ -158,6 +158,13 @@ def test_help_is_available_as_both_h_and_help(runner):
         assert "All in one bombercat tools environment" in flat(result.output)
 
 
+def test_version_flag_reports_the_package_version(runner):
+    result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    assert f"bombercat, version {__version__}" in flat(result.output)
+
+
 def test_verbose_flag_raises_the_log_level(runner, monkeypatch):
     import logging
 

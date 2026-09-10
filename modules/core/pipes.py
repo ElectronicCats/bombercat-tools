@@ -44,10 +44,6 @@ if platform.system().lower() == "windows":
         logger.debug("pywin32 not installed; WindowsPipe unavailable until it is.")
 
 
-def show_generic_error(title: str = "", e: object = "") -> None:
-    logger.error(f"{title}: {e}")
-
-
 # Where Wireshark usually lands, per OS. An ordered candidate list (the same
 # idea as catnip's find_wireshark_path) plus a PATH lookup, so installs outside
 # /usr/bin — Homebrew, snap, flatpak's exported wrapper — are found too.
@@ -76,7 +72,7 @@ def find_wireshark_path():
     feed is possible at all — a FIFO nobody will ever read just hangs."""
     candidates = _WIRESHARK_CANDIDATES.get(platform.system())
     if candidates is None:
-        show_generic_error("Unsupported OS", "We don't support this OS yet.")
+        logger.error("Unsupported OS: We don't support this OS yet.")
         return None
     for candidate in candidates:
         path = Path(candidate)
@@ -167,7 +163,7 @@ class UnixPipe:
             self.ready_event.clear()
             logger.info(f"[*] Pipeline Closed: {self.pipe_path}")
         except Exception as e:
-            show_generic_error("Closing Pipeline", e)
+            logger.error(f"Closing Pipeline: {e}")
 
     def remove(self) -> None:
         try:
@@ -183,7 +179,7 @@ class UnixPipe:
                     pass
             logger.info(f"[*] Pipeline removed: {self.pipe_path}")
         except Exception as e:
-            show_generic_error("Removing Pipeline", e)
+            logger.error(f"Removing Pipeline: {e}")
 
     def write_packet(self, data: bytes) -> None:
         try:
@@ -192,11 +188,11 @@ class UnixPipe:
                 self.pipe_writer.flush()
         except BrokenPipeError:
             # Wireshark went away; surface it so the capture loop can stop.
-            show_generic_error("BrokenPipe", "Wireshark closed the pipe")
+            logger.error("BrokenPipe: Wireshark closed the pipe")
             self.remove()
             raise
         except Exception as e:
-            show_generic_error("Writing Pipeline", e)
+            logger.error(f"Writing Pipeline: {e}")
 
 
 class WindowsPipe:
@@ -244,7 +240,7 @@ class WindowsPipe:
                 logger.warning("[!] Client connected and disconnected immediately")
                 return
             else:
-                show_generic_error("Opening Pipeline", e)
+                logger.error(f"Opening Pipeline: {e}")
                 raise
 
     def read(self, size=1024) -> bytes:
@@ -269,7 +265,7 @@ class WindowsPipe:
             self.ready_event.clear()
             logger.info(f"[*] Pipeline Closed: {self.pipe_path}")
         except Exception as e:
-            show_generic_error("Closing Pipeline", e)
+            logger.error(f"Closing Pipeline: {e}")
 
     def remove(self) -> None:
         try:
@@ -300,7 +296,7 @@ class WindowsPipe:
             self.ready_event.clear()
             logger.info(f"[*] Pipeline removed: {self.pipe_path}")
         except Exception as e:
-            show_generic_error("Removing Pipeline", e)
+            logger.error(f"Removing Pipeline: {e}")
 
     def write_packet(self, data: bytes) -> None:
         try:
@@ -314,7 +310,7 @@ class WindowsPipe:
                 # can react (drop the pipe, keep writing to a file if any)
                 # instead of silently discarding subsequent frames.
                 raise BrokenPipeError(str(e)) from e
-            show_generic_error("Writing Pipeline", e)
+            logger.error(f"Writing Pipeline: {e}")
 
 
 class Wireshark:
@@ -345,7 +341,7 @@ class Wireshark:
         exe_path = find_wireshark_path()
         if exe_path is None:
             self.spawn_error = "executable not found"
-            show_generic_error("Can't start Wireshark", self.spawn_error)
+            logger.error(f"Can't start Wireshark: {self.spawn_error}")
             return
         cmd = [str(exe_path), "-k", "-i", self.pipe_name]
         if self.profile:
@@ -354,4 +350,4 @@ class Wireshark:
             self.wireshark_process = subprocess.Popen(cmd)
         except Exception as e:
             self.spawn_error = str(e)
-            show_generic_error("Can't start Wireshark", e)
+            logger.error(f"Can't start Wireshark: {e}")

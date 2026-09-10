@@ -56,7 +56,6 @@ class Aggregator(Generic[T]):
         self._reserved_keys = reserved_keys or set()
         self._start = start if start is not None else time.monotonic()
         self._entries: Dict[str, _Entry] = {}
-        self._order: List[str] = []
 
     def add(self, item: T) -> None:
         key = self._key_fn(item)
@@ -66,7 +65,6 @@ class Aggregator(Generic[T]):
             self._entries[key] = _Entry(
                 item=item, count=1, first_s=elapsed, last_s=elapsed
             )
-            self._order.append(key)
         else:
             entry.count += 1
             entry.last_s = elapsed
@@ -80,8 +78,7 @@ class Aggregator(Generic[T]):
 
     def to_dict(self) -> List[Dict[str, object]]:
         rows: List[Dict[str, object]] = []
-        for key in self._order:
-            e = self._entries[key]
+        for e in self._entries.values():
             row = self._row_fn(e.item)
             row["count"] = e.count
             row["first_s"] = round(e.first_s, 1)

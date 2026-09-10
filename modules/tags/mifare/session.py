@@ -11,8 +11,7 @@
 
 import re
 import time
-from contextlib import contextmanager
-from typing import Iterator, Optional, Tuple
+from typing import Optional, Tuple
 
 import click
 
@@ -29,19 +28,14 @@ _MIFARE_PROBE_RE = re.compile(r"^:mifare\s")
 _MIFARE_TAP_TIMEOUT = 15.0
 
 
-@contextmanager
-def _mifare_session(
-    port: Optional[str],
-    device_id: Optional[int] = None,
-    trace=None,
-) -> Iterator[Tuple[str, DeviceLink]]:
-    """Open a verified link for the `tags mifare` commands, yield ``(target,
-    link)``, and always close it. Same `device_session` wrapper as
-    `_tags_session`, naming the MifareClassic firmware in its error message."""
-    with device_session(
+def _mifare_session(port: Optional[str], device_id: Optional[int] = None, trace=None):
+    """Open a verified link for the `tags mifare` commands, naming the
+    MifareClassic firmware in its error message. `resolve_port`/`DeviceLink`
+    are looked up by name at call time so tests can monkeypatch this
+    module's copies."""
+    return device_session(
         resolve_port, DeviceLink, "tags mifare", "MifareClassic", port, device_id, trace
-    ) as pair:
-        yield pair
+    )
 
 
 def _wait_for_mifare_card(link, timeout: float) -> bool:

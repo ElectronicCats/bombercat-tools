@@ -15,7 +15,6 @@
 import json
 import re
 import time
-from contextlib import contextmanager
 from typing import Callable, Dict, Iterator, Optional, Tuple
 
 import click
@@ -74,20 +73,13 @@ def magspoof():
     """Magstripe emulation commands (requires the magspoof firmware)."""
 
 
-@contextmanager
-def _magspoof_session(
-    port: Optional[str],
-    device_id: Optional[int] = None,
-    trace=None,
-) -> Iterator[Tuple[str, DeviceLink]]:
-    """Open a verified link for the `magspoof` commands, yield ``(target,
-    link)``, and always close it. Thin, magspoof-flavored wrapper around
-    `detection_cli.device_session` — `resolve_port`/`DeviceLink` are passed
-    in explicitly so tests can still monkeypatch this module's copies."""
-    with device_session(
+def _magspoof_session(port: Optional[str], device_id: Optional[int] = None, trace=None):
+    """Open a verified link for the `magspoof` commands, naming the MagSpoof
+    firmware in its error message. `resolve_port`/`DeviceLink` are looked up
+    by name at call time so tests can monkeypatch this module's copies."""
+    return device_session(
         resolve_port, DeviceLink, "magspoof", "MagSpoof", port, device_id, trace
-    ) as pair:
-        yield pair
+    )
 
 
 def _report_error(verb: str, r: Response) -> None:

@@ -6,8 +6,7 @@
 # Distributed as-is; no warranty is given.
 
 import time
-from contextlib import contextmanager
-from typing import Iterator, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 import click
 from rich.table import Table
@@ -25,18 +24,14 @@ from ..utils.output import (
 )
 
 
-@contextmanager
-def _device_session(
-    port: Optional[str], device_id: Optional[int] = None
-) -> Iterator[Tuple[str, DeviceLink]]:
-    """Open a verified link for the relay commands, yield ``(target, link)``,
-    and always close it. Thin, nfcgate-flavored wrapper around
-    `detection_cli.device_session` — `resolve_port`/`DeviceLink` are passed
-    in explicitly so tests can still monkeypatch this module's copies."""
-    with device_session(
+def _device_session(port: Optional[str], device_id: Optional[int] = None):
+    """Open a verified link for the relay commands, naming the NFCGate
+    firmware in its error message. `resolve_port`/`DeviceLink` are looked up
+    by name at call time so tests (and modules.capture.cli, which imports
+    this) can monkeypatch this module's copies."""
+    return device_session(
         resolve_port, DeviceLink, "nfcgate", "NFCGate", port, device_id
-    ) as pair:
-        yield pair
+    )
 
 
 def _apply(link: DeviceLink, pairs: List[Tuple[str, str]], save: bool) -> None:

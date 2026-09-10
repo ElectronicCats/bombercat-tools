@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# `bombercat config|run|stop|status|monitor` — configure and drive the NFCGate
-# relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6).
+# `bombercat relay config|run|stop|status|monitor` — configure and drive the
+# NFCGate relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6).
 # Distributed as-is; no warranty is given.
 
 import time
@@ -197,7 +197,7 @@ def run_cmd(port, device_id):
             raise SystemExit(1)
         if not r.ok:
             print_error(f"relay rejected 'run': {r.message}")
-            print_info("check the configuration with:  bombercat config show")
+            print_info("check the configuration with:  bombercat relay config show")
             raise SystemExit(1)
 
         # Phase 2: poll `status` and report progress until the relay reaches
@@ -235,13 +235,15 @@ def run_cmd(port, device_id):
 
             if state == "relaying":
                 print_success(f"relay started on {target}")
-                print_info("watch it with:  bombercat monitor   /   bombercat status")
+                print_info(
+                    "watch it with:  bombercat relay monitor   /   bombercat status"
+                )
                 return
             if state == "error":
                 print_error(f"relay failed to start: {detail or 'bring-up error'}")
                 print_info(
                     "check WiFi credentials and the nfcgate-server host/port "
-                    "(bombercat config show)"
+                    "(bombercat relay config show)"
                 )
                 raise SystemExit(1)
             time.sleep(_RUN_POLL_INTERVAL)
@@ -253,10 +255,10 @@ def run_cmd(port, device_id):
         print_info(
             f"still '{last_detail or 'connecting'}' after {int(_RUN_BRINGUP_TIMEOUT)}s"
             " — the bring-up is slow or stuck (the device is still responsive).\n"
-            "  • keep watching:  bombercat status   /   bombercat monitor\n"
+            "  • keep watching:  bombercat status   /   bombercat relay monitor\n"
             "  • is the nfcgate-server listening?  (nc -vz <host> <port>)\n"
-            "  • is the PN7150 responding?  watch:  bombercat monitor\n"
-            "  • confirm host/port with:  bombercat config show"
+            "  • is the PN7150 responding?  watch:  bombercat relay monitor\n"
+            "  • confirm host/port with:  bombercat relay config show"
         )
         raise SystemExit(1)
 

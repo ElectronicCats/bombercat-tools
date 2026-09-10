@@ -34,12 +34,8 @@ from .firmwares import (
 )
 from ..device.cli import device as _device
 from ..nfcgate.cli import (
-    config as _config,
-    monitor_cmd as _monitor,
     relay as _relay,
-    run_cmd as _run,
     status_cmd as _status,
-    stop_cmd as _stop,
 )
 from ..capture.cli import capture as _capture
 from ..firmware.cli import flash as _flash
@@ -65,7 +61,6 @@ from ..utils.output import (
     print_dim,
     print_empty_line,
     print_example,
-    print_warning,
 )
 
 import platform
@@ -308,51 +303,6 @@ def firmware_status_cmd(no_sniff, port, device_id):
     print_info("Next:")
     for step in _next_steps(detection):
         print_example(step)
-
-
-# ===================== Deprecated compatibility aliases =====================
-#
-# The relay commands used to live at the root; they now live under `relay`.
-# For one deprecation cycle the old spellings keep working as HIDDEN aliases
-# that forward to the new location and warn once. See GENERALIZE_CLI_PLAN §2.4.
-
-
-def _relay_alias(cmd, new_path):
-    """A hidden root command mirroring `cmd` that warns and forwards to `relay`."""
-
-    @click.command(
-        cmd.name,
-        hidden=True,
-        params=list(cmd.params),
-        context_settings=cmd.context_settings,
-        help=(cmd.help or "") + f"\n\n[deprecated] use `bombercat {new_path}`.",
-    )
-    @click.pass_context
-    def _wrapper(ctx, **kwargs):
-        print_warning(
-            f"`bombercat {cmd.name}` is deprecated — use `bombercat {new_path}`."
-        )
-        return ctx.invoke(cmd.callback, **kwargs)
-
-    return _wrapper
-
-
-def _config_alias():
-    """Hidden `config` group forwarding to `relay config` with a deprecation warning."""
-
-    @click.group(
-        "config",
-        hidden=True,
-        help="[deprecated] use `bombercat relay config …`.",
-    )
-    def _alias():
-        print_warning(
-            "`bombercat config …` is deprecated — use `bombercat relay config …`."
-        )
-
-    for name, sub in _config.commands.items():
-        _alias.add_command(sub, name)
-    return _alias
 
 
 # ===================== Shell Completion Commands =====================
@@ -616,13 +566,6 @@ def main_cli() -> None:
     cli.add_command(_tags)
     cli.add_command(_readers)
     cli.add_command(_magspoof)
-
-    # Deprecated compatibility aliases (hidden): old root spellings still work
-    # for one cycle, forwarding to `relay …` with a one-time warning (§2.4).
-    cli.add_command(_config_alias())
-    cli.add_command(_relay_alias(_run, "relay run"))
-    cli.add_command(_relay_alias(_stop, "relay stop"))
-    cli.add_command(_relay_alias(_monitor, "relay monitor"))
 
     # Dev tooling under tools/
     cli.add_command(_proto)

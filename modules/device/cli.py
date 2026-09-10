@@ -74,7 +74,7 @@ def list_cmd(show_all):
     if devices:
         print_info(
             "Target one with:  bombercat <command> -d <ID>   "
-            "(e.g. bombercat config show -d 1)"
+            "(e.g. bombercat relay config show -d 1)"
         )
     if untagged:
         print_warning(

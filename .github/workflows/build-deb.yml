@@ -49,6 +49,31 @@ jobs:
       - name: Build package
         run: bash packaging/build_deb.sh "${{ steps.version.outputs.value }}"
 
+      # Fase 4 del plan: verificación estática del control y el árbol de
+      # archivos antes de subir nada. Falla el job si se cuela algo del
+      # working tree que no debería empaquetarse (tests/, venvs, caché de
+      # bytecode, las llaves de prueba de Mifare).
+      - name: Static checks
+        run: |
+          DEB="bombercat-${{ steps.version.outputs.value }}.deb"
+          dpkg-deb -I "$DEB"
+          dpkg-deb -c "$DEB" > /tmp/deb-contents.txt
+          cat /tmp/deb-contents.txt
+          if grep -qE '(^|/)(tests/|\.venv|__pycache__/|MK1Keys)' /tmp/deb-contents.txt; then
+            echo "::error::forbidden path found in the .deb (tests/.venv/__pycache__/MK1Keys)"
+            exit 1
+          fi
+          if grep -q '/vendor/pytest' /tmp/deb-contents.txt; then
+            echo "::error::pytest got vendored into the .deb"
+            exit 1
+          fi
+
+      - name: Lintian (informational)
+        continue-on-error: true
+        run: |
+          sudo apt-get update && sudo apt-get install -y lintian
+          lintian --no-tag-display-limit "bombercat-${{ steps.version.outputs.value }}.deb" || true
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -62,3 +87,33 @@ jobs:
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
           files: bombercat-${{ steps.version.outputs.value }}.deb
+
+  verify-install:
+    name: Verify .deb install (debian:12)
+    needs: build
+    runs-on: ubuntu-latest
+    container: debian:12
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bombercat-deb
+
+      - name: Install package
+        run: |
+          apt-get update
+          apt-get install -y ./bombercat-*.deb
+
+      # Smokes obligatorios de la Fase 4: no tocan hardware ni red.
+      - name: Smoke test
+        run: |
+          bombercat --version
+          bombercat --help
+          bombercat flash --help
+
+      - name: Dev commands stay hidden in a packaged install
+        run: |
+          if bombercat --help | grep -qE '^\s+(proto|testserver)\s'; then
+            echo "::error::proto/testserver leaked into the packaged --help"
+            exit 1
+          fi

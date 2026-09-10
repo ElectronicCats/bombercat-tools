@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 
-from modules.firmware.releases import parse_descriptions
+from modules.firmware.releases import parse_descriptions as _parse_descriptions
 
 # ── Capabilities vocabulary ──────────────────────────────────────────────────
 # What a firmware lets the host *do*. `status` uses this to suggest the next
@@ -208,7 +208,7 @@ def load_descriptions() -> Dict[str, str]:
     """First readable descriptions.json wins; {} if none is found."""
     for path in _candidate_description_paths():
         try:
-            return parse_descriptions(path.read_bytes())
+            return _parse_descriptions(path.read_bytes())
         except OSError:
             continue
     return {}

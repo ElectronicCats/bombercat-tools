@@ -29,7 +29,25 @@ configures, arms, starts, monitors and captures the device, nothing more
 
 ## Install
 
-### Virtual Environment
+Grab the package for your platform from the
+[latest release](https://github.com/ElectronicCats/bombercat-tools/releases/latest):
+
+| Platform | Package | Install |
+|---|---|---|
+| Debian / Ubuntu | `bombercat-<version>.deb` | `sudo apt install ./bombercat-<version>.deb` |
+| Arch Linux | `bombercat-<version>-1-any.pkg.tar.zst` | `sudo pacman -U bombercat-<version>-1-any.pkg.tar.zst` |
+| macOS (Intel) | `bombercat-<version>-x86_64.pkg` | double-click, or `sudo installer -pkg … -target /` |
+| macOS (Apple Silicon) | `bombercat-<version>-arm64.pkg` | double-click, or `sudo installer -pkg … -target /` |
+| Windows | `bombercat-<version>.exe` | run it (Inno Setup installer) |
+
+`.deb`/`.pkg.tar.zst` only depend on `python3` — no venv to manage. The
+`.pkg`/`.exe` are unsigned (no Apple Developer ID / Authenticode cert yet):
+expect a Gatekeeper/SmartScreen warning on first run. Building any of them
+locally, or wiring them into CI, is covered in
+[`docs/packaging.md`](docs/packaging.md).
+
+### From source (virtual environment)
+
 ```sh
 python -m venv .venv
 source .venv/bin/activate    # On Windows: .venv\Scripts\activate
@@ -45,10 +63,12 @@ the `dialout` group — see [Troubleshooting](docs/troubleshooting.md#serial-per
 The tool is developed and tested on Linux; read
 [Current limitations](#current-limitations) before running it elsewhere.
 
-Throughout the docs the command is written as `bombercat`; if you have not set up
-the [`bombercat` alias](docs/reference.md#invocation) or
+Throughout the docs the command is written as `bombercat`; if you installed a
+package above, that's it — the launcher's on `PATH`. From a source checkout,
+if you have not set up the
+[`bombercat` alias](docs/reference.md#invocation) or
 [shell completion](docs/commands/completion.md), run it as
-`python3 bombercat.py …` from `tools/`.
+`python3 bombercat.py …` instead.
 
 ## Quick start
 
@@ -149,6 +169,8 @@ one by its ID with `-d/--device`. See the
 | [Glossary](docs/glossary.md) | Terms used across these docs — REPL, SEL_RES, APDU, Service Code, UF2, VID/PID, and more. |
 | [Current limitations](docs/limitations.md) | Platform support matrix, host requirements, device/serial and relay-scope constraints — known, not bugs. |
 | [Deploy a dedicated server](docs/deployment.md) | Run `nfcgate-server` permanently on a VPS (Docker or systemd), verify the latency patch, day-2 ops. |
+| [Building the packages](docs/packaging.md) | Build the `.deb`/`.pkg.tar.zst`/`.pkg`/`.exe` locally: prerequisites per OS, `make` targets, where the output lands. |
+| [Cutting a release](docs/release.md) | The release procedure: bump `VERSION`, tag, `gh release create`, verify the 5 assets, re-run a single failed build. |
 | [Rooting an Android phone for NFCGate](docs/android-nfcgate-rooting-guide.en.md) ([es](docs/android-nfcgate-rooting-guide.es.md)) | Required only for Path B card/HCE mode: rooting with Magisk and installing NFCGate's native module (Zygisk + LSPosed), with the associated risks. |
 
 ## Dev tooling

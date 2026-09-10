@@ -6,9 +6,12 @@ Bitácora del trabajo de empaquetado multiplataforma (`.deb`, `.pkg.tar.zst`,
 entrada para retomar el trabajo**: qué está hecho, qué falta y por qué se
 decidió lo que se decidió.
 
-**Estado global: Fases 0, 1, 2 y 3 completas.**
-Siguiente: Fase 4 — validar `.pkg` (macOS) y `.exe` (Windows) en CI real
-(sin hardware de esas plataformas en este entorno), y Fase 5 (documentación).
+**Estado global: Fases 0, 1, 2, 3 y 5 completas. Fase 4 parcial (deb/arch
+automatizados en CI; macOS/Windows siguen pendientes de validar de verdad).**
+Siguiente: correr `build-mac.yml`/`build-windows.yml` vía `workflow_dispatch`
+sobre una rama de prueba (necesita GitHub, no se puede hacer en este entorno),
+y un release de prueba (`v1.2.0.1`) end-to-end para cerrar la Fase 4/5 del
+todo.
 
 | Fase | Estado | Notas |
 |---|---|---|
@@ -16,8 +19,8 @@ Siguiente: Fase 4 — validar `.pkg` (macOS) y `.exe` (Windows) en CI real
 | 1. Configuración base | ✅ Completa | 2026-09-10 · F1.1–F1.7 |
 | 2. Workflows CI | ✅ Completa | 2026-09-10 · los 4 `build-*.yml` ya invocan los scripts de la Fase 3 |
 | 3. Scripts locales | ✅ Completa | 2026-09-10 · `.deb`/`.pkg.tar.zst` validados en Docker; `.pkg`/`.exe` sin validar (sin macOS/Windows aquí) |
-| 4. Testing y validación | 🔜 Parcial | Debian/Arch verificados extremo a extremo; falta macOS/Windows |
-| 5. Documentación y release | ⬜ Pendiente | |
+| 4. Testing y validación | 🔜 Parcial | Debian/Arch: checks estáticos + `verify-install` en CI, validados en Docker. macOS/Windows: sin validar, requiere `workflow_dispatch` en GitHub |
+| 5. Documentación y release | ✅ Completa | 2026-09-10 · `docs/packaging.md`, `docs/release.md`, sección Install del README. Falta solo el release de prueba real (depende de la Fase 4 de mac/Windows) |
 
 ---
 
@@ -302,3 +305,91 @@ decisión de política aparte.
    repita los smokes de esta sesión dentro del propio workflow.
 3. **Fase 5** — `docs/packaging.md`, `docs/release.md`, sección Install del
    README, y un release de prueba (`v1.2.0.1`) end-to-end.
+
+---
+
+## Sesión 2026-09-10 (4) — Fase 4: testing y validación (deb/arch)
+
+Alcance de esta sesión: automatizar en CI lo que la sesión anterior había
+validado a mano en Docker, y cerrar el hueco que esa sesión había marcado como
+deuda ("No existe `bombercat --version`"). macOS/Windows quedan fuera —
+requieren disparar workflows en GitHub, que no se puede hacer desde este
+entorno sin confirmación explícita del usuario para gastar minutos de CI.
+
+### `bombercat --version`
+
+`@click.version_option(version=VERSION_NUMBER, prog_name="bombercat")` en el
+grupo raíz (`modules/core/cli.py`). Imprime el header ASCII (como `--help`,
+vía `main_cli()`) y luego `bombercat, version 1.2.0.0`. Test nuevo en
+`tests/test_cli_root.py::test_version_flag_reports_the_package_version`.
+819 tests en verde (818 → 819).
+
+### `verify-install` en CI — `build-deb.yml` / `build-arch.yml`
+
+Cada workflow gana:
+
+- **`Static checks`** en el job `build`: `dpkg-deb -I`/`-c` (deb) o
+  `bsdtar -tf` (arch) sobre el artefacto recién construido, con `grep` que
+  falla el job si aparece `tests/`, `.venv`, `__pycache__/`, `MK1Keys` o
+  `vendor/pytest` (el checklist de la Fase 4 del plan, antes solo verificado a
+  mano).
+- **`Lintian (informational)`** (solo deb): `continue-on-error: true`, no
+  bloquea el build — es el mismo criterio que el plan describe para lintian.
+- **Job nuevo `verify-install`**, `needs: build`, corre dentro de
+  `container: debian:12` / `container: archlinux:latest`: descarga el
+  artefacto con `actions/download-artifact@v4`, lo instala
+  (`apt-get install -y ./*.deb` / `pacman -U --noconfirm`) y repite los smokes
+  obligatorios del plan (`bombercat --version`, `bombercat --help`,
+  `bombercat flash --help`), más una comprobación de que `proto`/`testserver`
+  no aparecen en el `--help` del paquete instalado.
+
+### Validado en Docker (réplica exacta de los pasos del CI, no solo revisión del YAML)
+
+- **`.deb`**: reconstruido con `packaging/build_deb.sh 1.2.0.0`; los mismos
+  `grep` del step `Static checks` en verde; instalado con
+  `apt-get install -y ./bombercat-*.deb` en `debian:12` limpio;
+  `bombercat --version`/`--help`/`flash --help` funcionan; `proto`/`testserver`
+  siguen ocultos.
+- **`.pkg.tar.zst`**: reconstruido dentro de `archlinux:latest` (mismas
+  dependencias que instala el workflow); mismos `grep` en verde; instalado con
+  `pacman -U --noconfirm` en un contenedor Arch limpio; mismos smokes en
+  verde. (La versión de Python del container pasó a 3.14 — Arch es rolling —
+  y el build siguió funcionando sin tocar nada.)
+- Build artifacts locales (`bombercat-*.deb`, `bombercat-*.pkg.tar.zst`,
+  `packaging/build_deb/`, `packaging/build_arch/`) limpiados tras validar;
+  no quedan en el working tree.
+
+### Sigue pendiente
+
+- **macOS (`.pkg`) y Windows (`.exe`)**: sin validar de verdad. Requiere
+  disparar `build-mac.yml`/`build-windows.yml` con `workflow_dispatch` sobre
+  una rama de prueba en GitHub — usa minutos de CI y necesita push a remoto,
+  así que se dejó fuera de esta sesión a la espera de que el usuario lo pida
+  explícitamente.
+- Un release de prueba (`v1.2.0.1`) end-to-end, siguiendo `docs/release.md`,
+  para verificar los 5 assets de verdad (bloqueado por el punto anterior).
+
+---
+
+## Sesión 2026-09-10 (5) — Fase 5: documentación
+
+### Archivos nuevos
+
+| Archivo | Contenido |
+|---|---|
+| `docs/packaging.md` | Cómo construir cada uno de los 4 formatos en local: prerrequisitos por OS, el comando/`make target` exacto, dónde queda la salida, cómo instalarlo para probarlo a mano. Incluye la sección "Known gaps and quirks" (nombre genérico de `modules`, `proto`/`testserver` ocultos, `flash` necesita red, `VERSION` de 4 componentes vs. tag semver). |
+| `docs/release.md` | El procedimiento de release del plan (§Fase 5), como pasos ejecutables: `pre-commit`+`pytest` en verde → bump de `VERSION` → commit `chore(release):` + tag + push → `gh release create --generate-notes` → verificar los 5 assets (el `verify-install` de la Fase 4 ya gatea deb/arch) → `gh workflow run <build>.yml -f release_tag=…` para re-subir un asset suelto. Cierra con el checklist de mantenimiento: pins de `actions/*`, `softprops/action-gh-release` en **v2**, el riesgo de `macos-15-intel`, y que el `AppId` del `.iss` no se toca nunca. |
+
+### README
+
+Sección **Install** reescrita: tabla de las 5 descargas (deb, arch,
+macOS×2, exe) con su comando de instalación, antes del flujo de venv que
+ahora es "From source". Se linkearon `docs/packaging.md` y `docs/release.md`
+desde la tabla de Documentation.
+
+### Nota
+
+No se hizo el release de prueba real (`gh release create`) — es una acción
+visible en GitHub (crea un release público, dispara los 4 workflows, gasta
+minutos de CI) y no estaba pedida explícitamente; queda como el último paso
+antes de cerrar la Fase 4 del todo, una vez se valide `.pkg`/`.exe`.

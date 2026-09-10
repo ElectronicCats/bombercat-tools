@@ -2,9 +2,7 @@
 
 # Electronic Cats
 # track_parser.py — card-standard detection + enriched Service Code analysis
-# for `magspoof show`. `_DETECTORS` is an ordered registry: a future standard
-# is added by registering one more detector function here, not by rewriting
-# `detect_track_standard` or the CLI. docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
+# for `magspoof show`. docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
 #
 # Only ISO 7813 (financial) and PBOC/UnionPay have a full field parse +
 # Service Code analysis, because they share one well-documented wire format.
@@ -18,7 +16,7 @@
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, List, Optional
+from typing import List, Optional
 
 from .track2 import (
     Track2Data,
@@ -112,80 +110,51 @@ def parse_track1_financial(track1: str) -> Optional[Track1Data]:
 
 # ── standard detection ──────────────────────────────────────────────────────
 
-# (track_str, track_num) -> the standard it matches, or None. Ordered list,
-# first match wins.
-_Detector = Callable[[str, int], Optional[TrackStandard]]
-_DETECTORS: List[_Detector] = []
-
-
-def register_detector(fn: _Detector) -> _Detector:
-    _DETECTORS.append(fn)
-    return fn
-
-
-@register_detector
-def _detect_aamva(track: str, track_num: int) -> Optional[TrackStandard]:
-    """AAMVA driver's license / ID card. Detection only — field layout
-    (name, DOB, address...) varies per US jurisdiction, so we don't attempt
-    to decode it, only to recognize it so it isn't mistaken for a payment
-    card or left as UNKNOWN."""
-    if track_num == 1:
-        # Financial Track 1 always starts with '%B'; AAMVA never does. The
-        # '^' field separator (jurisdiction ^ name ^ ...) rules out a bare
-        # numeric loyalty/transit track.
-        if track.startswith("%") and not track.startswith("%B") and "^" in track:
-            return TrackStandard.AAMVA_DL
-        return None
-    if (
-        track.startswith(";" + _AAMVA_IIN_PREFIX)
-        and "=" in track
-        and track.endswith("?")
-    ):
-        return TrackStandard.AAMVA_DL
-    return None
-
-
-@register_detector
-def _detect_iso7813_financial(track: str, track_num: int) -> Optional[TrackStandard]:
-    if track_num == 1:
-        parsed = parse_track1_financial(track)
-    else:
-        parsed = parse_track2(track)
-    if parsed is None:
-        return None
-    if parsed.pan.startswith(_UNIONPAY_PAN_PREFIX):
-        return TrackStandard.PBOC_UNIONPAY
-    if _has_recognized_financial_iin(parsed.pan):
-        return TrackStandard.ISO_7813_FINANCIAL
-    # Structurally ISO 7813-shaped but no registered network IIN — a store
-    # or membership card reusing the financial wire format, not a real
-    # payment card. Fall through so _detect_loyalty_generic picks it up.
-    return None
-
-
-@register_detector
-def _detect_loyalty_generic(track: str, track_num: int) -> Optional[TrackStandard]:
-    """Catch-all for a well-formed but non-financial, non-AAMVA track (store
-    loyalty cards, gift cards, transit passes, ...). These have no
-    registered IIN scheme, so we can't reliably tell "loyalty" from
-    "transit" apart from a raw magstripe string — both land here rather
-    than being guessed."""
-    if track_num == 1 and track.startswith("%") and track.endswith("?"):
-        return TrackStandard.LOYALTY_GENERIC
-    if track_num == 2 and track.startswith(";") and track.endswith("?"):
-        return TrackStandard.LOYALTY_GENERIC
-    return None
-
 
 def detect_track_standard(track: str, track_num: int) -> TrackStandard:
     """Detect which card standard TRACK_NUM (1 or 2) belongs to."""
     track = track.strip()
     if not track:
         return TrackStandard.UNKNOWN
-    for detector in _DETECTORS:
-        result = detector(track, track_num)
-        if result is not None:
-            return result
+
+    # AAMVA driver's license / ID card. Detection only — field layout
+    # (name, DOB, address...) varies per US jurisdiction, so we don't attempt
+    # to decode it, only to recognize it so it isn't mistaken for a payment
+    # card or left as UNKNOWN.
+    if track_num == 1:
+        # Financial Track 1 always starts with '%B'; AAMVA never does. The
+        # '^' field separator (jurisdiction ^ name ^ ...) rules out a bare
+        # numeric loyalty/transit track.
+        if track.startswith("%") and not track.startswith("%B") and "^" in track:
+            return TrackStandard.AAMVA_DL
+    elif (
+        track.startswith(";" + _AAMVA_IIN_PREFIX)
+        and "=" in track
+        and track.endswith("?")
+    ):
+        return TrackStandard.AAMVA_DL
+
+    # ISO 7813 financial / PBOC UnionPay.
+    parsed = parse_track1_financial(track) if track_num == 1 else parse_track2(track)
+    if parsed is not None:
+        if parsed.pan.startswith(_UNIONPAY_PAN_PREFIX):
+            return TrackStandard.PBOC_UNIONPAY
+        if _has_recognized_financial_iin(parsed.pan):
+            return TrackStandard.ISO_7813_FINANCIAL
+        # Structurally ISO 7813-shaped but no registered network IIN — a
+        # store or membership card reusing the financial wire format, not a
+        # real payment card. Fall through to the loyalty catch-all below.
+
+    # Catch-all for a well-formed but non-financial, non-AAMVA track (store
+    # loyalty cards, gift cards, transit passes, ...). These have no
+    # registered IIN scheme, so we can't reliably tell "loyalty" from
+    # "transit" apart from a raw magstripe string — both land here rather
+    # than being guessed.
+    if track_num == 1 and track.startswith("%") and track.endswith("?"):
+        return TrackStandard.LOYALTY_GENERIC
+    if track_num == 2 and track.startswith(";") and track.endswith("?"):
+        return TrackStandard.LOYALTY_GENERIC
+
     return TrackStandard.UNKNOWN
 
 

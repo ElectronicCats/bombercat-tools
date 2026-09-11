@@ -10,7 +10,7 @@ import pytest
 
 from modules.core import ensure_firmware as ef
 from modules.core.bombercat import DeviceError
-from modules.core.exceptions import FirmwareMismatch
+from modules.core.exceptions import EXIT_FIRMWARE, FirmwareMismatch
 from modules.core.firmwares import (
     BANNER,
     CAP_TAGS,
@@ -25,6 +25,7 @@ from modules.core.firmwares import (
 from modules.core.requirements import requirement_for
 from modules.firmware.flasher import FlashOutcome
 from modules.firmware.releases import FirmwareError
+from modules.firmware.uf2 import BootloaderTimeout
 
 PORT = "/dev/ttyACM0"
 NEW_PORT = "/dev/ttyACM1"
@@ -214,6 +215,37 @@ def test_always_policy_with_non_usb_confidence_flashes_without_asking():
     assert asked == []
     assert flash.calls == [(REQ, PORT)]
     assert outcome.flashed is True
+
+
+def test_bootloader_timeout_shows_the_help_panel_instead_of_a_bare_message(
+    monkeypatch,
+):
+    # docs/AUTOFLASH_PLAN.md F5: a board that never reaches BOOTSEL (no
+    # udisks2 to auto-mount RPI-RP2, or a firmware without the 1200-bps
+    # touch) must show the same actionable panel `bombercat flash` shows,
+    # not the bare BootloaderTimeout message main_cli()'s generic
+    # `except BomberCatError` would otherwise print.
+    def raising_flash(req, port):
+        raise BootloaderTimeout("no RPI-RP2 drive appeared within 15 s.")
+
+    seen = []
+    monkeypatch.setattr(
+        ef, "bootloader_help", lambda image_name: seen.append(image_name)
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.ALWAYS,
+            detect_fn=lambda *a, **k: detection(NFCGATE, HANDSHAKE),
+            flash_fn=raising_flash,
+            confirm_fn=lambda q: True,
+        )
+
+    assert seen == [REQ.image_name]
+    assert excinfo.value.code == EXIT_FIRMWARE
 
 
 # ── Post-flash port and re-verification (D-3.5/D-3.7) ────────────────────────

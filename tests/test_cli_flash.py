@@ -1453,8 +1453,8 @@ def test_bootloader_drive_seen_but_unmounted_suggests_udisksctl(
         devices=[make_device(1, "/dev/ttyACM0")],
         error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
     )
-    monkeypatch.setattr(fw, "unmounted_rp2_device", lambda: "/dev/sdd1")
-    monkeypatch.setattr(fw.shutil, "which", lambda name: "/usr/bin/udisksctl")
+    monkeypatch.setattr(uf2, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(uf2.shutil, "which", lambda name: "/usr/bin/udisksctl")
 
     result = runner.invoke(flash, ["NFCGate", "-y"])
     out = flat(result.output)
@@ -1476,8 +1476,8 @@ def test_bootloader_drive_unmounted_without_udisksctl_suggests_installing_it(
         devices=[make_device(1, "/dev/ttyACM0")],
         error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
     )
-    monkeypatch.setattr(fw, "unmounted_rp2_device", lambda: "/dev/sdd1")
-    monkeypatch.setattr(fw.shutil, "which", lambda name: None)
+    monkeypatch.setattr(uf2, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(uf2.shutil, "which", lambda name: None)
 
     result = runner.invoke(flash, ["NFCGate", "-y"])
     out = flat(result.output)

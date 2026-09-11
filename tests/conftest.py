@@ -23,7 +23,9 @@ from click.testing import CliRunner
 # the same way they do for bombercat.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import modules.utils.detection_cli as detection_cli  # noqa: E402
 from modules.core.bombercat import DeviceError, Response  # noqa: E402
+from modules.core.ensure_firmware import EnsureOutcome  # noqa: E402
 from modules.core.usb_connection import BomberCatDevice, PortInfo  # noqa: E402
 
 # ── Fakes ────────────────────────────────────────────────────────────────────
@@ -211,6 +213,18 @@ def use_link(monkeypatch):
     Patches the module's ``resolve_port``/``DeviceLink`` (the two names every
     command reaches the hardware through), so the command under test runs its
     real logic against the fake.
+
+    A `requires=<capability>` session (docs/AUTOFLASH_PLAN.md F4b) never goes
+    through `resolve_port`/`DeviceLink` for its detection step — `device_session`
+    calls `resolve_status_port`/`ensure_firmware` first, which would otherwise
+    open a real serial port. `use_link` stands up a board that already has
+    the right firmware, so that step is stubbed here too: `resolve_status_port`
+    lands straight on `target`, and `ensure_firmware` reports it as already
+    satisfied (`flashed=False`) without probing or flashing anything. This is
+    unconditional (not gated on which module is being patched) because
+    `resolve_status_port`/`ensure_firmware` are looked up on
+    `modules.utils.detection_cli` itself, the single chokepoint every
+    detection command shares (docs/AUTOFLASH_PLAN.md D-3.2/§5.1).
     """
 
     def _use(module, fake: FakeLink, target: str = "/dev/fake0"):
@@ -223,6 +237,14 @@ def use_link(monkeypatch):
             module, "resolve_port", lambda *a, **k: target, raising=False
         )
         monkeypatch.setattr(module, "DeviceLink", _device_link_factory, raising=False)
+        monkeypatch.setattr(
+            detection_cli, "resolve_status_port", lambda *a, **k: (target, True)
+        )
+        monkeypatch.setattr(
+            detection_cli,
+            "ensure_firmware",
+            lambda *a, **k: EnsureOutcome(port=target, detection=None, flashed=False),
+        )
         return fake
 
     return _use

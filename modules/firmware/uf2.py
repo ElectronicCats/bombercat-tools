@@ -191,6 +191,32 @@ def _candidates() -> List[Path]:
     return _linux_candidates()
 
 
+def _windows_volume_label(path: Path) -> Optional[str]:
+    """The volume label of a Windows drive root, or None if it can't be read.
+
+    Unlike a Linux/macOS mountpoint — which udisks/the Finder already name
+    after the volume label, e.g. `/media/user/RPI-RP2` — a Windows drive
+    root is just a letter: `Path("D:/").name` is always `""`, never
+    "RPI-RP2". `find_uf2_drive` needs the real label, so this asks the OS
+    for it via `GetVolumeInformationW` (stdlib ctypes, no pywin32 needed).
+    """
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(261)  # MAX_PATH + 1
+    ok = ctypes.windll.kernel32.GetVolumeInformationW(
+        str(path), buf, len(buf), None, None, None, None, 0
+    )
+    return buf.value if ok else None
+
+
+def _drive_label(path: Path) -> str:
+    """The name that should be compared against `DRIVE_LABEL`."""
+    name = path.name
+    if not name and platform.system() == "Windows":
+        name = _windows_volume_label(path) or ""
+    return name.upper()
+
+
 def find_uf2_drive() -> Optional[Path]:
     """The drive actually named RPI-RP2, or None if it is not mounted.
 
@@ -210,7 +236,7 @@ def find_uf2_drive() -> Optional[Path]:
         except OSError:
             # An unreadable or disconnected mount point: not our drive.
             continue
-    return next((p for p in found if p.name.upper() == DRIVE_LABEL), None)
+    return next((p for p in found if _drive_label(p) == DRIVE_LABEL), None)
 
 
 def wait_for_uf2_drive(timeout: float = DRIVE_TIMEOUT) -> Path:

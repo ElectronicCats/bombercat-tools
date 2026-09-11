@@ -45,6 +45,7 @@ from ..readers.cli import readers as _readers
 from ..tags.cli import tags as _tags
 from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
+from ..utils.system_cli import setup_env as _setup_env
 
 # External
 import click
@@ -589,6 +590,11 @@ def main_cli() -> None:
 
     if platform.system() in ["Linux", "Darwin"]:
         cli.add_command(completion)
+
+    # udev rules + group membership: Linux-only, and what the packages already
+    # do at install time.
+    if platform.system() == "Linux":
+        cli.add_command(_setup_env)
 
     try:
         rv = cli(prog_name="bombercat", standalone_mode=False)

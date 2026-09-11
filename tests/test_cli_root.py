@@ -189,6 +189,25 @@ def test_header_is_skipped_while_click_generates_completions(monkeypatch):
     assert printed == []
 
 
+def test_bombercat_error_exits_with_its_own_code_and_prints_hints(monkeypatch):
+    """A BomberCatError (e.g. FirmwareMismatch) carries its exit code and hint
+    lines through main_cli(), same as a ClickException carries e.exit_code."""
+    from modules.core.exceptions import FirmwareMismatch
+
+    def _boom(*a, **k):
+        raise FirmwareMismatch(
+            "tags read needs DetectTags; this board is running NFCGate.",
+            hint=["bombercat flash DetectTags"],
+        )
+
+    monkeypatch.setattr(cli, "main", _boom)
+    monkeypatch.setattr(sys, "argv", ["bombercat", "device"])
+    with pytest.raises(SystemExit) as e:
+        main_cli()
+
+    assert e.value.code == 3
+
+
 # ── identify ─────────────────────────────────────────────────────────────────
 
 

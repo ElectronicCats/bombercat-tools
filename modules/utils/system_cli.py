@@ -10,12 +10,19 @@ The rules text below is the same file the packages install; ``tests/
 test_cli_setup_env.py`` compares the two so they cannot drift apart.
 """
 
-import grp
 import os
 import platform
 import subprocess
 import sys
 from pathlib import Path
+
+# POSIX-only, absent on Windows — setup_env() below bails out on
+# platform.system() before ever touching grp, so this only needs to not
+# crash the import.
+try:
+    import grp
+except ImportError:
+    grp = None
 
 # External
 import click

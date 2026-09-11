@@ -20,6 +20,7 @@ Complete reference for every `bombercat` command and subcommand: purpose, flags,
   - [`proto`](commands/proto.md)
   - [`testserver`](commands/testserver.md)
   - [`completion`](commands/completion.md)
+  - [`setup-env`](commands/setup-env.md)
 - [Environment variables](#environment-variables)
 - [Exit codes](#exit-codes)
 - [Glossary](glossary.md)
@@ -188,6 +189,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`proto`](commands/proto.md) | Nanopb protobuf sources for the NFCGate relay. | `proto gen` |
 | [`testserver`](commands/testserver.md) | Local nfcgate-server for relay testing (no hardware/RF). | `run`, `verify`, `smoke` |
 | [`completion`](commands/completion.md) | Install shell tab completion for bombercat. | `completion install` |
+| [`setup-env`](commands/setup-env.md) | Install the udev rules and join the `dialout`/`plugdev` groups (Linux). | `sudo bombercat setup-env` |
 
 ---
 

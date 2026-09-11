@@ -28,11 +28,19 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 
 Symptom: a `PermissionError` / `SerialException` opening `/dev/ttyACM*`.
 
-On Linux, serial access needs your user in the `dialout` group:
+On Linux, serial access needs your user in the `dialout` group. The quickest
+fix is to let the CLI set the machine up — udev rules and groups in one go (see
+[`setup-env`](commands/setup-env.md)):
+
+```sh
+sudo bombercat setup-env
+# then log out and back in (group membership is applied at login)
+```
+
+Or do just the group by hand:
 
 ```sh
 sudo usermod -aG dialout $USER
-# then log out and back in (group membership is applied at login)
 ```
 
 Verify with `groups | grep dialout`. A quick one-off without re-login:

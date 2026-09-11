@@ -30,6 +30,7 @@ rm -rf build dist "$PKG_ROOT" "$OUT_FILE"
 
 pyinstaller --onedir --noupx --noconfirm --name "$PKG_NAME" \
     --collect-all rich \
+    --collect-data certifi \
     --hidden-import click \
     --hidden-import serial.tools.list_ports \
     --add-data "VERSION:." \

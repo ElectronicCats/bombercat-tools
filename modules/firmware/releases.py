@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -26,6 +27,8 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+import certifi
 
 from ..core.exceptions import EXIT_FIRMWARE, BomberCatError
 from ..utils.output import print_warning
@@ -113,7 +116,14 @@ class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         return new_req
 
 
-_opener = urllib.request.build_opener(_StripAuthOnRedirect)
+# The frozen macOS build has no system CA bundle for `ssl` to find (unlike
+# Linux, which always has one, and Windows, where the ssl module falls back to
+# the native cert store) — pointing the context at certifi's bundle explicitly
+# keeps `bombercat flash` from failing with CERTIFICATE_VERIFY_FAILED there.
+_ssl_context = ssl.create_default_context(cafile=certifi.where())
+_opener = urllib.request.build_opener(
+    _StripAuthOnRedirect, urllib.request.HTTPSHandler(context=_ssl_context)
+)
 
 
 class FirmwareError(BomberCatError):

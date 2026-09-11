@@ -11,6 +11,8 @@
 # this project touches Windows-only APIs. Distributed as-is; no warranty is
 # given.
 
+from PyInstaller.utils.hooks import collect_data_files
+
 a = Analysis(
     ["bombercat.py"],
     pathex=[],
@@ -18,6 +20,7 @@ a = Analysis(
     datas=[
         ("VERSION", "."),
         ("modules/tags/mifare/data", "modules/tags/mifare/data"),
+        *collect_data_files("certifi"),
     ],
     hiddenimports=[
         "click",

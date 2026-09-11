@@ -2,6 +2,7 @@
 # Pure Python: nothing here needs a compiler or a system library, which is what
 # keeps the .deb/.pkg/.exe recipes simple. Dev-only tools live in
 # requirements-dev.txt so `pip install --target …/vendor` never ships them.
+certifi==2026.7.22
 click==8.4.2
 markdown-it-py==4.2.0
 mdurl==0.1.2

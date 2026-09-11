@@ -59,7 +59,10 @@ python3 bombercat.py --help
 ```
 
 A virtualenv is recommended. On Linux, serial access usually needs your user in
-the `dialout` group — see [Troubleshooting](docs/troubleshooting.md#serial-permission-denied).
+the `dialout` group; `sudo bombercat setup-env` installs the udev rules and adds
+you to it (the packages below already do that) — see
+[`setup-env`](docs/commands/setup-env.md) and
+[Troubleshooting](docs/troubleshooting.md#serial-permission-denied).
 The tool is developed and tested on Linux; read
 [Current limitations](#current-limitations) before running it elsewhere.
 

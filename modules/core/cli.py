@@ -16,6 +16,7 @@ import serial
 # Internal
 from ..utils._version import __version__
 from .bombercat import DeviceError, DeviceLink, resolve_port
+from .exceptions import BomberCatError
 from .firmwares import (
     BANNER,
     HANDSHAKE,
@@ -606,6 +607,11 @@ def main_cli() -> None:
         raise SystemExit(130)
     except click.ClickException as e:
         e.show()
+        raise SystemExit(e.exit_code)
+    except BomberCatError as e:
+        print_error(str(e))
+        for line in e.hint or []:
+            print_dim(f"  {line}")
         raise SystemExit(e.exit_code)
     except DeviceError as e:
         print_error(str(e))

@@ -27,6 +27,8 @@ from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
+from ..core.exceptions import EXIT_FIRMWARE, BomberCatError
+
 # Where the images come from. The env vars exist so a fork (or a checkout with
 # a test release) can be used without touching the code.
 DEFAULT_REPO = "ElectronicCats/bombercat-firmware"
@@ -113,13 +115,18 @@ class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_StripAuthOnRedirect)
 
 
-class FirmwareError(Exception):
+class FirmwareError(BomberCatError):
     """Anything that stops us from getting a usable firmware image.
 
     The library never calls `exit()` (unlike catnip's Flasher, FLASH_PLAN
     §2.3.2) — the command layer catches this and picks the exit code, the same
-    contract `DeviceError` already has in core/bombercat.py.
+    contract `DeviceError` already has in core/bombercat.py. Inherits from
+    `BomberCatError` (exit code 3) so `main_cli()` gives it the same
+    hint-aware handling as `FirmwareMismatch` without every existing
+    `raise FirmwareError(msg)` call site having to change.
     """
+
+    exit_code = EXIT_FIRMWARE
 
 
 class ReleaseNotFound(FirmwareError):

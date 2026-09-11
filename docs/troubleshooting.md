@@ -185,9 +185,18 @@ sudo mkdir -p /mnt/RPI-RP2 && sudo mount /dev/sdX1 /mnt/RPI-RP2
 ```
 
 The panel prints the actual device node in place of `/dev/sdX1`, and the exact
-commands to run. `flash` looks the drive up in `/proc/mounts` and, failing that,
+commands to run — including, when `udisksctl` itself is not installed, the
+package to install instead of a command that would just fail with "not
+found". `flash` looks the drive up in `/proc/mounts` and, failing that,
 globs `/media/*`, `/media/*/*`, `/run/media/*/*`, `/mnt/*` and `/mnt/RPI-RP2`,
 so any of those mount points works.
+
+The `.deb` and Arch packages both list `udisks2` as an optional dependency
+(`Recommends` on Debian/Ubuntu — `apt install` pulls it in automatically
+unless you passed `--no-install-recommends`; `optdepends` on Arch — `pacman`
+only advertises it, so install it yourself: `sudo pacman -S udisks2`) so this
+case is rare on a package install, but still expected on a from-source
+checkout or a minimal/headless box either way.
 
 Related: a copy that ends in `OSError` after every byte was written is **not** a
 failure — the bootloader restarts the board the moment it has the last block,

@@ -200,7 +200,9 @@ Makefile
 | Bundle id macOS | `com.electroniccats.bombercat` |
 | `AppId` Inno Setup | GUID nuevo (generar una vez, **no** reutilizar el de catnip) |
 | Depends (deb) | `python3` (todo lo demás va vendorizado) |
+| Recommends (deb) | `udisks2` (automonta la unidad `RPI-RP2` de `flash`; `apt` lo instala solo salvo `--no-install-recommends`) |
 | Suggests (deb) | `wireshark`, `docker.io` |
+| optdepends (Arch) | `udisks2` (mismo motivo; pacman no instala `optdepends` solo, solo los anuncia) |
 
 **F1.3 `DEBIAN/control`** (plantilla; `@VERSION@` lo sustituye el build):
 
@@ -212,6 +214,7 @@ Priority: optional
 Architecture: all
 Maintainer: Electronic Cats <support@electroniccats.com>
 Depends: python3
+Recommends: udisks2
 Suggests: wireshark, docker.io
 Homepage: https://github.com/ElectronicCats/bombercat-tools
 Description: BomberCat CLI — NFC relay, tag/reader detection and magspoof

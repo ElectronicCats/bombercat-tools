@@ -144,11 +144,22 @@ def print_header(module=None):
     count=True,
     help="Trace the wire protocol to stderr (-v, or -vv for timestamps/bytes).",
 )
+@click.option(
+    "--auto-flash/--no-auto-flash",
+    "auto_flash",
+    default=None,
+    help=(
+        "Allow (or forbid) a command to reflash the board when it needs a "
+        "different firmware. Unset: ask on a TTY, never on a script/pipe "
+        "(docs/AUTOFLASH_PLAN.md D-3.4; also settable via BOMBERCAT_AUTO_FLASH)."
+    ),
+)
 @click.pass_context
-def cli(ctx, verbose):
+def cli(ctx, verbose, auto_flash):
     """BomberCat: All in one bombercat tools environment."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["auto_flash"] = auto_flash
     if verbose:
         logger.level = logging.INFO
 

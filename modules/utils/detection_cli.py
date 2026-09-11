@@ -26,6 +26,9 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
 from ..core.bombercat import DeviceError
+from ..core.ensure_firmware import ensure_firmware, resolve_policy
+from ..core.firmwares import resolve_status_port
+from ..core.requirements import requirement_for
 from .cli_options import device_options
 from .output import (
     console,
@@ -51,6 +54,19 @@ def verbosity(ctx, local: int) -> int:
     return max(root, local)
 
 
+def _policy_flag() -> Optional[bool]:
+    """The root `--auto-flash`/`--no-auto-flash` value, or None if unset.
+
+    Read from the Click context rather than a function argument so
+    `device_session` doesn't need every command to thread the flag through
+    (docs/AUTOFLASH_PLAN.md F4).
+    """
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return None
+    return (ctx.obj or {}).get("auto_flash")
+
+
 @contextmanager
 def device_session(
     resolve_port_fn: Callable,
@@ -60,6 +76,8 @@ def device_session(
     port: Optional[str],
     device_id: Optional[int] = None,
     trace=None,
+    *,
+    requires: Optional[str] = None,
 ) -> Iterator[Tuple[str, object]]:
     """Open a verified link for a detection command group, yield
     ``(target, link)``, and always close it.
@@ -67,10 +85,26 @@ def device_session(
     `resolve_port_fn`/`device_link_cls` are taken as arguments rather than
     imported here so that a caller module's own `resolve_port`/`DeviceLink`
     names — the ones tests monkeypatch — are what actually get called.
+
+    `requires`, when given a capability (docs/AUTOFLASH_PLAN.md D-3.1), makes
+    this ensure the board can do it before opening the command's own link —
+    detecting with `resolve_status_port`/`detect_firmware` (no handshake
+    required, D-3.3/D7) and flashing it if missing and the auto-flash policy
+    (root `--auto-flash`, read via `_policy_flag`) allows it. `requires=None`
+    (the default) keeps today's behavior byte-for-byte: no caller passes it
+    yet — see docs/AUTOFLASH_PLAN.md F4.
     """
     link = None
     try:
-        target = resolve_port_fn(port, device_id)
+        if requires is not None:
+            target, usb_tagged = resolve_status_port(port, device_id)
+            req = requirement_for(requires, command_name)
+            outcome = ensure_firmware(
+                target, usb_tagged, req, policy=resolve_policy(_policy_flag())
+            )
+            target = outcome.port
+        else:
+            target = resolve_port_fn(port, device_id)
         link = device_link_cls(target, trace=trace).open()
         if not link.ping():
             print_error(
@@ -182,6 +216,10 @@ class DetectionSpec:
     info_events: Callable[[Any], str]
     dedupe_cap_attr: Optional[str] = None
     legacy_csv_json_aliases: bool = False
+    # Capability the board must have to run this group's commands, or None to
+    # skip the auto-flash check entirely (docs/AUTOFLASH_PLAN.md D-3.1). Not
+    # yet set by `tags`/`readers` — wiring a real value here is F4b.
+    requires: Optional[str] = None
 
 
 def build_detection_group(spec: DetectionSpec) -> click.Group:
@@ -197,6 +235,7 @@ def build_detection_group(spec: DetectionSpec) -> click.Group:
             port,
             device_id,
             trace,
+            requires=spec.requires,
         ) as pair:
             yield pair
 

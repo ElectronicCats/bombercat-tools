@@ -19,4 +19,14 @@ echo "bombercat installed. Add yourself to the 'dialout' and 'plugdev' groups"
 echo "if you are not already a member, then log out and back in:"
 echo "    sudo usermod -aG dialout,plugdev \$USER"
 
+if ! command -v udisksctl >/dev/null 2>&1; then
+    # `Recommends: udisks2` in DEBIAN/control covers `apt install ./bombercat*.deb`;
+    # a direct `dpkg -i` skips Recommends entirely, so this still needs saying.
+    echo ""
+    echo "'udisksctl' was not found. Without it, 'bombercat flash' cannot"
+    echo "auto-mount the board's bootloader drive on this machine (headless"
+    echo "boxes and minimal installs are the usual case) — install it with:"
+    echo "    sudo apt install udisks2"
+fi
+
 exit 0

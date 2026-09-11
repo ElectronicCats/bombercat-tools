@@ -56,6 +56,7 @@ arch=('any')
 url="https://github.com/ElectronicCats/bombercat-tools"
 license=('GPL3')
 depends=('python')
+optdepends=('udisks2: auto-mount the RPI-RP2 bootloader drive for bombercat flash')
 options=('!debug')
 
 package() {

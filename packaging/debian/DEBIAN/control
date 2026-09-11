@@ -5,6 +5,7 @@ Priority: optional
 Architecture: all
 Maintainer: Electronic Cats <support@electroniccats.com>
 Depends: python3
+Recommends: udisks2
 Suggests: wireshark, docker.io
 Homepage: https://github.com/ElectronicCats/bombercat-tools
 Description: BomberCat CLI — NFC relay, tag/reader detection and magspoof

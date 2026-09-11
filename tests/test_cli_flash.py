@@ -1444,6 +1444,55 @@ def test_a_board_that_will_not_enter_bootloader_gets_instructions(
     assert "bombercat flash NFCGate" in out
 
 
+def test_bootloader_drive_seen_but_unmounted_suggests_udisksctl(
+    runner, cache, use_cache, bench, monkeypatch
+):
+    c, _ = cache()
+    use_cache(c)
+    bench(
+        devices=[make_device(1, "/dev/ttyACM0")],
+        error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
+    )
+    monkeypatch.setattr(fw, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(fw.shutil, "which", lambda name: "/usr/bin/udisksctl")
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "Bootloader drive not mounted" in out
+    assert "udisksctl mount -b /dev/sdd1" in out
+
+
+def test_bootloader_drive_unmounted_without_udisksctl_suggests_installing_it(
+    runner, cache, use_cache, bench, monkeypatch
+):
+    # A minimal install (a bare Arch box, a headless server) may not have
+    # udisks2 at all — pointing the user at `udisksctl mount` there just
+    # trades one error ("not mounted") for another ("command not found").
+    c, _ = cache()
+    use_cache(c)
+    bench(
+        devices=[make_device(1, "/dev/ttyACM0")],
+        error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
+    )
+    monkeypatch.setattr(fw, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(fw.shutil, "which", lambda name: None)
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "udisks2 is not installed" in out
+    assert "sudo apt install udisks2" in out
+    assert "udisksctl mount" not in out
+    # The panel wraps this long a command across two lines, with the
+    # border redrawn in between — assert the halves rather than one
+    # contiguous string.
+    assert "sudo mkdir -p /mnt/RPI-RP2 && sudo mount" in out
+    assert "/dev/sdd1 /mnt/RPI-RP2" in out
+
+
 def test_an_unanticipated_write_error_is_one_line_and_hides_the_traceback(
     runner, cache, use_cache, bench
 ):

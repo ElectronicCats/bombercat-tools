@@ -2,7 +2,7 @@ name: Build macOS package
 
 on:
   push:
-    branches: [main]
+    #branches: [main]
     paths:
       - "modules/**"
       - "bombercat.py"

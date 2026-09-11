@@ -43,6 +43,11 @@ echo "Vendoring runtime dependencies into ${PKG_DIR#$BUILD_DIR/}/vendor ..."
 pip install --target "$PKG_DIR/vendor" --no-compile --break-system-packages \
     -r requirements.txt
 
+# certifi (among others) ships its own tests/ package, which would otherwise
+# trip the "no tests/ in the package" check in build-deb.yml.
+find "$PKG_DIR/vendor" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+find "$PKG_DIR/vendor" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
 chmod 644 "$BUILD_DIR"/DEBIAN/*
 chmod 755 "$BUILD_DIR/DEBIAN/postinst"
 chmod 755 "$BUILD_DIR/usr/bin/$PKG_NAME"

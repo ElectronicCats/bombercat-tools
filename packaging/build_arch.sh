@@ -39,6 +39,11 @@ echo "Vendoring runtime dependencies into ${SITE_PKGS}/vendor ..."
 pip install --target "$BUILD_ROOT/$SITE_PKGS/vendor" --no-compile --break-system-packages \
     -r requirements.txt
 
+# certifi (among others) ships its own tests/ package, which would otherwise
+# trip the "no tests/ in the package" check in build-arch.yml.
+find "$BUILD_ROOT/$SITE_PKGS/vendor" -type d -name "tests" -exec rm -rf {} + 2>/dev/null || true
+find "$BUILD_ROOT/$SITE_PKGS/vendor" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
 install -Dm755 packaging/debian/usr/bin/bombercat "$ROOT_TREE/bin/bombercat"
 install -Dm644 packaging/debian/usr/share/applications/bombercat.desktop \
     "$ROOT_TREE/share/applications/bombercat.desktop"

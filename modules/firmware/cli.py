@@ -107,26 +107,7 @@ def complete_firmware(ctx, param, incomplete):
 
 
 def _ensure_cache(cache: ReleaseCache, refresh: bool) -> None:
-    """Populate/revalidate the cache, tolerating GitHub being unreachable.
-
-    An empty cache with no network is fatal — there is nothing to show. A
-    *populated* cache with no network is not: the images on disk are still
-    perfectly flashable, so we say why the check failed and carry on.
-    """
-    if not (refresh or cache.tag is None or cache.is_stale()):
-        return
-    try:
-        cache.refresh(force=refresh)
-    except FirmwareError as e:
-        if cache.tag is None:
-            raise
-        print_warning(f"could not check GitHub ({e}) — showing the cached release.")
-        return
-    if cache.unverified_assets:
-        names = ", ".join(cache.unverified_assets)
-        print_warning(
-            f"downloaded WITHOUT checksum verification (no digest published): {names}"
-        )
+    cache.refresh_or_warn(force=refresh)
 
 
 def _show_list(cache: ReleaseCache, full: bool) -> None:

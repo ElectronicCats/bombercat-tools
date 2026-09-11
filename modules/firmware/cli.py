@@ -12,6 +12,7 @@
 # Distributed as-is; no warranty is given.
 
 import os
+import shutil
 from pathlib import Path
 
 import click
@@ -215,6 +216,26 @@ def _bootloader_help(image_name: str) -> None:
     """The panel for "the 1200-bps touch did not get us into the bootloader"."""
     device = unmounted_rp2_device()
     if device:
+        manual_mount = f"sudo mkdir -p /mnt/{DRIVE_LABEL} && sudo mount {device} /mnt/{DRIVE_LABEL}"
+        if shutil.which("udisksctl"):
+            fix = [
+                f"Mount it:  {fmt_command(f'udisksctl mount -b {device}')}",
+                f"or:  {fmt_command(manual_mount)}",
+                f"Run {fmt_command(f'bombercat flash {image_name}')} again.",
+            ]
+        else:
+            # `udisksctl` ships in the udisks2 package, which a minimal
+            # install (a bare Arch box, a headless server) does not pull in
+            # on its own — pointing the user at a command that is not even
+            # installed just trades one error for another.
+            fix = [
+                "udisks2 is not installed, so nothing auto-mounts removable "
+                "drives here. Install it with your package manager (e.g. "
+                "sudo pacman -S udisks2, sudo apt install udisks2) for this "
+                "to mount on its own next time,",
+                f"or mount it by hand now:  {fmt_command(manual_mount)}",
+                f"Then run {fmt_command(f'bombercat flash {image_name}')} again.",
+            ]
         print_error_panel(
             title="Bootloader drive not mounted",
             problem=f"The board is in bootloader mode, but {DRIVE_LABEL} is not mounted.",
@@ -223,11 +244,7 @@ def _bootloader_help(image_name: str) -> None:
                 "it — usually a headless box with no udisks. Mounting it needs "
                 "privileges this command will not take on its own."
             ),
-            fix=[
-                f"Mount it:  {fmt_command(f'udisksctl mount -b {device}')}",
-                f"or:  {fmt_command(f'sudo mkdir -p /mnt/{DRIVE_LABEL} && sudo mount {device} /mnt/{DRIVE_LABEL}')}",
-                f"Run {fmt_command(f'bombercat flash {image_name}')} again.",
-            ],
+            fix=fix,
         )
         return
 

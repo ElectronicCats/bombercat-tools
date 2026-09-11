@@ -17,6 +17,7 @@ import time
 from typing import Dict
 
 from ..core.bombercat import DeviceLink, resolve_port  # noqa: F401 (resolved by name)
+from ..core.firmwares import CAP_TAGS
 from ..utils.detection_cli import (
     DetectionSpec,
     build_detection_group,
@@ -124,6 +125,7 @@ tags = build_detection_group(
         ),
         info_events=_info_events,
         legacy_csv_json_aliases=True,
+        requires=CAP_TAGS,
     )
 )
 

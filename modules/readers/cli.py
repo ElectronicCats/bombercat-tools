@@ -18,6 +18,7 @@ import time
 from typing import Dict
 
 from ..core.bombercat import DeviceLink, resolve_port  # noqa: F401 (resolved by name)
+from ..core.firmwares import CAP_READERS
 from ..utils.detection_cli import (
     DetectionSpec,
     build_detection_group,
@@ -144,6 +145,7 @@ readers = build_detection_group(
             "event has\n    been seen during a short probe window."
         ),
         info_events=_info_events,
+        requires=CAP_READERS,
     )
 )
 

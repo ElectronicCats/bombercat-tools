@@ -21,9 +21,10 @@ import click
 from ..firmware.flasher import FlashOutcome
 from ..firmware.flasher import flash as write_image
 from ..firmware.releases import FirmwareError, ReleaseCache
+from ..firmware.uf2 import BootloaderTimeout, bootloader_help
 from ..utils.output import print_dim, print_warning
 from .bombercat import DeviceError
-from .exceptions import FirmwareMismatch
+from .exceptions import EXIT_FIRMWARE, FirmwareMismatch
 from .firmwares import BANNER, INFERRED, NONE, USB, DetectionResult, detect_firmware
 from .requirements import Requirement, satisfied_by
 
@@ -123,7 +124,15 @@ def ensure_firmware(
     if must_confirm and not confirm_fn(f"{message} Flash it now?"):
         raise FirmwareMismatch(message, hint=hint)
 
-    outcome = flash_fn(req, port)
+    try:
+        outcome = flash_fn(req, port)
+    except BootloaderTimeout:
+        # Same panel `bombercat flash` shows for this failure (F5): a bare
+        # BootloaderTimeout message reaching main_cli()'s generic
+        # `except BomberCatError` would read as "no RPI-RP2 drive appeared"
+        # with no next step, hiding the udisks2 / manual-mount fix.
+        bootloader_help(req.image_name)
+        raise SystemExit(EXIT_FIRMWARE)
     if outcome.port is None:
         raise FirmwareError(
             "the board did not come back as a serial port after flashing. "

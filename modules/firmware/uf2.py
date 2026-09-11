@@ -15,11 +15,13 @@ from __future__ import annotations
 import glob
 import platform
 import re
+import shutil
 import struct
 import time
 from pathlib import Path
 from typing import List, Optional
 
+from ..utils.output import fmt_command, print_error_panel
 from .releases import FirmwareError
 
 # UF2 block layout (github.com/microsoft/uf2). Every block is 512 bytes: a
@@ -271,3 +273,63 @@ def unmounted_rp2_device() -> Optional[str]:
         return str(link.resolve())
     except OSError:
         return str(link)
+
+
+def bootloader_help(image_name: str) -> None:
+    """The panel for "the 1200-bps touch did not get us into the bootloader".
+
+    Exported (docs/AUTOFLASH_PLAN.md F5, R10) so both the manual `bombercat
+    flash` command and the auto-flash orchestrator (`core.ensure_firmware`)
+    show the same actionable panel instead of a bare BootloaderTimeout
+    message — `core/` already imports plain functions from this module, so
+    this does not add a new direction of dependency.
+    """
+    device = unmounted_rp2_device()
+    if device:
+        manual_mount = f"sudo mkdir -p /mnt/{DRIVE_LABEL} && sudo mount {device} /mnt/{DRIVE_LABEL}"
+        if shutil.which("udisksctl"):
+            fix = [
+                f"Mount it:  {fmt_command(f'udisksctl mount -b {device}')}",
+                f"or:  {fmt_command(manual_mount)}",
+                f"Run {fmt_command(f'bombercat flash {image_name}')} again.",
+            ]
+        else:
+            # `udisksctl` ships in the udisks2 package, which a minimal
+            # install (a bare Arch box, a headless server) does not pull in
+            # on its own — pointing the user at a command that is not even
+            # installed just trades one error for another.
+            fix = [
+                "udisks2 is not installed, so nothing auto-mounts removable "
+                "drives here. Install it with your package manager (e.g. "
+                "sudo pacman -S udisks2, sudo apt install udisks2) for this "
+                "to mount on its own next time,",
+                f"or mount it by hand now:  {fmt_command(manual_mount)}",
+                f"Then run {fmt_command(f'bombercat flash {image_name}')} again.",
+            ]
+        print_error_panel(
+            title="Bootloader drive not mounted",
+            problem=f"The board is in bootloader mode, but {DRIVE_LABEL} is not mounted.",
+            why=(
+                f"The kernel sees the bootloader ({device}) but nothing mounted "
+                "it — usually a headless box with no udisks. Mounting it needs "
+                "privileges this command will not take on its own."
+            ),
+            fix=fix,
+        )
+        return
+
+    print_error_panel(
+        title="Board did not enter bootloader mode",
+        problem=f"No {DRIVE_LABEL} drive appeared after the 1200-bps reset.",
+        why=(
+            "The firmware currently on the board may not implement the "
+            "1200-bps reboot (a sketch built against a different core does "
+            "not). You can always get there by hand — the bootloader is in ROM."
+        ),
+        fix=[
+            "Double-tap the RESET button on the board.",
+            f"Check that a drive named {DRIVE_LABEL} appears.",
+            f"Run {fmt_command(f'bombercat flash {image_name}')} again — it "
+            "will find the drive and copy straight to it.",
+        ],
+    )

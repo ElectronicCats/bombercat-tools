@@ -71,12 +71,21 @@ def _flash_provider(req: Requirement, port: str) -> FlashOutcome:
 
 
 def _mismatch_message(req: Requirement, detection: DetectionResult) -> str:
+    # States what's on the board now, what the command needs flashed instead,
+    # and — since flashing rewrites the whole image, not just a firmware
+    # component (docs/AUTOFLASH_PLAN.md D2/D3) — what leaving nfcgate costs
+    # specifically: its saved WiFi/relay config (F6, risk R3).
     message = (
         f"`{req.command}` needs {req.provider.display}; this board is "
         f"running {detection.firmware.display}."
     )
     if detection.confidence == INFERRED:
         message += " (inferred from an old REPL reply, not certain)"
+    if detection.firmware.id == "nfcgate":
+        message += (
+            " Flashing over it erases its saved WiFi/relay config — check it "
+            "first with `bombercat config show` if you'll need it again."
+        )
     return message
 
 

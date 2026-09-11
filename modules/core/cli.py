@@ -150,8 +150,7 @@ def print_header(module=None):
     default=None,
     help=(
         "Allow (or forbid) a command to reflash the board when it needs a "
-        "different firmware. Unset: ask on a TTY, never on a script/pipe "
-        "(docs/AUTOFLASH_PLAN.md D-3.4; also settable via BOMBERCAT_AUTO_FLASH)."
+        "different firmware. Unset: ask on a TTY, never on a script/pipe"
     ),
 )
 @click.pass_context

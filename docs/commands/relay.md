@@ -65,7 +65,14 @@ In the NFCGate app, point it at the same `nfcgate-server`, set the same session,
 
 ## Subcommands
 
-The relay commands live under `bombercat relay …`. They need a board flashed with the **NFCGate** firmware (the only one that answers the control REPL — confirm with [`bombercat status`](../commands/status.md)). The old root spellings (`config`, `run`, `stop`, `monitor`) still work for one release as hidden aliases that warn and forward here.
+The relay commands live under `bombercat relay …`. They need a board flashed with the **NFCGate** firmware, and check for it before doing anything else. A board running something else is offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
+
+```
+✗ `relay` needs NFCGate; this board is running DetectTags.
+    bombercat flash NFCGate
+```
+
+The old root spellings (`config`, `run`, `stop`, `monitor`) still work for one release as hidden aliases that warn and forward here.
 
 All subcommands take the [device selectors](../reference.md#device-selection).
 

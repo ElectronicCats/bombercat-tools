@@ -125,6 +125,36 @@ def test_unsatisfied_capability_under_never_raises_without_flashing(confidence):
     assert ("inferred" in str(exc.value).lower()) == (confidence == INFERRED)
 
 
+def test_mismatch_off_nfcgate_warns_about_losing_its_config():
+    # F6/R3: flashing over NFCGate specifically loses its saved WiFi/relay
+    # config, unlike swapping between the other single-purpose firmwares.
+    flash = FakeFlash()
+    with pytest.raises(FirmwareMismatch) as exc:
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.NEVER,
+            detect_fn=lambda *a, **k: detection(NFCGATE, HANDSHAKE),
+            flash_fn=flash,
+        )
+    assert "bombercat config show" in str(exc.value)
+
+
+def test_mismatch_off_a_non_nfcgate_firmware_has_no_config_warning():
+    flash = FakeFlash()
+    with pytest.raises(FirmwareMismatch) as exc:
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.NEVER,
+            detect_fn=lambda *a, **k: detection(REGISTRY["magspoof"], HANDSHAKE),
+            flash_fn=flash,
+        )
+    assert "config show" not in str(exc.value)
+
+
 def test_usb_confidence_requires_confirmation_even_under_always_policy():
     detect = FakeDetect(detection(UNKNOWN, USB), detection(DETECTTAGS, HANDSHAKE))
     flash = FakeFlash()

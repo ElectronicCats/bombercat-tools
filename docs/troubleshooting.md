@@ -7,6 +7,7 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [Serial permission denied](#serial-permission-denied)
 - [No BomberCat found / board not detected](#board-not-detected)
 - [Board present by USB id but no handshake](#board-present-but-no-handshake)
+- [`tags read` (or similar) reflashed my board](#auto-flash-reflashed)
 - [Wrong board answers to `-d`](#wrong-board)
 - [Old firmware without `identify` / `capture`](#old-firmware)
 - [`flash`: no `RPI-RP2` drive appears](#no-rpi-rp2-drive)
@@ -98,6 +99,44 @@ of:
     running the relay firmware
   ```
   Power-cycle the board and reflash the relay firmware.
+
+<a id="auto-flash-reflashed"></a>
+## `tags read` (or similar) reflashed my board
+
+Symptom: you ran a command like `bombercat tags read`, saw a prompt naming a
+firmware mismatch, said yes, and the board came back running different
+firmware than before — and if it was running **NFCGate**, its saved
+WiFi/relay config is gone too.
+
+That's [auto-flash](reference.md#auto-flash) working as designed: `tags`,
+`readers`, `magspoof`, `relay`/`config`, and `capture` each need a specific
+firmware, and by default **ask before flashing** on an interactive terminal
+(never in a script/pipe — see the policy table in
+[reference.md#auto-flash](reference.md#auto-flash)). If you answered `y` at
+a prompt like:
+
+```
+✗ `tags` needs DetectTags; this board is running NFCGate. Flashing over it
+  erases its saved WiFi/relay config — check it first with `bombercat config
+  show` if you'll need it again. Flash it now? [y/N]:
+```
+
+the board really was reflashed with `DetectTags`, and if it said "running
+NFCGate", that config warning means the WiFi/relay settings are gone with it
+— there's no undo short of reconfiguring `relay config wifi`/`config
+nfcgate` again once you reflash back.
+
+**To stop it happening again:**
+
+- One command, one time: pass `--no-auto-flash` (`bombercat --no-auto-flash
+  tags read`) — reports the mismatch and stops instead of asking.
+- Every command, for good: `export BOMBERCAT_AUTO_FLASH=never` (put it in
+  your shell profile). You'll still see the mismatch error and the exact
+  `bombercat flash <name>` to run yourself.
+- If you actually want it to stop asking and just do it,
+  `BOMBERCAT_AUTO_FLASH=always` skips the prompt — except when the board's
+  firmware couldn't be identified at all (USB id only), which always asks
+  regardless, since that might be a newer firmware that already works.
 
 <a id="wrong-board"></a>
 ## Wrong board answers to `-d`

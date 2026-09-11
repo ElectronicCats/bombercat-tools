@@ -18,11 +18,17 @@ bombercat tags info             # firmware version + which event format it speak
 
 ## Subcommands
 
-The `tags` commands live under `bombercat tags …`. They need a board flashed with **DetectTags** (confirm with [`bombercat status`](../commands/status.md)) and, like `relay`, verify the control handshake before doing anything:
+The `tags` commands live under `bombercat tags …`. They need a board flashed with **DetectTags**, and check for it before doing anything else. A board running something else doesn't just fail — it's offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
 
 ```
-✗ /dev/ttyACM0 did not answer the handshake. `tags` needs the DetectTags
-  firmware — check what's flashed with:  bombercat status
+✗ `tags` needs DetectTags; this board is running magspoof.
+    bombercat flash DetectTags
+```
+
+A board that answers **nothing at all** — no candidate firmware, wrong port, unplugged — is the older, separate error:
+
+```
+✗ nothing responded on /dev/ttyACM0.
 ```
 
 All four subcommands take the [device selectors](../reference.md#device-selection) plus their own `-v`/`--verbose` (see [Global options](../reference.md#global-options) for what `-v` does here specifically — it traces the wire protocol, not just the log level).

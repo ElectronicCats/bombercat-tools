@@ -22,11 +22,11 @@ The board runs the PN7150 in card-emulation (LISTEN) mode, presenting an emulate
 
 All subcommands take the [device selectors](../reference.md#device-selection) plus their own `-v`/`--verbose` (see [Global options](../reference.md#global-options)).
 
-Like [`tags`](../commands/tags.md), the `readers` commands verify the control handshake before doing anything:
+Like [`tags`](../commands/tags.md), the `readers` commands need **DetectReaders** and check for it before doing anything else. A board running something else is offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
 
 ```
-✗ /dev/ttyACM0 did not answer the handshake. `readers` needs the
-  DetectReaders firmware — check what's flashed with:  bombercat status
+✗ `readers` needs DetectReaders; this board is running magspoof.
+    bombercat flash DetectReaders
 ```
 
 ---

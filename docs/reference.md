@@ -7,6 +7,7 @@ Complete reference for every `bombercat` command and subcommand: purpose, flags,
 - [Invocation](#invocation)
 - [Global options](#global-options)
 - [Device selection: `-d` / `-p`](#device-selection)
+- [Auto-flash](#auto-flash)
 - [Commands](#commands)
   - [`device`](commands/device.md)
   - [`identify`](commands/device.md#identify)
@@ -54,6 +55,7 @@ Placed before the command (`bombercat -v device list`):
 | Option | Description |
 |---|---|
 | `-v`, `--verbose` | Raise the log level to INFO (shows the `rich` logger's info lines; off by default, which is WARNING). Repeatable (`-vv`). |
+| `--auto-flash` / `--no-auto-flash` | Allow, or forbid, a command to reflash the board when it needs firmware the board doesn't have. Unset by default — see [Auto-flash](#auto-flash) for what that means. |
 | `-h`, `--help` | Show help and exit. |
 
 `-v` is also accepted **after** the command (`bombercat device list -v`) wherever a subcommand lists it in its own `Options:` — both positions mean the same thing, and the higher count wins if you somehow pass both. On the [`tags`](commands/tags.md) commands specifically, `-v` does more than raise the log level: it traces the raw `>`/`<` wire protocol to stderr (tx cyan, rx dim), and `-vv` adds an elapsed-time stamp and byte count ahead of each line:
@@ -171,6 +173,40 @@ IDs renumbering, zero/several boards found), see
 
 ---
 
+<a id="auto-flash"></a>
+## Auto-flash
+
+Every command that needs a specific firmware capability — [`tags`](commands/tags.md), [`tags mifare`](commands/tags.md#tags-mifare), [`readers`](commands/readers.md), [`magspoof`](commands/magspoof.md), [`relay`](commands/relay.md)/`config`, [`capture`](commands/capture.md) — checks what's actually flashed *before* it opens the control link, and can fix a mismatch itself instead of just failing (docs/AUTOFLASH_PLAN.md). `status` and `flash` never do this: `status`'s job is to report, and `flash` already *is* the explicit flash.
+
+**What triggers it.** The board answers, but with firmware that doesn't provide what the command needs — e.g. `tags read` on a board running `magspoof`:
+
+```
+✗ `tags` needs DetectTags; this board is running magspoof.
+    bombercat flash DetectTags
+```
+
+(Exit code `3` — see [Exit codes](#exit-codes).) A board that answers **nothing at all** is a different, older error (`nothing responded on <port>`) — that's a connection problem, not a firmware one, and auto-flash never applies to it.
+
+**Whether it offers to fix it, or just reports the mismatch, follows three states — first one set wins:**
+
+1. `--auto-flash` / `--no-auto-flash` on the command line.
+2. `BOMBERCAT_AUTO_FLASH` ∈ `always` | `ask` | `never`.
+3. Unset: **`ask`** on an interactive terminal, **`never`** when stdin isn't a TTY (a script or a pipe is never reflashed without an explicit opt-in above).
+
+| Policy | Board identified with certainty (handshake) | Board identified only by USB id (firmware unknown) |
+|---|---|---|
+| `never` | Reports the mismatch above and stops (exit `3`). | Same. |
+| `ask` | Prompts `… Flash it now?`; declining reports the mismatch and stops. | Same prompt. |
+| `always` | Flashes without asking. | **Still prompts** — an unrecognized firmware might be a newer one that already works; reflashing it without asking would be the one case `always` shouldn't skip. |
+
+If the firmware currently on the board is **NFCGate**, the mismatch message adds a specific warning before you confirm: flashing over it erases its saved WiFi/relay config, and suggests `bombercat config show` first if you'll need those values again. Every other firmware pairing has nothing comparable to lose.
+
+Once consented, flashing follows the same path as `bombercat flash <name>` — including its bootloader-drive handling (a headless box without `udisks2` gets the same actionable panel instead of a bare timeout, see [`flash`: no `RPI-RP2` drive appears](troubleshooting.md#no-rpi-rp2-drive)) — and re-checks the board afterwards before letting the original command proceed. If that re-check can't confirm the new firmware in time, the command prints a warning and continues anyway rather than failing outright — the board usually still works even when the probe doesn't.
+
+See [`tags read` (or similar) reflashed my board](troubleshooting.md#auto-flash-reflashed) for how to turn this off for good.
+
+---
+
 ## Commands
 
 Each command group has its own detailed reference page under `docs/commands/`:
@@ -198,6 +234,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | Variable | Used by | Meaning |
 |---|---|---|
 | `BOMBERCAT_VID` / `BOMBERCAT_PID` | device discovery | Declare a custom USB VID/PID for a board re-flashed with a non-stock USB identity (hex `0x1209` or decimal). Both must be set to add the pair to the match list. |
+| `BOMBERCAT_AUTO_FLASH` | [auto-flash](#auto-flash) | `always` \| `ask` \| `never` — whether a command may reflash a board running the wrong firmware. Overridden by `--auto-flash`/`--no-auto-flash`; overrides the ask-on-a-TTY/never-otherwise default. |
 | `BOMBERCAT_FIRMWARE_REPO` | [`flash`](commands/flash.md) | GitHub repo to pull firmware releases from (default `ElectronicCats/bombercat-firmware`). Point it at a fork to test against its releases. |
 | `BOMBERCAT_FIRMWARE_CACHE` | [`flash`](commands/flash.md) | Where downloaded images live (default `~/.bombercat/firmware`). |
 | `GITHUB_TOKEN` | [`flash`](commands/flash.md) | Sent as a bearer token to the GitHub API, raising the 60 req/h unauthenticated limit. Optional. |
@@ -210,6 +247,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 - `0` — success.
 - `1` — a handled error: no board found, handshake failed, a `set`/`run`/`capture` rejected by the device, a missing file, etc. These are reported as a clean one-line message (with a leading `✗`), **never** a Python traceback. A stray traceback is a bug worth reporting.
 - `2` — `--strict` mode in [`capture start`](commands/capture.md#capture-start): link ended with zero frames captured.
+- `3` — the board is running firmware that can't do what was asked, and [auto-flash](#auto-flash) didn't fix it (`never`/declined, or the release has no matching image).
 - `130` — interrupted (Ctrl-C / EOF).
 
 ---

@@ -925,6 +925,88 @@ def test_windows_candidates_with_no_drives_present(monkeypatch):
     assert uf2._windows_candidates() == []
 
 
+class _FakeVolumeKernel32:
+    """Stands in for GetVolumeInformationW: `labels` maps a root path
+    (`GetVolumeInformationW`'s first argument) to the label it should report,
+    or to None to make the call fail (`ok == 0`) the way it does for an
+    unreadable/disconnected drive."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def GetVolumeInformationW(self, root, buf, size, *rest):
+        label = self.labels.get(root)
+        if label is None:
+            return 0
+        buf.value = label
+        return 1
+
+
+def test_windows_volume_label_reads_the_real_label(monkeypatch):
+    import ctypes
+
+    root = Path("D:/")
+    kernel32 = _FakeVolumeKernel32({str(root): "RPI-RP2"})
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"kernel32": kernel32})(), raising=False
+    )
+
+    assert uf2._windows_volume_label(root) == "RPI-RP2"
+
+
+def test_windows_volume_label_is_none_when_the_call_fails(monkeypatch):
+    import ctypes
+
+    kernel32 = _FakeVolumeKernel32({})
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"kernel32": kernel32})(), raising=False
+    )
+
+    assert uf2._windows_volume_label(Path("D:/")) is None
+
+
+class _BareWindowsDriveRoot:
+    """A bare Windows drive root has no path name at all —
+    `Path('D:/').name` is always `''`, unlike a Linux/macOS mountpoint,
+    which is already named after the volume label (e.g.
+    `/media/user/RPI-RP2`). `find_uf2_drive` must fall back to the real
+    volume label on Windows instead of comparing against that empty name —
+    otherwise it never recognizes the drive at all, even when it is really
+    mounted with the firmware image ready to be copied."""
+
+    name = ""
+
+    def __init__(self, real_dir):
+        self._real = real_dir
+
+    def __truediv__(self, other):
+        return self._real / other
+
+
+def test_find_uf2_drive_falls_back_to_the_volume_label_on_windows(
+    tmp_path, mounts, monkeypatch
+):
+    drive = _BareWindowsDriveRoot(make_drive(tmp_path))
+    mounts(drive)
+    monkeypatch.setattr(uf2.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        uf2, "_windows_volume_label", lambda path: "RPI-RP2" if path is drive else None
+    )
+
+    assert uf2.find_uf2_drive() is drive
+
+
+def test_find_uf2_drive_ignores_a_windows_drive_with_a_different_label(
+    tmp_path, mounts, monkeypatch
+):
+    drive = _BareWindowsDriveRoot(make_drive(tmp_path, name="CATSNIFFER"))
+    mounts(drive)
+    monkeypatch.setattr(uf2.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(uf2, "_windows_volume_label", lambda path: "CATSNIFFER")
+
+    assert uf2.find_uf2_drive() is None
+
+
 # ── Copying (§3.4) ───────────────────────────────────────────────────────────
 
 

@@ -60,13 +60,19 @@ bombercat tags read -t 30 --json
   uid           04:1A:2B:3C
   technology    NFC-A
   protocol      T2T
-  SAK           08
+  atqa          0004
+  sak           08
+  model         MIFARE Classic 1K
 ```
+
+`atqa`, `sak` and `model` are resolved **host-side** from the `SENS RES` /
+`SEL RES` lines the firmware already prints — in **both** event modes, so they
+work on the published `.uf2` you have today ([see below](#chip-model)).
 
 `--json` prints a single clean object on stdout (nothing else touches stdout, so it's pipeable) with every field, `extra` merged in flat:
 
 ```json
-{"uid": "041A2B3C", "tech": "NFC-A", "protocol": "T2T", "ts_ms": 1234, "SAK": "08"}
+{"uid": "041A2B3C", "tech": "NFC-A", "protocol": "T2T", "ts_ms": 1234, "atqa": "0004", "sak": "08", "model": "MIFARE Classic 1K"}
 ```
 
 No tag within the timeout is exit code `1`:
@@ -135,13 +141,13 @@ bombercat tags scan -t 30 --json-out tags.json --csv-out tags.csv --force
 ℹ Scanning /dev/ttyACM0 for 10s — Ctrl-C to stop early
 
 ℹ Scan @ /dev/ttyACM0 — 10s, 3 detections, 2 unique tags
-┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━┓
-┃ UID                                ┃ Tech  ┃ Protocol ┃ Count ┃ First ┃ Last ┃
-┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━┩
-│ 04:1A:2B:3C                        │ NFC-A │ T2T      │     2 │  0.0s │ 4.1s │
-│ unavailable (NFC-B: firmware       │ NFC-B │ ISODEP   │     1 │  6.7s │ 6.7s │
-│ prints no ID)                      │       │          │       │       │      │
-└────────────────────────────────────┴───────┴──────────┴───────┴───────┴──────┘
+┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━┳━━━━━━┓
+┃ UID                          ┃ Tech  ┃ Protocol ┃ Model                    ┃ Count ┃ First ┃ Last ┃
+┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━╇━━━━━━┩
+│ 04:1A:2B:3C:4D:5E:6F         │ NFC-A │ T2T      │ MIFARE Ultralight / NTAG │     2 │  0.0s │ 4.1s │
+│ unavailable (NFC-B: firmware │ NFC-B │ ISODEP   │ —                        │     1 │  6.7s │ 6.7s │
+│ prints no ID)                │       │          │                          │       │       │      │
+└──────────────────────────────┴───────┴──────────┴──────────────────────────┴───────┴───────┴──────┘
 ```
 
 A transient progress bar (elapsed / timeout, live detection count) shows while sampling and clears before the summary prints. An empty sample prints `no tags detected` instead of an empty table; `--json`/`--csv` still get written (an empty array / header-only file) so scripted runs don't have to special-case a quiet scan. Ctrl-C ends the sample early and summarizes whatever was seen so far — same as `watch`.
@@ -514,7 +520,7 @@ Capacity is the same as `code`'s — **48 bytes** per sector (**32** for sector 
 - `read`/`watch`/`scan`/`info` require **DetectTags** firmware; `mifare …` requires **MifareClassic** firmware instead — confirm which is flashed with [`bombercat status`](../commands/status.md).
 - See [Device selection: `-d` / `-p`](../reference.md#device-selection) for selector rules.
 - Two things worth knowing:
-  - **Every published `.uf2` today parses as legacy text**, not the newer structured `:tag` events — same detections, just without the `extra` fields the structured format can carry. `bombercat tags info` tells you which mode a given board is in.
+  - **Every published `.uf2` today parses as legacy text**, not the newer structured `:tag` events — same detections, just without the `extra` fields the structured format can carry. `bombercat tags info` tells you which mode a given board is in. ([Chip model fingerprinting](#chip-model) is the exception: it is derived from prose both modes print, so it works either way.)
   - **NFC-B and NFC-F tags print no UID on today's published `.uf2`** — that's a firmware limitation, not a CLI bug. `tags` reports it honestly as `unavailable (NFC-B: firmware prints no ID)` rather than a blank or a made-up value. A `DetectTags.ino` update that extracts the real UID for both (PUPI for NFC-B, IDm for NFC-F) exists in the firmware source but isn't in a published release yet — boards built from that source report the real UID (plus `attrib`/`bitrate` extras) instead.
 - See [Troubleshooting](../troubleshooting.md#no-tags-detected) if `watch`/`scan` looks quiet with a card actually on the reader.
 
@@ -524,3 +530,68 @@ Capacity is the same as `code`'s — **48 bytes** per sector (**32** for sector 
 
 - [`readers`](../commands/readers.md) — the mirror image: detect *readers/terminals* instead of *tags*, over the **DetectReaders** firmware's emulated card. Same `read`/`watch`/`scan`/`info` shape.
 - [`status`](../commands/status.md) — check or flash the firmware a board needs before running any of these.
+
+---
+
+<a id="chip-model"></a>
+## Chip model fingerprinting
+
+Every NFC-A detection carries two bytes that say a lot about what the tag
+actually is: **ATQA** (the `SENS RES` the firmware prints) and **SAK** (`SEL
+RES`). The firmware has always printed both as prose; the CLI now parses that
+pair, normalizes it, and looks it up in `modules/tags/chips.py` — the same
+(ATQA, SAK) table proxmark3's `hf 14a info` and libnfc/nfc-tools use, following
+NXP AN10833 *"MIFARE type identification procedure"*.
+
+The result shows up as three keys on every NFC-A detection — `atqa`, `sak` and
+`model` — in `tags read`, `tags watch --json`, the `tags scan` table and its
+JSON/CSV exports. **No firmware change is needed**: the bytes were already on
+the wire, and this works in **legacy text mode as well as structured mode** —
+which matters, because every published `.uf2` today is in legacy mode.
+
+Only NFC-A carries an ATQA/SAK, so NFC-B, NFC-F and NFC-V detections never get
+these keys (NFC-B's longer `SENSB_RES` is printed under the same `SENS RES`
+label and is deliberately not mistaken for an ATQA).
+
+### One-line detection delay on NFC-A
+
+The firmware prints `SEL RES` — the SAK — *one line after* the UID:
+
+```
+	Technology: NFC-A
+	SENS RES = 0x04 0x00
+	NFC ID = 0x32 0x91 0x13 0x20
+	SEL RES = 0x08
+```
+
+So in legacy mode an NFC-A detection is now finalized on the `SEL RES` line
+rather than on the `NFC ID` line — otherwise the tag would be reported before
+its own SAK existed. Both the published `.uf2` and the current firmware source
+print `SEL RES` unconditionally right there, and `Remove the Card` (printed
+after every detection) is the backstop: a detection is never lost, only
+finalized a line later. Other technologies are unaffected.
+
+### Byte order
+
+ISO14443-3 transmits ATQA low byte first, so the firmware's
+`SENS RES = 0x44 0x00` is ATQA **`0044`** — written the conventional MSB-first
+way, matching how proxmark reports it. SAK is a single byte, as printed.
+
+### What the table can and cannot tell apart
+
+ATQA + SAK identify a **family**. Several chips are byte-identical at this
+layer and can only be separated by a command `DetectTags` never issues, so
+those entries deliberately name the family instead of guessing a part number:
+
+| Signature | Reported as | Actually could be | Separated by |
+|---|---|---|---|
+| `0044` / `00` | MIFARE Ultralight / NTAG | UL, UL-C, UL EV1, NTAG203, NTAG210/212/213/215/216, NTAG I²C | `GET_VERSION` (`0x60`), or the UL-C 3DES auth |
+| `0344` / `20` | MIFARE DESFire / NTAG 424 DNA | DESFire D40/EV1/EV2/EV3, NTAG 424 DNA | `GetVersion` (`0x60`) |
+| `0004` / `08` | MIFARE Classic 1K | genuine 1K, Fudan FM11RF08, Gen1a/CUID/FUID "magic" clones | the `0x40`/`0x43` magic backdoor probe |
+
+Magic/clone cards answer ATQA and SAK *exactly* like the chip they impersonate
+— that is the point of them — so they are not, and cannot be, a table entry.
+
+An unknown pair, or a tag that printed no `SENS RES`/`SEL RES` at all (NFC-B,
+NFC-F, NFC-V), leaves `model` unset and the table column blank. The detection
+itself is unaffected: `uid`, `tech` and `protocol` are parsed exactly as before.

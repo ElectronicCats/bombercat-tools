@@ -44,7 +44,9 @@ Grab the package for your platform from the
 `.pkg`/`.exe` are unsigned (no Apple Developer ID / Authenticode cert yet):
 expect a Gatekeeper/SmartScreen warning on first run. Building any of them
 locally, or wiring them into CI, is covered in
-[`docs/packaging.md`](docs/packaging.md).
+[`docs/packaging.md`](docs/packaging.md); the step-by-step install (and
+uninstall) instructions per platform live in
+[`docs/installation.md`](docs/installation.md).
 
 ### From source (virtual environment)
 
@@ -172,6 +174,7 @@ one by its ID with `-d/--device`. See the
 | [Glossary](docs/glossary.md) | Terms used across these docs — REPL, SEL_RES, APDU, Service Code, UF2, VID/PID, and more. |
 | [Current limitations](docs/limitations.md) | Platform support matrix, host requirements, device/serial and relay-scope constraints — known, not bugs. |
 | [Deploy a dedicated server](docs/deployment.md) | Run `nfcgate-server` permanently on a VPS (Docker or systemd), verify the latency patch, day-2 ops. |
+| [Install / uninstall the packages](docs/installation.md) | Step-by-step install of the release assets on Windows, macOS (Intel/Apple Silicon), Debian/Ubuntu and Arch — plus post-install (`setup-env`, groups, completion) and how to remove each one. |
 | [Building the packages](docs/packaging.md) | Build the `.deb`/`.pkg.tar.zst`/`.pkg`/`.exe` locally: prerequisites per OS, `make` targets, where the output lands. |
 | [Cutting a release](docs/release.md) | The release procedure: bump `VERSION`, tag, `gh release create`, verify the 5 assets, re-run a single failed build. |
 | [Rooting an Android phone for NFCGate](docs/android-nfcgate-rooting-guide.en.md) ([es](docs/android-nfcgate-rooting-guide.es.md)) | Required only for Path B card/HCE mode: rooting with Magisk and installing NFCGate's native module (Zygisk + LSPosed), with the associated risks. |

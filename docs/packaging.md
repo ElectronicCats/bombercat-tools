@@ -5,9 +5,7 @@
 (Windows). CI builds and uploads all four on every push to `main` and on each
 release (see [`.github/workflows/build-*.yml`](../.github/workflows/build-deb.yml));
 every recipe also runs as a local script or `make` target, so you don't need
-CI to reproduce a build. Full design rationale lives in
-[`PACKAGING_PLAN.md`](PACKAGING_PLAN.md); this page is just the "how do I run
-it" reference.
+CI to reproduce a build.
 
 No native dependencies to install anywhere — `click`/`rich`/`pyserial`/
 `Pygments`/`markdown-it-py` are pure Python, and flashing is UF2 mass-storage,
@@ -70,11 +68,6 @@ build.
 sudo installer -pkg bombercat-<version>.pkg -target /
 bombercat --version
 ```
-
-**Unsigned.** Gatekeeper will refuse to open it on first run — right-click
-→ Open, or `xattr -d com.apple.quarantine bombercat-<version>.pkg` before
-installing. Signing needs an Apple Developer ID ($99/yr) plus notarization;
-out of scope for now (see [`PACKAGING_PLAN.md` §4.3](PACKAGING_PLAN.md#43-riesgos--bloqueadores-conocidos)).
 
 ## `.exe` (Windows)
 

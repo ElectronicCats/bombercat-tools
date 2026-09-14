@@ -17,10 +17,15 @@ from modules.tags.cli import info_cmd, read_cmd, scan_cmd, tags, watch_cmd
 
 STRUCTURED_LINE = ":tag 1234 NFC-A T2T 041A2B3C"
 
+# The full NFC-A prose block a published (pre-`:tag`) .uf2 prints. SEL RES
+# closes the detection — NFC-A is held back one line past its UID so the SAK
+# lands on the same Tag (see test_tags_parser.py).
 LEGACY_NFC_A_LINES = [
     "Remote activated tag type: 2",
     "\tTechnology: NFC-A",
+    "\tSENS RES = 0x04 0x00",
     "\tNFC ID = 0x04 0x1a 0x2b",
+    "\tSEL RES = 0x08",
 ]
 
 
@@ -439,3 +444,83 @@ def test_info_reports_a_board_that_will_not_handshake(runner, use_link):
 
 def test_tags_group_exposes_all_subcommands():
     assert set(tags.commands) == {"read", "watch", "scan", "info", "mifare"}
+
+
+# ── chip model column ────────────────────────────────────────────────────────
+
+FINGERPRINTED_LINES = [
+    "\tSENS RES = 0x04 0x00",
+    "\tSEL RES = 0x08",
+    ":tag 1234 NFC-A MIFARE A3912200",
+]
+
+
+def test_read_prints_the_resolved_chip_model(runner, use_link):
+    use_link(tagscli, FakeLink(stream_lines=list(FINGERPRINTED_LINES)))
+    result = runner.invoke(read_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "MIFARE Classic 1K" in out
+    assert "0004" in out and "08" in out
+
+
+def test_scan_table_has_a_model_column(runner, use_link):
+    use_link(tagscli, FakeLink(stream_lines=list(FINGERPRINTED_LINES)))
+    result = runner.invoke(scan_cmd, ["-t", "0.05"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "Model" in out
+    assert "MIFARE Classic 1K" in out
+
+
+def test_scan_table_leaves_the_model_column_blank_when_unresolved(runner, use_link):
+    """A tag whose ATQA/SAK never arrived must still render a full row."""
+    use_link(tagscli, FakeLink(stream_lines=[STRUCTURED_LINE]))
+    result = runner.invoke(scan_cmd, ["-t", "0.05"])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "Model" in out
+    assert "04:1A:2B:3C" in out
+
+
+def test_scan_json_export_carries_the_model(runner, use_link, tmp_path):
+    json_path = tmp_path / "scan.json"
+    use_link(tagscli, FakeLink(stream_lines=list(FINGERPRINTED_LINES)))
+    result = runner.invoke(scan_cmd, ["-t", "0.05", "--json-out", str(json_path)])
+
+    assert result.exit_code == 0
+    row = json.loads(json_path.read_text())[0]
+    assert row["model"] == "MIFARE Classic 1K"
+    assert row["atqa"] == "0004"
+    assert row["sak"] == "08"
+
+
+def test_legacy_read_resolves_the_chip_model_too(runner, use_link):
+    """The mode every published .uf2 is actually in — the model must resolve
+    there, not only on a board flashed from current firmware source."""
+    use_link(tagscli, FakeLink(stream_lines=list(LEGACY_NFC_A_LINES)))
+    result = runner.invoke(read_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "MIFARE Classic 1K" in out
+
+
+def test_legacy_nfca_still_reports_without_a_sel_res_line(runner, use_link):
+    """`Remove the Card` is the backstop: a detection is never lost just
+    because the SAK line didn't arrive."""
+    lines = [
+        "Remote activated tag type: 2",
+        "\tTechnology: NFC-A",
+        "\tNFC ID = 0x04 0x1a 0x2b",
+        "Remove the Card",
+    ]
+    use_link(tagscli, FakeLink(stream_lines=lines))
+    result = runner.invoke(read_cmd, [])
+    out = flat(result.stdout)
+
+    assert result.exit_code == 0
+    assert "04:1A:2B" in out

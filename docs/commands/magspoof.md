@@ -41,11 +41,11 @@ bombercat magspoof card require-sc visa --apply
 
 ## Subcommands
 
-The `magspoof` commands live under `bombercat magspoof …`. They need a board flashed with **magspoof** (confirm with [`bombercat status`](../commands/status.md) — this is a different image from `MagspoofCVSAttack`/`MagSpoofMqtt`, which share the same boot output but don't carry this REPL surface) and, like `tags`/`readers`, verify the control handshake before doing anything:
+The `magspoof` commands live under `bombercat magspoof …`. They need a board flashed with **magspoof** specifically, and check for it before doing anything else — a board running something else, `MagspoofCVSAttack`/`MagSpoofMqtt` included (same boot banner, but neither exposes the `magplay`/`magset`/`magget`/`magbtn` REPL hooks these commands need), is offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
 
 ```
-✗ /dev/ttyACM0 did not answer the handshake. `magspoof` needs the MagSpoof
-  firmware — check what's flashed with:  bombercat status
+✗ `magspoof` needs magspoof; this board is running MagspoofCVSAttack.
+    bombercat flash magspoof
 ```
 
 Every subcommand takes the [device selectors](../reference.md#device-selection) plus its own `-v`/`--verbose` (see [Global options](../reference.md#global-options) — `-v` traces the raw wire protocol here too).

@@ -239,12 +239,12 @@ def _permission_fix() -> tuple[str, list[str], list[str]]:
     activate, activate_notes = _activate_group_step()
 
     if state == "absent":
+        docker_group_cmd = fmt_command('sudo usermod -aG docker "$USER"')
         return (
             "Docker runs as a privileged daemon and only members of the\n"
             "[bold]docker[/bold] group may talk to its socket. Your user is not one yet.",
             [
-                f"{fmt_command('sudo usermod -aG docker \"$USER\"')}\n"
-                "     add yourself to the group",
+                f"{docker_group_cmd}\n     add yourself to the group",
                 activate,
                 f"{fmt_command('bombercat testserver run')}\n     re-run this command",
             ],

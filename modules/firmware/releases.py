@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import ssl
 import time
 import urllib.error
 import urllib.parse
@@ -26,6 +27,11 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
+
+import certifi
+
+from ..core.exceptions import EXIT_FIRMWARE, BomberCatError
+from ..utils.output import print_warning
 
 # Where the images come from. The env vars exist so a fork (or a checkout with
 # a test release) can be used without touching the code.
@@ -110,16 +116,28 @@ class _StripAuthOnRedirect(urllib.request.HTTPRedirectHandler):
         return new_req
 
 
-_opener = urllib.request.build_opener(_StripAuthOnRedirect)
+# The frozen macOS build has no system CA bundle for `ssl` to find (unlike
+# Linux, which always has one, and Windows, where the ssl module falls back to
+# the native cert store) — pointing the context at certifi's bundle explicitly
+# keeps `bombercat flash` from failing with CERTIFICATE_VERIFY_FAILED there.
+_ssl_context = ssl.create_default_context(cafile=certifi.where())
+_opener = urllib.request.build_opener(
+    _StripAuthOnRedirect, urllib.request.HTTPSHandler(context=_ssl_context)
+)
 
 
-class FirmwareError(Exception):
+class FirmwareError(BomberCatError):
     """Anything that stops us from getting a usable firmware image.
 
     The library never calls `exit()` (unlike catnip's Flasher, FLASH_PLAN
     §2.3.2) — the command layer catches this and picks the exit code, the same
-    contract `DeviceError` already has in core/bombercat.py.
+    contract `DeviceError` already has in core/bombercat.py. Inherits from
+    `BomberCatError` (exit code 3) so `main_cli()` gives it the same
+    hint-aware handling as `FirmwareMismatch` without every existing
+    `raise FirmwareError(msg)` call site having to change.
     """
+
+    exit_code = EXIT_FIRMWARE
 
 
 class ReleaseNotFound(FirmwareError):
@@ -433,6 +451,31 @@ class ReleaseCache:
 
         self._write_index(tag)
         return tag
+
+    def refresh_or_warn(self, force: bool) -> None:
+        """Populate/revalidate, tolerating GitHub being unreachable.
+
+        An empty cache with no network is fatal — there is nothing to show.
+        A *populated* cache with no network is not: the images on disk are
+        still perfectly flashable, so this warns and carries on instead of
+        raising. Moved here (docs/AUTOFLASH_PLAN.md F3) from `firmware/cli.py`
+        so `core.ensure_firmware` does not have to import the CLI module to
+        reuse it.
+        """
+        if not (force or self.tag is None or self.is_stale()):
+            return
+        try:
+            self.refresh(force=force)
+        except FirmwareError as e:
+            if self.tag is None:
+                raise
+            print_warning(f"could not check GitHub ({e}) — showing the cached release.")
+            return
+        if self.unverified_assets:
+            names = ", ".join(self.unverified_assets)
+            print_warning(
+                f"downloaded WITHOUT checksum verification (no digest published): {names}"
+            )
 
     def _download_asset(self, asset: Dict, staging: Path) -> None:
         name = asset["name"]

@@ -87,6 +87,34 @@ def test_every_command_is_registered(monkeypatch, name):
     assert name in cli.commands
 
 
+def test_dev_commands_are_hidden_outside_a_checkout(monkeypatch):
+    """A packaged install has no gen_proto.sh / testserver/ to drive."""
+    monkeypatch.setattr(root, "_dev_checkout", lambda: False)
+    monkeypatch.delitem(cli.commands, "proto", raising=False)
+    monkeypatch.delitem(cli.commands, "testserver", raising=False)
+    monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
+    with pytest.raises(SystemExit):
+        main_cli()
+
+    assert "proto" not in cli.commands
+    assert "testserver" not in cli.commands
+
+
+def test_dev_checkout_follows_gen_proto_sh(monkeypatch, tmp_path):
+    monkeypatch.delenv("BOMBERCAT_DEV", raising=False)
+    monkeypatch.setattr(root, "__file__", str(tmp_path / "modules/core/cli.py"))
+    assert root._dev_checkout() is False
+
+    (tmp_path / "gen_proto.sh").write_text("#!/bin/bash\n")
+    assert root._dev_checkout() is True
+
+
+def test_dev_checkout_can_be_forced_by_the_env_var(monkeypatch, tmp_path):
+    monkeypatch.setattr(root, "__file__", str(tmp_path / "modules/core/cli.py"))
+    monkeypatch.setenv("BOMBERCAT_DEV", "1")
+    assert root._dev_checkout() is True
+
+
 def test_relay_group_holds_the_nfcgate_subcommands(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
     with pytest.raises(SystemExit):
@@ -130,6 +158,13 @@ def test_help_is_available_as_both_h_and_help(runner):
         assert "All in one bombercat tools environment" in flat(result.output)
 
 
+def test_version_flag_reports_the_package_version(runner):
+    result = runner.invoke(cli, ["--version"])
+
+    assert result.exit_code == 0
+    assert f"bombercat, version {__version__}" in flat(result.output)
+
+
 def test_verbose_flag_raises_the_log_level(runner, monkeypatch):
     import logging
 
@@ -152,6 +187,25 @@ def test_header_is_skipped_while_click_generates_completions(monkeypatch):
         main_cli()
 
     assert printed == []
+
+
+def test_bombercat_error_exits_with_its_own_code_and_prints_hints(monkeypatch):
+    """A BomberCatError (e.g. FirmwareMismatch) carries its exit code and hint
+    lines through main_cli(), same as a ClickException carries e.exit_code."""
+    from modules.core.exceptions import FirmwareMismatch
+
+    def _boom(*a, **k):
+        raise FirmwareMismatch(
+            "tags read needs DetectTags; this board is running NFCGate.",
+            hint=["bombercat flash DetectTags"],
+        )
+
+    monkeypatch.setattr(cli, "main", _boom)
+    monkeypatch.setattr(sys, "argv", ["bombercat", "device"])
+    with pytest.raises(SystemExit) as e:
+        main_cli()
+
+    assert e.value.code == 3
 
 
 # ── identify ─────────────────────────────────────────────────────────────────

@@ -11,7 +11,9 @@
 import pytest
 import serial
 
+import modules.utils.detection_cli as detection_cli
 from conftest import DeviceError, FakeLink, err, flat, ok
+from modules.core.ensure_firmware import EnsureOutcome
 from modules.nfcgate import cli as nfc
 from modules.nfcgate.cli import (
     config,
@@ -42,9 +44,12 @@ def test_session_reports_a_board_that_will_not_handshake(runner, use_link):
 
 
 def test_session_reports_an_unresolvable_target(runner, monkeypatch):
+    # `relay` requires CAP_RELAY (docs/AUTOFLASH_PLAN.md F4b), so the port
+    # comes from resolve_status_port, not nfc.resolve_port (see the sibling
+    # test below) — stub that instead of nfc.resolve_port.
     monkeypatch.setattr(
-        nfc,
-        "resolve_port",
+        detection_cli,
+        "resolve_status_port",
         lambda *a, **k: (_ for _ in ()).throw(
             DeviceError("no BomberCat found; pass --port")
         ),
@@ -56,7 +61,17 @@ def test_session_reports_an_unresolvable_target(runner, monkeypatch):
 
 
 def test_session_reports_a_serial_error_as_one_line(runner, monkeypatch):
-    monkeypatch.setattr(nfc, "resolve_port", lambda *a, **k: "/dev/fake0")
+    # `relay` requires CAP_RELAY (docs/AUTOFLASH_PLAN.md F4b), so the port
+    # comes from resolve_status_port/ensure_firmware, not nfc.resolve_port —
+    # stub those two (as `use_link` does) and let DeviceLink still raise.
+    monkeypatch.setattr(
+        detection_cli, "resolve_status_port", lambda *a, **k: ("/dev/fake0", True)
+    )
+    monkeypatch.setattr(
+        detection_cli,
+        "ensure_firmware",
+        lambda *a, **k: EnsureOutcome(port="/dev/fake0", detection=None, flashed=False),
+    )
 
     def _open(*a, **k):
         raise serial.SerialException("could not open port")

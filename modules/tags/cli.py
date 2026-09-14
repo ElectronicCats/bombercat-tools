@@ -81,6 +81,9 @@ _TABLE_COLUMNS = [
     ("UID", lambda row: Tag(uid=row["uid"], tech=row["tech"]).pretty_uid, None),
     ("Tech", lambda row: row["tech"] or "[dim]—[/dim]", None),
     ("Protocol", lambda row: row["protocol"] or "[dim]—[/dim]", None),
+    # Resolved host-side from the ATQA/SAK the firmware prints (chips.py);
+    # blank whenever those never arrived or the pair isn't in the table.
+    ("Model", lambda row: row.get("model") or "[dim]—[/dim]", None),
     ("Count", lambda row: str(row["count"]), "right"),
     ("First", lambda row: f"{row['first_s']:.1f}s", "right"),
     ("Last", lambda row: f"{row['last_s']:.1f}s", "right"),

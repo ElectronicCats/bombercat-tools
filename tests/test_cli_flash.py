@@ -209,11 +209,11 @@ def test_a_newer_tag_replaces_the_cached_one(cache, tmp_path):
     c, _ = cache()
     c.refresh()
 
-    newer = FakeGitHub(tag="v1.3.1", images={"NFCGate.uf2": b"\x09" * 512})
+    newer = FakeGitHub(tag="v1.3.2", images={"NFCGate.uf2": b"\x09" * 512})
     c._fetch = newer
 
-    assert c.refresh() == "v1.3.1"
-    assert c.tag == "v1.3.1"
+    assert c.refresh() == "v1.3.2"
+    assert c.tag == "v1.3.2"
     assert [i.name for i in c.images()] == ["NFCGate.uf2"]
     assert (tmp_path / "v1.3.1").is_dir(), "the old tag stays on disk, unreferenced"
 

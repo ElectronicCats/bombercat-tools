@@ -39,7 +39,7 @@ DEFAULT_REPO = "ElectronicCats/bombercat-firmware"
 REPO_ENV = "BOMBERCAT_FIRMWARE_REPO"
 CACHE_ENV = "BOMBERCAT_FIRMWARE_CACHE"
 
-INDEX_FILE = "index.json"  # {"tag": "v1.2.0", "checked": "2026-08-21"}
+INDEX_FILE = "index.json"  # {"tag": "v1.3.1", "checked": "2026-08-21"}
 RELEASE_FILE = "release.json"  # the release payload, assets included
 DESCRIPTIONS_FILE = "descriptions.json"  # {"bombercat": [{filename, description}]}
 
@@ -254,7 +254,7 @@ class ReleaseCache:
 
         ~/.bombercat/firmware/
         ├── index.json          # tag currently cached + last revalidation date
-        └── v1.2.0/
+        └── v1.3.1/
             ├── NFCGate.uf2
             ├── descriptions.json
             └── release.json

@@ -16,6 +16,7 @@ import serial
 # Internal
 from ..utils._version import __version__
 from .bombercat import DeviceError, DeviceLink, resolve_port
+from .exceptions import BomberCatError
 from .firmwares import (
     BANNER,
     HANDSHAKE,
@@ -45,6 +46,7 @@ from ..readers.cli import readers as _readers
 from ..tags.cli import tags as _tags
 from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
+from ..utils.system_cli import setup_env as _setup_env
 
 # External
 import click
@@ -135,17 +137,28 @@ def print_header(module=None):
 
 
 @click.group("bombercat", context_settings={"help_option_names": ["-h", "--help"]})
+@click.version_option(version=VERSION_NUMBER, prog_name="bombercat")
 @click.option(
     "-v",
     "--verbose",
     count=True,
     help="Trace the wire protocol to stderr (-v, or -vv for timestamps/bytes).",
 )
+@click.option(
+    "--auto-flash/--no-auto-flash",
+    "auto_flash",
+    default=None,
+    help=(
+        "Allow (or forbid) a command to reflash the board when it needs a "
+        "different firmware. Unset: ask on a TTY, never on a script/pipe"
+    ),
+)
 @click.pass_context
-def cli(ctx, verbose):
+def cli(ctx, verbose, auto_flash):
     """BomberCat: All in one bombercat tools environment."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["auto_flash"] = auto_flash
     if verbose:
         logger.level = logging.INFO
 
@@ -549,6 +562,21 @@ def completion_install(shell):
         print_info("Completion is active immediately in new fish sessions.")
 
 
+# ===================== Dev tooling gate =====================
+#
+# `proto` and `testserver` are wrappers around files that only exist in a
+# source checkout (gen_proto.sh, testserver/, firmware/). A packaged install
+# (.deb, .pkg, .exe) ships none of them, so registering the commands there
+# would only advertise two ways to fail. Set BOMBERCAT_DEV=1 to force them on.
+
+
+def _dev_checkout() -> bool:
+    """True when the CLI runs from a source checkout, where dev tools exist."""
+    if os.environ.get("BOMBERCAT_DEV"):
+        return True
+    return (Path(__file__).resolve().parents[2] / "gen_proto.sh").exists()
+
+
 def main_cli() -> None:
     if not os.environ.get("_BOMBERCAT_COMPLETE"):
         module = next((a for a in sys.argv[1:] if not a.startswith("-")), None)
@@ -566,12 +594,18 @@ def main_cli() -> None:
     cli.add_command(_readers)
     cli.add_command(_magspoof)
 
-    # Dev tooling under tools/
-    cli.add_command(_proto)
-    cli.add_command(_testserver)
+    # Dev tooling under tools/ — only where the checkout it drives is present.
+    if _dev_checkout():
+        cli.add_command(_proto)
+        cli.add_command(_testserver)
 
     if platform.system() in ["Linux", "Darwin"]:
         cli.add_command(completion)
+
+    # udev rules + group membership: Linux-only, and what the packages already
+    # do at install time.
+    if platform.system() == "Linux":
+        cli.add_command(_setup_env)
 
     try:
         rv = cli(prog_name="bombercat", standalone_mode=False)
@@ -583,6 +617,11 @@ def main_cli() -> None:
         raise SystemExit(130)
     except click.ClickException as e:
         e.show()
+        raise SystemExit(e.exit_code)
+    except BomberCatError as e:
+        print_error(str(e))
+        for line in e.hint or []:
+            print_dim(f"  {line}")
         raise SystemExit(e.exit_code)
     except DeviceError as e:
         print_error(str(e))

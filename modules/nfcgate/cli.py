@@ -12,6 +12,7 @@ import click
 from rich.table import Table
 
 from ..core.bombercat import DeviceError, DeviceLink, resolve_port
+from ..core.firmwares import CAP_RELAY
 from ..utils.cli_options import target_options
 from ..utils.detection_cli import device_session
 from ..utils.output import (
@@ -30,7 +31,13 @@ def _device_session(port: Optional[str], device_id: Optional[int] = None):
     by name at call time so tests (and modules.capture.cli, which imports
     this) can monkeypatch this module's copies."""
     return device_session(
-        resolve_port, DeviceLink, "nfcgate", "NFCGate", port, device_id
+        resolve_port,
+        DeviceLink,
+        "nfcgate",
+        "NFCGate",
+        port,
+        device_id,
+        requires=CAP_RELAY,
     )
 
 

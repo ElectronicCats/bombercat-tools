@@ -925,6 +925,88 @@ def test_windows_candidates_with_no_drives_present(monkeypatch):
     assert uf2._windows_candidates() == []
 
 
+class _FakeVolumeKernel32:
+    """Stands in for GetVolumeInformationW: `labels` maps a root path
+    (`GetVolumeInformationW`'s first argument) to the label it should report,
+    or to None to make the call fail (`ok == 0`) the way it does for an
+    unreadable/disconnected drive."""
+
+    def __init__(self, labels):
+        self.labels = labels
+
+    def GetVolumeInformationW(self, root, buf, size, *rest):
+        label = self.labels.get(root)
+        if label is None:
+            return 0
+        buf.value = label
+        return 1
+
+
+def test_windows_volume_label_reads_the_real_label(monkeypatch):
+    import ctypes
+
+    root = Path("D:/")
+    kernel32 = _FakeVolumeKernel32({str(root): "RPI-RP2"})
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"kernel32": kernel32})(), raising=False
+    )
+
+    assert uf2._windows_volume_label(root) == "RPI-RP2"
+
+
+def test_windows_volume_label_is_none_when_the_call_fails(monkeypatch):
+    import ctypes
+
+    kernel32 = _FakeVolumeKernel32({})
+    monkeypatch.setattr(
+        ctypes, "windll", type("W", (), {"kernel32": kernel32})(), raising=False
+    )
+
+    assert uf2._windows_volume_label(Path("D:/")) is None
+
+
+class _BareWindowsDriveRoot:
+    """A bare Windows drive root has no path name at all —
+    `Path('D:/').name` is always `''`, unlike a Linux/macOS mountpoint,
+    which is already named after the volume label (e.g.
+    `/media/user/RPI-RP2`). `find_uf2_drive` must fall back to the real
+    volume label on Windows instead of comparing against that empty name —
+    otherwise it never recognizes the drive at all, even when it is really
+    mounted with the firmware image ready to be copied."""
+
+    name = ""
+
+    def __init__(self, real_dir):
+        self._real = real_dir
+
+    def __truediv__(self, other):
+        return self._real / other
+
+
+def test_find_uf2_drive_falls_back_to_the_volume_label_on_windows(
+    tmp_path, mounts, monkeypatch
+):
+    drive = _BareWindowsDriveRoot(make_drive(tmp_path))
+    mounts(drive)
+    monkeypatch.setattr(uf2.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(
+        uf2, "_windows_volume_label", lambda path: "RPI-RP2" if path is drive else None
+    )
+
+    assert uf2.find_uf2_drive() is drive
+
+
+def test_find_uf2_drive_ignores_a_windows_drive_with_a_different_label(
+    tmp_path, mounts, monkeypatch
+):
+    drive = _BareWindowsDriveRoot(make_drive(tmp_path, name="CATSNIFFER"))
+    mounts(drive)
+    monkeypatch.setattr(uf2.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(uf2, "_windows_volume_label", lambda path: "CATSNIFFER")
+
+    assert uf2.find_uf2_drive() is None
+
+
 # ── Copying (§3.4) ───────────────────────────────────────────────────────────
 
 
@@ -1360,6 +1442,55 @@ def test_a_board_that_will_not_enter_bootloader_gets_instructions(
     assert "did not enter bootloader mode" in out
     assert "Double-tap the RESET button" in out
     assert "bombercat flash NFCGate" in out
+
+
+def test_bootloader_drive_seen_but_unmounted_suggests_udisksctl(
+    runner, cache, use_cache, bench, monkeypatch
+):
+    c, _ = cache()
+    use_cache(c)
+    bench(
+        devices=[make_device(1, "/dev/ttyACM0")],
+        error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
+    )
+    monkeypatch.setattr(uf2, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(uf2.shutil, "which", lambda name: "/usr/bin/udisksctl")
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "Bootloader drive not mounted" in out
+    assert "udisksctl mount -b /dev/sdd1" in out
+
+
+def test_bootloader_drive_unmounted_without_udisksctl_suggests_installing_it(
+    runner, cache, use_cache, bench, monkeypatch
+):
+    # A minimal install (a bare Arch box, a headless server) may not have
+    # udisks2 at all — pointing the user at `udisksctl mount` there just
+    # trades one error ("not mounted") for another ("command not found").
+    c, _ = cache()
+    use_cache(c)
+    bench(
+        devices=[make_device(1, "/dev/ttyACM0")],
+        error=BootloaderTimeout("no RPI-RP2 drive appeared within 15 s."),
+    )
+    monkeypatch.setattr(uf2, "unmounted_rp2_device", lambda: "/dev/sdd1")
+    monkeypatch.setattr(uf2.shutil, "which", lambda name: None)
+
+    result = runner.invoke(flash, ["NFCGate", "-y"])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "udisks2 is not installed" in out
+    assert "sudo apt install udisks2" in out
+    assert "udisksctl mount" not in out
+    # The panel wraps this long a command across two lines, with the
+    # border redrawn in between — assert the halves rather than one
+    # contiguous string.
+    assert "sudo mkdir -p /mnt/RPI-RP2 && sudo mount" in out
+    assert "/dev/sdd1 /mnt/RPI-RP2" in out
 
 
 def test_an_unanticipated_write_error_is_one_line_and_hides_the_traceback(

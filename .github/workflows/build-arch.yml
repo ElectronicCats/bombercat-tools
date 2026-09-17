@@ -1,0 +1,117 @@
+name: Build Arch package
+
+on:
+  push:
+    #branches: [main]
+    paths:
+      - "modules/**"
+      - "bombercat.py"
+      - "packaging/**"
+      - "*.spec"
+      - "requirements.txt"
+      - "VERSION"
+      - ".github/workflows/build-*.yml"
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Tag del release al que subir el asset (ej: v1.2.0)"
+        required: true
+        default: "v1.2.0"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build .pkg.tar.zst
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm base-devel git python python-pip \
+            python-click python-rich python-pyserial python-pygments sudo
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: version
+        run: echo "value=$(tr -d '[:space:]' < VERSION || echo latest)" >> "$GITHUB_OUTPUT"
+
+      # El script detecta la versión de Python en tiempo de build, genera el
+      # PKGBUILD (options=('!debug')) y corre makepkg como usuario sin privilegios.
+      - name: Build package
+        run: bash packaging/build_arch.sh "${{ steps.version.outputs.value }}"
+
+      - name: Move package to workspace root
+        run: mv packaging/*.pkg.tar.zst "bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst"
+
+      # Fase 4 del plan: verificación estática del árbol de archivos antes de
+      # subir nada. Falla el job si se cuela algo del working tree que no
+      # debería empaquetarse (tests/, venvs, caché de bytecode, llaves de
+      # prueba de Mifare).
+      - name: Static checks
+        run: |
+          PKG="bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst"
+          bsdtar -tf "$PKG" > /tmp/pkg-contents.txt
+          cat /tmp/pkg-contents.txt
+          if grep -qE '(^|/)(tests/|\.venv|__pycache__/|MK1Keys)' /tmp/pkg-contents.txt; then
+            echo "::error::forbidden path found in the .pkg.tar.zst (tests/.venv/__pycache__/MK1Keys)"
+            exit 1
+          fi
+          if grep -q '/vendor/pytest' /tmp/pkg-contents.txt; then
+            echo "::error::pytest got vendored into the .pkg.tar.zst"
+            exit 1
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bombercat-arch
+          path: bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst
+          retention-days: 30
+
+      - name: Attach to release
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
+          files: bombercat-${{ steps.version.outputs.value }}.pkg.tar.zst
+
+  verify-install:
+    name: Verify .pkg.tar.zst install (archlinux)
+    needs: build
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bombercat-arch
+
+      - name: Install package
+        run: |
+          pacman -Syu --noconfirm
+          pacman -U --noconfirm ./bombercat-*.pkg.tar.zst
+
+      # Smokes obligatorios de la Fase 4: no tocan hardware ni red.
+      - name: Smoke test
+        run: |
+          bombercat --version
+          bombercat --help
+          bombercat flash --help
+
+      - name: Dev commands stay hidden in a packaged install
+        run: |
+          if bombercat --help | grep -qE '^\s+(proto|testserver)\s'; then
+            echo "::error::proto/testserver leaked into the packaged --help"
+            exit 1
+          fi

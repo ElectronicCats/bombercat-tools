@@ -1,0 +1,23 @@
+#!/usr/bin/env python3
+# BomberCat launcher for system packages (.deb / .pkg.tar.zst).
+#
+# The package ships its dependencies inside <pkg_dir>/vendor/ instead of
+# depending on system python3-* packages, so both that directory and the
+# package directory itself go on sys.path before the CLI is imported.
+import os
+import sys
+
+import bombercat
+
+pkg_dir = os.path.dirname(bombercat.__file__)
+vendor = os.path.join(pkg_dir, "vendor")
+if os.path.isdir(vendor):
+    sys.path.insert(0, vendor)
+if pkg_dir not in sys.path:
+    # Makes `modules.…` importable for the few places that need the top level.
+    sys.path.insert(0, pkg_dir)
+
+from bombercat.modules.core.cli import main_cli  # noqa: E402
+
+if __name__ == "__main__":
+    main_cli()

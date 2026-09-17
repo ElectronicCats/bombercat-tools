@@ -19,7 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
 
-from modules.firmware.releases import parse_descriptions as _parse_descriptions
+from ..firmware.releases import parse_descriptions as _parse_descriptions
 
 # ── Capabilities vocabulary ──────────────────────────────────────────────────
 # What a firmware lets the host *do*. `status` uses this to suggest the next

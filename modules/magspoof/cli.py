@@ -22,6 +22,7 @@ from click.shell_completion import CompletionItem
 from rich.table import Table
 
 from ..core.bombercat import DeviceLink, Response, resolve_port
+from ..core.firmwares import CAP_MAGSPOOF
 from ..core.usb_connection import find_device
 from ..utils.cli_options import device_options
 from ..utils.detection_cli import (
@@ -78,7 +79,14 @@ def _magspoof_session(port: Optional[str], device_id: Optional[int] = None, trac
     firmware in its error message. `resolve_port`/`DeviceLink` are looked up
     by name at call time so tests can monkeypatch this module's copies."""
     return device_session(
-        resolve_port, DeviceLink, "magspoof", "MagSpoof", port, device_id, trace
+        resolve_port,
+        DeviceLink,
+        "magspoof",
+        "MagSpoof",
+        port,
+        device_id,
+        trace,
+        requires=CAP_MAGSPOOF,
     )
 
 

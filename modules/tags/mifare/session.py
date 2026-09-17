@@ -16,6 +16,7 @@ from typing import Optional, Tuple
 import click
 
 from ...core.bombercat import DeviceLink, resolve_port
+from ...core.firmwares import CAP_MIFARE
 from ...utils.detection_cli import device_session
 from ...utils.output import print_info
 from .common import _sector_first_block
@@ -34,7 +35,14 @@ def _mifare_session(port: Optional[str], device_id: Optional[int] = None, trace=
     are looked up by name at call time so tests can monkeypatch this
     module's copies."""
     return device_session(
-        resolve_port, DeviceLink, "tags mifare", "MifareClassic", port, device_id, trace
+        resolve_port,
+        DeviceLink,
+        "tags mifare",
+        "MifareClassic",
+        port,
+        device_id,
+        trace,
+        requires=CAP_MIFARE,
     )
 
 

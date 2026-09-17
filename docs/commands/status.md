@@ -82,3 +82,9 @@ bombercat status -d 2
 `status` ends by suggesting commands the detected firmware actually supports. An unidentified board is pointed at [`flash`](flash.md), never at the relay controls it cannot serve. Exit code is `1` only when **nothing** responds on the port.
 
 > The previous `bombercat status` (relay state) is now [`bombercat relay status`](relay.md#relay-status).
+
+---
+
+### Running the wrong firmware for another command?
+
+`status` itself never flashes anything — it only reports. But [`tags`](tags.md), [`readers`](readers.md), [`magspoof`](magspoof.md) and [`relay`](relay.md)/`config`/[`capture`](capture.md) each need a specific firmware from the table above, and check for it themselves before running: pointed at a board with something else flashed, they offer to fix it (or fail cleanly if you decline) instead of just erroring — see [Auto-flash](../reference.md#auto-flash) for exactly when that kicks in and how to turn it off.

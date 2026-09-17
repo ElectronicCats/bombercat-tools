@@ -17,6 +17,7 @@ import time
 from typing import Dict
 
 from ..core.bombercat import DeviceLink, resolve_port  # noqa: F401 (resolved by name)
+from ..core.firmwares import CAP_TAGS
 from ..utils.detection_cli import (
     DetectionSpec,
     build_detection_group,
@@ -80,6 +81,9 @@ _TABLE_COLUMNS = [
     ("UID", lambda row: Tag(uid=row["uid"], tech=row["tech"]).pretty_uid, None),
     ("Tech", lambda row: row["tech"] or "[dim]—[/dim]", None),
     ("Protocol", lambda row: row["protocol"] or "[dim]—[/dim]", None),
+    # Resolved host-side from the ATQA/SAK the firmware prints (chips.py);
+    # blank whenever those never arrived or the pair isn't in the table.
+    ("Model", lambda row: row.get("model") or "[dim]—[/dim]", None),
     ("Count", lambda row: str(row["count"]), "right"),
     ("First", lambda row: f"{row['first_s']:.1f}s", "right"),
     ("Last", lambda row: f"{row['last_s']:.1f}s", "right"),
@@ -124,6 +128,7 @@ tags = build_detection_group(
         ),
         info_events=_info_events,
         legacy_csv_json_aliases=True,
+        requires=CAP_TAGS,
     )
 )
 

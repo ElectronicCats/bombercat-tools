@@ -7,6 +7,7 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [Serial permission denied](#serial-permission-denied)
 - [No BomberCat found / board not detected](#board-not-detected)
 - [Board present by USB id but no handshake](#board-present-but-no-handshake)
+- [`tags read` (or similar) reflashed my board](#auto-flash-reflashed)
 - [Wrong board answers to `-d`](#wrong-board)
 - [Old firmware without `identify` / `capture`](#old-firmware)
 - [`flash`: no `RPI-RP2` drive appears](#no-rpi-rp2-drive)
@@ -28,11 +29,19 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 
 Symptom: a `PermissionError` / `SerialException` opening `/dev/ttyACM*`.
 
-On Linux, serial access needs your user in the `dialout` group:
+On Linux, serial access needs your user in the `dialout` group. The quickest
+fix is to let the CLI set the machine up — udev rules and groups in one go (see
+[`setup-env`](commands/setup-env.md)):
+
+```sh
+sudo bombercat setup-env
+# then log out and back in (group membership is applied at login)
+```
+
+Or do just the group by hand:
 
 ```sh
 sudo usermod -aG dialout $USER
-# then log out and back in (group membership is applied at login)
 ```
 
 Verify with `groups | grep dialout`. A quick one-off without re-login:
@@ -90,6 +99,44 @@ of:
     running the relay firmware
   ```
   Power-cycle the board and reflash the relay firmware.
+
+<a id="auto-flash-reflashed"></a>
+## `tags read` (or similar) reflashed my board
+
+Symptom: you ran a command like `bombercat tags read`, saw a prompt naming a
+firmware mismatch, said yes, and the board came back running different
+firmware than before — and if it was running **NFCGate**, its saved
+WiFi/relay config is gone too.
+
+That's [auto-flash](reference.md#auto-flash) working as designed: `tags`,
+`readers`, `magspoof`, `relay`/`config`, and `capture` each need a specific
+firmware, and by default **ask before flashing** on an interactive terminal
+(never in a script/pipe — see the policy table in
+[reference.md#auto-flash](reference.md#auto-flash)). If you answered `y` at
+a prompt like:
+
+```
+✗ `tags` needs DetectTags; this board is running NFCGate. Flashing over it
+  erases its saved WiFi/relay config — check it first with `bombercat config
+  show` if you'll need it again. Flash it now? [y/N]:
+```
+
+the board really was reflashed with `DetectTags`, and if it said "running
+NFCGate", that config warning means the WiFi/relay settings are gone with it
+— there's no undo short of reconfiguring `relay config wifi`/`config
+nfcgate` again once you reflash back.
+
+**To stop it happening again:**
+
+- One command, one time: pass `--no-auto-flash` (`bombercat --no-auto-flash
+  tags read`) — reports the mismatch and stops instead of asking.
+- Every command, for good: `export BOMBERCAT_AUTO_FLASH=never` (put it in
+  your shell profile). You'll still see the mismatch error and the exact
+  `bombercat flash <name>` to run yourself.
+- If you actually want it to stop asking and just do it,
+  `BOMBERCAT_AUTO_FLASH=always` skips the prompt — except when the board's
+  firmware couldn't be identified at all (USB id only), which always asks
+  regardless, since that might be a newer firmware that already works.
 
 <a id="wrong-board"></a>
 ## Wrong board answers to `-d`
@@ -177,9 +224,18 @@ sudo mkdir -p /mnt/RPI-RP2 && sudo mount /dev/sdX1 /mnt/RPI-RP2
 ```
 
 The panel prints the actual device node in place of `/dev/sdX1`, and the exact
-commands to run. `flash` looks the drive up in `/proc/mounts` and, failing that,
+commands to run — including, when `udisksctl` itself is not installed, the
+package to install instead of a command that would just fail with "not
+found". `flash` looks the drive up in `/proc/mounts` and, failing that,
 globs `/media/*`, `/media/*/*`, `/run/media/*/*`, `/mnt/*` and `/mnt/RPI-RP2`,
 so any of those mount points works.
+
+The `.deb` and Arch packages both list `udisks2` as an optional dependency
+(`Recommends` on Debian/Ubuntu — `apt install` pulls it in automatically
+unless you passed `--no-install-recommends`; `optdepends` on Arch — `pacman`
+only advertises it, so install it yourself: `sudo pacman -S udisks2`) so this
+case is rare on a package install, but still expected on a from-source
+checkout or a minimal/headless box either way.
 
 Related: a copy that ends in `OSError` after every byte was written is **not** a
 failure — the bootloader restarts the board the moment it has the last block,

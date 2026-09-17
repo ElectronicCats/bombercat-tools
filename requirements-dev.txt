@@ -1,0 +1,5 @@
+# Development / CI dependencies. Not packaged: the .deb and .pkg.tar.zst
+# vendor requirements.txt only.
+-r requirements.txt
+pytest>=9.1.1
+pytest-cov>=7.1.0

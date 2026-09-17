@@ -1,0 +1,11 @@
+# BomberCat — access to the board without root.
+#
+# BomberCat CDC (pid.codes VID 1209) — every firmware personality
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="005e", MODE="0660", GROUP="dialout", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="805e", MODE="0660", GROUP="dialout", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="015e", MODE="0660", GROUP="dialout", TAG+="uaccess"
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="025e", MODE="0660", GROUP="dialout", TAG+="uaccess"
+# Arduino identity (electroniccats:mbed_rp2040 core)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2341", ATTRS{idProduct}=="005e", MODE="0660", GROUP="dialout", TAG+="uaccess"
+# BOOTSEL (RP2040 mass-storage) — `bombercat flash` writes the .uf2 here
+SUBSYSTEM=="block", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="0003", MODE="0660", GROUP="plugdev", TAG+="uaccess"

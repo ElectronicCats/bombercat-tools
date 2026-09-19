@@ -135,6 +135,28 @@ _ENTRIES = (
         # one: it answers the REPL and names itself.
         banners=(),
     ),
+    # EMVy Controller's own "swiss-army" firmware (firmware/EMVyBomberCat). Not an
+    # Electronic Cats official image: it speaks the BomberCatControl discovery
+    # contract (ping→+OK bombercat / info→fw_name emvybombercat / identify / -ERR)
+    # so `status`/`device list` recognise it, but its operational surface (EMV
+    # read, APDU passthrough, tag/mag/NDEF/EMV emulation) uses EMVy's own serial
+    # dialect, driven by emvy/readers/bombercat.py — NOT the vendor's tags/mifare/
+    # relay/magspoof protocols. So it declares only identify + passthrough (honest;
+    # the vendor's gated commands correctly refuse against it). Registered here
+    # because EMVy vendors these tools and this is the documented place to add a
+    # firmware. Its `id` must match the `fw_name` its `info` reports.
+    Firmware(
+        id="emvybombercat",
+        display="EMVyBomberCat",
+        uf2="EMVyBomberCat.uf2",  # built from source (arduino-cli), not a prebuilt release
+        has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_PASSTHROUGH}),
+        banners=("EMVyBomberCat",),  # best-effort: printed by setup() at boot
+        description=(
+            "EMVy Controller's swiss-army firmware: EMV read, APDU passthrough and "
+            "tag/magstripe/NDEF/EMV-card emulation, driven from EMVy Controller."
+        ),
+    ),
     Firmware(
         id="host_relay_nfc",
         display="host_Relay_NFC",

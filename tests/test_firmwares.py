@@ -28,8 +28,9 @@ def test_registry_covers_every_uf2_in_descriptions_and_vice_versa():
 def test_exactly_the_repl_firmwares_are_flagged():
     """Which sketches answer the control handshake, checked against firmware.
 
-    NFCGate carries the full SerialControl; five more embed the small
-    BomberCatControl. The legacy relay pair and the ESP32 passthrough include
+    NFCGate carries the full SerialControl; six more embed the small
+    BomberCatControl (five Electronic Cats sketches plus EMVy Controller's
+    EMVyBomberCat). The legacy relay pair and the ESP32 passthrough include
     neither, so they must stay flagged REPL-less — `_match_banner` and
     `detect_firmware` both lean on this being true.
     """
@@ -43,6 +44,7 @@ def test_exactly_the_repl_firmwares_are_flagged():
         "magspoofcvsattack",
         "magspoofmqtt",
         "nfcgate_wifiwebserver",
+        "emvybombercat",
     }
 
 

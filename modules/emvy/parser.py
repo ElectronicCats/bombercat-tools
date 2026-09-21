@@ -106,9 +106,7 @@ def parse_tag(line: str) -> Dict[str, str]:
 def _kv(tokens: Iterable[str]) -> Dict[str, str]:
     """`aid=… pan=… exp=…` tokens → dict; tokens without `=` are ignored."""
     return dict(
-        tok.split("=", 1)
-        for tok in tokens
-        if "=" in tok and not tok.startswith("=")
+        tok.split("=", 1) for tok in tokens if "=" in tok and not tok.startswith("=")
     )
 
 

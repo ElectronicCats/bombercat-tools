@@ -130,7 +130,9 @@ class EmvyLink:
         try:
             raw = self._ser.readline(_MAX_LINE_BYTES)
         except serial.SerialException as exc:
-            raise EmvyError(f"serial error reading reply to {line_ctx!r}: {exc}") from exc
+            raise EmvyError(
+                f"serial error reading reply to {line_ctx!r}: {exc}"
+            ) from exc
         text = raw.decode("ascii", "replace").strip("\r\n")
         if text:
             self._rx(text)

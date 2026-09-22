@@ -23,6 +23,8 @@ from rich.table import Table
 
 from ..core.bombercat import DeviceLink, Response, resolve_port
 from ..core.firmwares import CAP_MAGSPOOF
+from ..core.track2 import Track2Data, normalize_track2, parse_track2
+from ..core.track_parser import TrackStandard, analyze_card, card_analysis_to_dict
 from ..core.usb_connection import find_device
 from ..utils.cli_options import device_options
 from ..utils.detection_cli import (
@@ -32,8 +34,6 @@ from ..utils.detection_cli import (
 )
 from ..utils.output import console, make_tracer, print_error, print_info, print_success
 from .parser import MagEvent, MagEventParser
-from .track2 import Track2Data, normalize_track2, parse_track2
-from .track_parser import TrackStandard, analyze_card, card_analysis_to_dict
 
 # How long `magspoof info` listens for a ':mag' event before concluding none
 # has been seen yet.

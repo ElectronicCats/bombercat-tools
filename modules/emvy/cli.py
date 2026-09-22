@@ -27,6 +27,8 @@ import click
 from rich.table import Table
 
 from ..core.bombercat import DeviceLink, Response, resolve_port
+from ..core.track2 import to_iso_track2
+from ..core.track_parser import TrackStandard, analyze_card
 from ..utils.cli_options import device_options
 from ..utils.detection_cli import (
     device_session,
@@ -214,6 +216,57 @@ def _first(data: dict, keys: Tuple[str, ...]) -> Optional[str]:
     return None
 
 
+# Compact human names for a detected TrackStandard in `read`'s analysis block.
+# Kept local to this group's presentation (magspoof `show` phrases its own,
+# longer labels): the shared, firmware-agnostic part is the decode in
+# core/track_parser, not the wording each CLI chooses to render it with.
+_STANDARD_LABEL = {
+    TrackStandard.ISO_7813_FINANCIAL: "ISO 7813 financial",
+    TrackStandard.PBOC_UNIONPAY: "PBOC / UnionPay",
+    TrackStandard.AAMVA_DL: "AAMVA driver's license / ID",
+    TrackStandard.LOYALTY_GENERIC: "loyalty / generic",
+    TrackStandard.UNKNOWN: "unknown",
+}
+
+# One-glance Service Code verdict for the swipe a scanned card would allow,
+# keyed on the core ServiceCodeAnalysis.status. Mirrors the read-only wording
+# of magspoof `show`, so an operator sees the same chip/PIN/fallback call.
+_SC_VERDICT = {
+    "OK_FALLBACK": ("green", "✓ magstripe fallback allowed"),
+    "REQUIRES_CHIP": ("red", "⚠ chip required — swipe may be refused"),
+    "REQUIRES_PIN": ("yellow", "⚠ PIN required"),
+    "REQUIRES_CHIP_AND_PIN": (
+        "red bold",
+        "⚠ chip + PIN required — swipe may be refused",
+    ),
+    "UNKNOWN": ("dim", "? non-standard service code"),
+}
+
+
+def _print_track2_analysis(track2: str) -> None:
+    """Decode a scanned Track 2 — the EMV tag-57 equivalent a chip read yields,
+    or a plain ISO track — via the shared core parser and print its detected
+    standard and Service Code security verdict. A no-op when the track doesn't
+    parse (e.g. a truncated capture), so `read` degrades to just the raw
+    fields rather than erroring."""
+    iso_t2 = to_iso_track2(track2)
+    if iso_t2 is None:
+        return
+    analysis = analyze_card("", iso_t2)
+    console.print("")
+    label = _STANDARD_LABEL.get(
+        analysis.primary_standard, analysis.primary_standard.value
+    )
+    _print_field("standard", label)
+    ta = analysis.track2
+    sca = ta.service_code_analysis if ta else None
+    if sca is None:
+        return
+    style, text = _SC_VERDICT.get(sca.status, ("white", sca.status))
+    _print_field("service code", f"{sca.original} ({sca.message})")
+    _print_field("security", f"[{style}]{text}[/{style}]")
+
+
 def _abort_on_scan_error(line: str) -> None:
     """`on_line` callback for the SCAN stream: the firmware never sends
     JSON_END on failure, only a `# ERROR: …` log — so waiting for the
@@ -302,6 +355,14 @@ def read_cmd(ctx, cents, as_json, as_raw, timeout, verbose, port, device_id):
         console.print("")
         for key, value in extra.items():
             _print_field(key, str(value))
+
+    # Decode the scanned Track 2 (chip reads hand it back as the EMV tag-57
+    # equivalent) into its card standard + Service Code verdict, via the shared
+    # core parser. Human view only — `--json` stays a verbatim passthrough of
+    # the firmware's parsed object.
+    track2 = _first(data, ("track2", "t2"))
+    if track2:
+        _print_track2_analysis(track2)
 
 
 # ── apdu ─────────────────────────────────────────────────────────────────────

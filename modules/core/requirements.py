@@ -16,6 +16,7 @@ from typing import Dict
 from .firmwares import (
     CAP_CAPTURE,
     CAP_CONFIG,
+    CAP_EMVY,
     CAP_MAGSPOOF,
     CAP_MIFARE,
     CAP_READERS,
@@ -37,6 +38,7 @@ CAPABILITY_PROVIDER: Dict[str, str] = {
     CAP_READERS: "detectreaders",
     CAP_MIFARE: "mifareclassic",
     CAP_MAGSPOOF: "magspoof",
+    CAP_EMVY: "emvybombercat",
 }
 
 

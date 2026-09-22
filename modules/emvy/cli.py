@@ -3,13 +3,17 @@
 # Electronic Cats
 # `bombercat emvy …` — EMVy Controller swiss-army commands (EMVyBomberCat
 # firmware): EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation.
-# Like magspoof, these commands actively drive the board — but unlike every
-# other group, gating here is by *firmware identity*, not by an auto-flashable
-# capability: EMVyBomberCat is built from source (arduino-cli), not a prebuilt
-# release, so there is no image `bombercat flash` could install. We therefore
-# verify `info.fw_name == "emvybombercat"` and, on a mismatch, refute with a
-# build-and-flash hint instead of reaching for `ensure_firmware` (D2/§5, P-1:
-# gate by id).
+# Like magspoof, these commands actively drive the board, and — now that the
+# firmware repo's build-firmware.yml builds EMVyBomberCat.uf2 alongside the
+# Electronic Cats sketches — they gate the same way too: `requires=CAP_EMVY`,
+# so a board running the wrong firmware is reflashed with the prebuilt release
+# image under the usual auto-flash policy (D2 is superseded: there *is* now an
+# image `bombercat flash` can install).
+#
+# The identity check (`info.fw_name == "emvybombercat"`) stays as a second,
+# cheaper gate behind it: auto-flash may clear a board on BANNER-level evidence
+# alone, and only the handshake proves what is really running before we start
+# driving the hardware.
 #
 # Discovery (ping/info/identify) speaks the canonical +OK/-ERR REPL, so `emvy
 # info` uses DeviceLink directly. The operative verbs (Fases 3-4: read/apdu/tag/
@@ -27,6 +31,7 @@ import click
 from rich.table import Table
 
 from ..core.bombercat import DeviceLink, Response, resolve_port
+from ..core.firmwares import CAP_EMVY
 from ..core.track2 import to_iso_track2
 from ..core.track_parser import TrackStandard, analyze_card
 from ..utils.cli_options import device_options
@@ -56,8 +61,9 @@ from .parser import (
 )
 
 # The `fw_name` an EMVyBomberCat board reports over `info` (must match its
-# registry `id`, see core/firmwares.py). This is the whole gate: a board that
-# answers the handshake but names itself something else is the wrong firmware.
+# registry `id`, see core/firmwares.py). A board that answers the handshake but
+# names itself something else is the wrong firmware, whatever detection (or a
+# just-finished auto-flash) concluded about it.
 EMVY_FW_NAME = "emvybombercat"
 
 # The operative surface EMVyBomberCat serves, shown by `emvy info`. These are
@@ -90,11 +96,16 @@ def _emvy_session(
     """Open a link verified to be running EMVyBomberCat, yield
     ``(target, link, info)``, and always close it.
 
-    Reuses `device_session` (requires=None: resolve the port, open a DeviceLink,
-    and confirm the handshake) and then adds the identity gate this group needs:
-    `info` must report `fw_name == emvybombercat`. On a mismatch it refutes and
-    exits non-zero, pointing at building/flashing the firmware from source — it
-    never auto-flashes, because EMVyBomberCat has no prebuilt image (D2/§5).
+    Reuses `device_session` with `requires=CAP_EMVY`, so the board is detected
+    and — if it is running something else and the auto-flash policy allows it —
+    reflashed with the prebuilt EMVyBomberCat.uf2 before this group's own link
+    is opened, exactly like `magspoof`/`tags mifare`.
+
+    The `fw_name == emvybombercat` check then stays as a second gate: auto-flash
+    can clear a board on a boot-banner match, which is likely but not certain,
+    and these commands drive the hardware — so we confirm over the handshake
+    before sending the first operative verb. On a mismatch it refutes and exits
+    non-zero, pointing at `bombercat flash`.
 
     `resolve_port`/`DeviceLink` are referenced as this module's globals so tests
     can monkeypatch them (the `use_link` fixture), mirroring `_magspoof_session`.
@@ -107,6 +118,7 @@ def _emvy_session(
         port,
         device_id,
         trace,
+        requires=CAP_EMVY,
     ) as (target, link):
         info = link.info()
         name = info.data.get("fw_name", "") if info.ok else ""
@@ -116,10 +128,9 @@ def _emvy_session(
                 f"(it reports fw_name={name or '—'})."
             )
             print_info(
-                "the `emvy` commands need the EMVyBomberCat firmware — build and "
-                "flash it from bombercat-firmware/EMVyBomberCat with arduino-cli. "
-                "It is not a prebuilt release, so `bombercat flash` cannot install "
-                "it."
+                "the `emvy` commands need the EMVyBomberCat firmware — install "
+                "it with `bombercat flash EMVyBomberCat`, or re-run with "
+                "--auto-flash to let the CLI write it for you."
             )
             raise SystemExit(1)
         yield target, link, info

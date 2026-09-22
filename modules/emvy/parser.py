@@ -34,6 +34,18 @@ def _err_reason(line: str) -> str:
     return line[len("ERR:") :].strip() or "operation failed"
 
 
+def raise_for_err(lines: Iterable[str]) -> None:
+    """Raise EmvyError if the last collected line is a firmware `ERR:`.
+
+    For the plain OK/ERR exchanges (`WAIT`, `RELEASE`, `MAG:`, `STOP`) that
+    carry no payload to parse — just a possible error to surface. A no-op
+    when the last line isn't an `ERR:` (including an empty `lines`).
+    """
+    lines = list(lines)
+    if lines and lines[-1].strip().startswith("ERR:"):
+        raise EmvyError(_err_reason(lines[-1].strip()))
+
+
 def parse_apdu_resp(lines: Iterable[str]) -> bytes:
     """Extract the APDU response bytes from an `APDU:<hex>` exchange.
 
@@ -151,6 +163,7 @@ def parse_emu_event(line: str) -> Optional[Dict[str, object]]:
 
 __all__ = [
     "EmvyError",
+    "raise_for_err",
     "parse_apdu_resp",
     "parse_scan_json",
     "parse_tag",

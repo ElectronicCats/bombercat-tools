@@ -98,13 +98,24 @@ def parse_scan_json(lines: Iterable[str]) -> dict:
     raise EmvyError("no JSON block in SCAN reply")
 
 
-_TAG_RE = re.compile(r"TAG:(?P<proto>\S+)\s+UID:(?P<uid>\S+)", re.IGNORECASE)
+# The firmware's actual wire format (modes_tags.ino::emvyTagsRead) is
+# `TAG:<proto> TECH:<tech> UID:<hex>` — a `TECH:` field the plan's §2.3 table
+# and an earlier version of this regex didn't account for (found by reading
+# the firmware source directly, hardware still unavailable for Fase 0's field
+# capture). `TECH:` is optional here only so a build that omits it still
+# parses; `uid` may be empty (the firmware prints nothing after `UID:` for a
+# 0-length UID).
+_TAG_RE = re.compile(
+    r"TAG:(?P<proto>\S+)(?:\s+TECH:(?P<tech>\S+))?\s+UID:(?P<uid>\S*)",
+    re.IGNORECASE,
+)
 
 
 def parse_tag(line: str) -> Dict[str, str]:
-    """Parse a `TAG:<proto> UID:<hex>` line into ``{proto, uid}``.
+    """Parse a `TAG:<proto> [TECH:<tech>] UID:<hex>` line into its fields.
 
-    Raises EmvyError on an `ERR:` line or anything that doesn't match.
+    Raises EmvyError on an `ERR:` line (e.g. `ERR:NOTAG`) or anything that
+    doesn't match.
     """
     line = line.strip()
     if line.startswith("ERR:"):
@@ -112,7 +123,10 @@ def parse_tag(line: str) -> Dict[str, str]:
     m = _TAG_RE.search(line)
     if not m:
         raise EmvyError(f"unrecognized TAG reply: {line!r}")
-    return {"proto": m.group("proto"), "uid": m.group("uid")}
+    result: Dict[str, str] = {"proto": m.group("proto"), "uid": m.group("uid") or ""}
+    if m.group("tech"):
+        result["tech"] = m.group("tech")
+    return result
 
 
 def _kv(tokens: Iterable[str]) -> Dict[str, str]:
@@ -161,6 +175,26 @@ def parse_emu_event(line: str) -> Optional[Dict[str, object]]:
     return event
 
 
+_NFCINFO_FWVER_RE = re.compile(r"fwver=(\d+)", re.IGNORECASE)
+
+
+def parse_nfcinfo(line: str) -> Dict[str, str]:
+    """Parse an `NFCINFO: ...` reply.
+
+    Returns ``{"fwver": "<n>"}`` when the PN7150 answered (chip alive).
+    Raises EmvyError on `NFCINFO: ERR ...` (chip not responding over I2C) or
+    a line that isn't an `NFCINFO:` reply at all.
+    """
+    line = line.strip()
+    if not line.upper().startswith("NFCINFO:"):
+        raise EmvyError(f"unrecognized NFCINFO reply: {line!r}")
+    body = line[len("NFCINFO:") :].strip()
+    if body.upper().startswith("ERR"):
+        raise EmvyError(body)
+    m = _NFCINFO_FWVER_RE.search(body)
+    return {"fwver": m.group(1)} if m else {"raw": body}
+
+
 __all__ = [
     "EmvyError",
     "raise_for_err",
@@ -169,4 +203,5 @@ __all__ = [
     "parse_tag",
     "parse_cardscan",
     "parse_emu_event",
+    "parse_nfcinfo",
 ]

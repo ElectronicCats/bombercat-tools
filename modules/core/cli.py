@@ -39,6 +39,7 @@ from ..nfcgate.cli import (
     status_cmd as _status,
 )
 from ..capture.cli import capture as _capture
+from ..emvy.cli import emvy as _emvy
 from ..firmware.cli import flash as _flash
 from ..magspoof.cli import magspoof as _magspoof
 from ..proto.cli import proto as _proto
@@ -593,6 +594,7 @@ def main_cli() -> None:
     cli.add_command(_tags)
     cli.add_command(_readers)
     cli.add_command(_magspoof)
+    cli.add_command(_emvy)
 
     # Dev tooling under tools/ — only where the checkout it drives is present.
     if _dev_checkout():

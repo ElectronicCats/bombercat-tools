@@ -2,16 +2,17 @@
 
 # Electronic Cats
 # test_autoflash_wiring.py — docs/AUTOFLASH_PLAN.md F4b: the real `requires=`
-# capability wired into the five call points (tags/readers DetectionSpec,
-# tags/mifare, magspoof, nfcgate — with capture inheriting the last one for
+# capability wired into the six call points (tags/readers DetectionSpec,
+# tags/mifare, magspoof, nfcgate, emvy — with capture inheriting nfcgate's for
 # free). `use_link` (tests/conftest.py) already stubs
 # `detection_cli.resolve_status_port`/`ensure_firmware` so these run without
 # touching hardware; here we additionally wrap `detection_cli.requirement_for`
 # to record which capability each group actually asked for.
 
 import modules.utils.detection_cli as detection_cli
-from conftest import FakeLink
+from conftest import FakeLink, ok
 from modules.core.firmwares import (
+    CAP_EMVY,
     CAP_MAGSPOOF,
     CAP_MIFARE,
     CAP_READERS,
@@ -82,6 +83,21 @@ def test_magspoof_requires_cap_magspoof(runner, use_link, monkeypatch):
     runner.invoke(play_cmd, [])
 
     assert seen == [CAP_MAGSPOOF]
+
+
+def test_emvy_requires_cap_emvy(runner, use_link, monkeypatch):
+    """`emvy` asks for CAP_EMVY before its own identity check — the firmware
+    repo's build-firmware.yml ships EMVyBomberCat.uf2, so there is an image to
+    auto-flash."""
+    from modules.emvy import cli as emvycli
+    from modules.emvy.cli import info_cmd
+
+    seen = _spy_requirement_for(monkeypatch)
+    use_link(emvycli, FakeLink(responses={"info": ok("", fw_name="emvybombercat")}))
+
+    runner.invoke(info_cmd, [])
+
+    assert seen == [CAP_EMVY]
 
 
 def test_relay_requires_cap_relay(runner, use_link, monkeypatch):

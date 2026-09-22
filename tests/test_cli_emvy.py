@@ -4,8 +4,10 @@
 # test_cli_emvy.py — `bombercat emvy info` and the identity gate shared by the
 # group (modules/emvy/cli.py). Same pattern as test_cli_magspoof.py: CliRunner +
 # FakeLink, driving the command's real logic against a scripted `info` reply.
-# The gate is by firmware identity (fw_name == emvybombercat), NOT an
-# auto-flashable capability, because EMVyBomberCat is built from source (D2/§5).
+# The group gates on CAP_EMVY (auto-flashable now that build-firmware.yml ships
+# EMVyBomberCat.uf2 — see test_autoflash_wiring.py) and then re-checks firmware
+# identity over the handshake (fw_name == emvybombercat); these tests cover that
+# second gate, with `use_link` standing in for the auto-flash step.
 # Fase 2 of docs/IMPLEMENTATION_PLAN_EMVyBomberCat_CLI.md.
 
 import json
@@ -172,9 +174,10 @@ def test_info_refutes_a_different_firmware(runner, use_link):
     assert result.exit_code == 1
     assert "not running EMVyBomberCat" in out
     assert "fw_name=nfcgate" in out
-    # Refutes with a build-and-flash hint, never an auto-flash (D2/§5).
-    assert "arduino-cli" in out
-    assert "bombercat-firmware/EMVyBomberCat" in out
+    # The hint points at the prebuilt image (and --auto-flash), not at a
+    # build-from-source workaround.
+    assert "bombercat flash EMVyBomberCat" in out
+    assert "--auto-flash" in out
 
 
 def test_info_refutes_a_board_that_reports_no_firmware_name(runner, use_link):

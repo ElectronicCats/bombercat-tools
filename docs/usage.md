@@ -38,6 +38,7 @@ Each command group now includes a **Quick Start** section with the relevant work
 | **Detect NFC tags (DetectTags)** | [`tags`](commands/tags.md) | [Tag detection](commands/tags.md#quick-start) |
 | **Detect NFC readers (DetectReaders)** | [`readers`](commands/readers.md) | [Reader detection](commands/readers.md#quick-start) |
 | **Magstripe emulation (MagSpoof)** | [`magspoof`](commands/magspoof.md) | [MagSpoof workflow](commands/magspoof.md#quick-start) |
+| **EMV read / APDU / emulation (EMVyBomberCat)** | [`emvy`](commands/emvy.md) | [EMVy workflow](commands/emvy.md#quick-start) |
 | **Flash firmware** | [`flash`](commands/flash.md) | [Flash workflow](commands/flash.md#quick-start) |
 | **Discover devices** | [`device`](commands/device.md) | [Device discovery](commands/device.md#quick-start) |
 | **Check firmware** | [`status`](commands/status.md) | [Firmware check](commands/status.md#quick-start) |

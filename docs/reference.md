@@ -18,6 +18,7 @@ Complete reference for every `bombercat` command and subcommand: purpose, flags,
   - [`tags`](commands/tags.md)
   - [`readers`](commands/readers.md)
   - [`magspoof`](commands/magspoof.md)
+  - [`emvy`](commands/emvy.md)
   - [`proto`](commands/proto.md)
   - [`testserver`](commands/testserver.md)
   - [`completion`](commands/completion.md)
@@ -222,6 +223,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `restore`, `code`, `write-text` |
 | [`readers`](commands/readers.md) | NFC reader/terminal detection over the DetectReaders firmware. | `read`, `watch`, `scan`, `info` |
 | [`magspoof`](commands/magspoof.md) | Magstripe emulation: play, show, watch, NFC, and multi-card store. | `play`, `show`, `watch`, `info`, `nfc *`, `card *` |
+| [`emvy`](commands/emvy.md) | EMVyBomberCat swiss-army: EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation (built-from-source firmware, gated by identity). | `info`, `read`, `apdu`, `tag`, `mag`, `cardscan`, `emu *`, `nfcinfo`, `reboot` |
 | [`proto`](commands/proto.md) | Nanopb protobuf sources for the NFCGate relay. | `proto gen` |
 | [`testserver`](commands/testserver.md) | Local nfcgate-server for relay testing (no hardware/RF). | `run`, `verify`, `smoke` |
 | [`completion`](commands/completion.md) | Install shell tab completion for bombercat. | `completion install` |

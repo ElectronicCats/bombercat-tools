@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_magspoof_track2.py — Track 2 parsing + Service Code normalization
-# (modules/magspoof/track2.py). docs/IMPLEMENTATION_PLAN_AUTO_NORMALIZE_SC.md
+# test_core_track2.py — Track 2 parsing + Service Code normalization
+# (modules/core/track2.py). docs/IMPLEMENTATION_PLAN_AUTO_NORMALIZE_SC.md
 
-from modules.magspoof.track2 import Track2Data, normalize_track2, parse_track2
+from modules.core.track2 import (
+    Track2Data,
+    normalize_track2,
+    parse_track2,
+    parse_track2_equivalent,
+    to_iso_track2,
+)
 
 
 def test_parse_valid_track2():
@@ -72,3 +78,36 @@ def test_to_track2_defaults_to_original_service_code():
     )
     assert parsed.to_track2() == ";4111111111111111=2612201?"
     assert parsed.to_track2("101") == ";4111111111111111=2612101?"
+
+
+# ── EMV Track 2 Equivalent (tag 57) ──────────────────────────────────────────
+
+
+def test_parse_equivalent_splits_on_D_and_strips_F_padding():
+    # PAN 'D' YYMM(2512) SC(201) disc(123456789) then an 'F' pad nibble.
+    parsed = parse_track2_equivalent("4111111111111111D2512201123456789F")
+    assert parsed.pan == "4111111111111111"
+    assert parsed.expiration == "2512"
+    assert parsed.service_code == "201"
+    assert parsed.discretionary == "123456789"
+
+
+def test_parse_equivalent_rejects_an_iso_magstripe_track():
+    # The ISO magstripe form ('=' separator, sentinels) is not tag-57 shaped.
+    assert parse_track2_equivalent(";4111111111111111=2512201?") is None
+
+
+def test_to_iso_track2_accepts_the_equivalent_form():
+    assert (
+        to_iso_track2("4111111111111111D2512201123456789F")
+        == ";4111111111111111=2512201123456789?"
+    )
+
+
+def test_to_iso_track2_passes_an_iso_track_through():
+    iso = ";4111111111111111=2512201?"
+    assert to_iso_track2(iso) == iso
+
+
+def test_to_iso_track2_returns_none_on_garbage():
+    assert to_iso_track2("not a track") is None

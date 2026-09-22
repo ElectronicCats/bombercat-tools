@@ -240,6 +240,54 @@ def test_read_prints_a_table_of_parsed_fields(runner, use_link, use_emvy_link):
     assert "A0000000031010" in out
 
 
+def test_read_decodes_the_scanned_track2_equivalent(runner, use_link, use_emvy_link):
+    # A chip read hands track2 back as the EMV tag-57 equivalent (PAN 'D' YYMM
+    # SC disc 'F'…); `read` should decode its standard + Service Code verdict
+    # via core. SC 201 = chip required (1st digit 2), no PIN.
+    _gated(
+        FakeEmvyLink(
+            stream_lines=[
+                "JSON_START",
+                '{"pan": "4111111111111111", '
+                '"track2": "4111111111111111D2512201123456789F"}',
+                "JSON_END",
+            ]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(read_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "ISO 7813 financial" in out
+    assert "chip required" in out
+
+
+def test_read_json_stays_a_verbatim_passthrough(runner, use_link, use_emvy_link):
+    # Even with a decodable track2, --json emits exactly the firmware object —
+    # the analysis is a human-view convenience, not part of the machine output.
+    _gated(
+        FakeEmvyLink(
+            stream_lines=[
+                "JSON_START",
+                '{"pan": "4111111111111111", '
+                '"track2": "4111111111111111D2512201123456789F"}',
+                "JSON_END",
+            ]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(read_cmd, ["--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "pan": "4111111111111111",
+        "track2": "4111111111111111D2512201123456789F",
+    }
+
+
 def test_read_json_emits_the_parsed_object(runner, use_link, use_emvy_link):
     _gated(
         FakeEmvyLink(

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# test_magspoof_track_parser.py — standard detection + Service Code analysis
-# (modules/magspoof/track_parser.py). docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
+# test_core_track_parser.py — standard detection + Service Code analysis
+# (modules/core/track_parser.py). docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
 
-from modules.magspoof.track_parser import (
+from modules.core.track_parser import (
     TrackStandard,
     analyze_card,
     analyze_service_code,

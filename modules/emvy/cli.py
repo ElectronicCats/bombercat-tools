@@ -503,20 +503,30 @@ def _validate_mag_track(track: int, data: str) -> Optional[str]:
 
 
 @emvy.command("mag")
-@click.argument("track1")
-@click.argument("track2")
+@click.option(
+    "--t1", "track1", help="Track 1 data (raw; ISO sentinels %...? optional)."
+)
+@click.option(
+    "--t2", "track2", help="Track 2 data (raw; ISO sentinels ;...? optional)."
+)
 @device_options
 @click.pass_context
 def mag_cmd(ctx, track1, track2, verbose, port, device_id):
-    """Emulate a magstripe swipe of TRACK1/TRACK2 (MAG).
+    """Emulate a magstripe swipe of one or both tracks (MAG).
 
-    Either track may be "" for a single-track swipe. Tracks are sent as-is —
-    the firmware accepts them with or without their ISO sentinels (%...?/
-    ;...?). Exit code: 0 played, 1 invalid track / link error.
+    Pass --t1 and/or --t2; at least one is required. A two-track card gives
+    both; a single-track card (membership/loyalty, or a lone captured track)
+    gives just the one it carries and the firmware swipes that track alone.
+    Tracks are sent as-is — the firmware accepts them with or without their
+    ISO sentinels (%...?/;...?). Exit code: 0 played, 1 invalid track / link
+    error.
     """
-    if not track1 and not track2:
-        print_error("pass at least one non-empty track (TRACK1 and/or TRACK2)")
-        raise SystemExit(1)
+    # Named optional tracks, mirroring `magspoof card add`: each track is
+    # independently present-or-absent, so a single-track swipe is first-class
+    # rather than a bare "" positional. A track counts as present only when
+    # non-empty, matching the firmware's own `track && track[0]` test in
+    # emvyMagPlay() (modes_mag.ino) — `--t1 ""` reads as "no track 1".
+    present = []
     for n, data in ((1, track1), (2, track2)):
         if not data:
             continue
@@ -524,6 +534,16 @@ def mag_cmd(ctx, track1, track2, verbose, port, device_id):
         if err:
             print_error(err)
             raise SystemExit(1)
+        present.append((n, data))
+
+    if not present:
+        print_error("a swipe needs at least one track — pass --t1 and/or --t2")
+        raise SystemExit(1)
+
+    # The absent track goes on the wire as empty; the firmware's MAG: parser
+    # (`MAG:<t1>|<t2>`) reads an empty side as "no track" and swipes the other.
+    t1 = next((d for n, d in present if n == 1), "")
+    t2 = next((d for n, d in present if n == 2), "")
 
     level = _verbosity(ctx, verbose)
     with _emvy_operative_session(port, device_id, trace=make_tracer(level)) as (
@@ -531,12 +551,13 @@ def mag_cmd(ctx, track1, track2, verbose, port, device_id):
         elink,
     ):
         try:
-            raise_for_err(elink.exchange(f"MAG:{track1}|{track2}"))
+            raise_for_err(elink.exchange(f"MAG:{t1}|{t2}"))
         except EmvyError as e:
             print_error(f"mag failed: {e}")
             raise SystemExit(1)
 
-    print_success("swipe emulated")
+    kind = "1-track" if len(present) == 1 else "2-track"
+    print_success(f"{kind} swipe emulated")
 
 
 # ── cardscan ─────────────────────────────────────────────────────────────────

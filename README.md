@@ -21,8 +21,7 @@ cards; on **DetectReaders** — detect the readers/terminals that probe it; and 
 **magspoof** — control magstripe emulation: play/inspect the active card,
 manage a flash-resident multi-card store, and emulate/read EMV cards over NFC;
 and on **EMVyBomberCat** — read EMV cards, tunnel raw APDUs to a live card, and
-emulate tags/magstripe/NDEF/EMV cards while watching each APDU live (built from
-source, so `emvy` gates by firmware identity and never auto-flashes).
+emulate tags/magstripe/NDEF/EMV cards while watching each APDU live.
 
 **Control plane only.** No APDUs travel over serial — those go over WiFi/TCP to
 the `nfcgate-server`. The USB link is a text, line-based control channel: it
@@ -153,7 +152,7 @@ bombercat magspoof card add visa --t2 ';4111111111111111=25121010000000000000?'
 See [`magspoof`](docs/commands/magspoof.md). Several `card`/`nfc` subcommands
 are **for authorized security testing only** — see the doc's per-command notes.
 
-Or, on a board built with the **EMVyBomberCat** firmware, `bombercat emvy …`
+Or, on a board flashed with the **EMVyBomberCat** firmware, `bombercat emvy …`
 reads EMV cards, tunnels raw APDUs to a live card, and emulates
 tags/magstripe/NDEF/EMV cards while streaming each APDU:
 
@@ -164,10 +163,11 @@ bombercat emvy apdu 00A404000E325041592E5359532E444446303100   # SELECT PPSE
 bombercat emvy emu card                 # emulate an EMV card, watch the terminal's APDUs
 ```
 
-See [`emvy`](docs/commands/emvy.md). This firmware is **built from source**
-(`arduino-cli`), not a `bombercat flash` release, so `emvy` gates by firmware
-identity and never auto-flashes; the commands are **for authorized testing
-only**.
+See [`emvy`](docs/commands/emvy.md). `EMVyBomberCat.uf2` ships with the firmware
+releases, so `bombercat flash EMVyBomberCat` installs it and `emvy` auto-flashes
+a board running the wrong firmware like every other group — then confirms the
+firmware's identity over the handshake before driving the hardware. The commands
+are **for authorized testing only**.
 
 > **Command layout changed.** The relay commands now live under `bombercat
 > relay …`, and `bombercat status` reports the **flashed firmware** instead of

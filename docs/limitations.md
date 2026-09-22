@@ -108,15 +108,14 @@ Concretely, the non-Linux gaps are:
   firmware repo (`bash` + `arduino-cli`). The bootloader drive must auto-mount; on a headless host
   without `udisks` you mount it yourself
   ([troubleshooting.md](troubleshooting.md#no-rpi-rp2-drive)).
-- <a id="emvybombercat-is-built-from-source"></a>**EMVyBomberCat is built from source, so `emvy` cannot auto-flash.** Unlike
-  every other command group, [`emvy`](commands/emvy.md) has no prebuilt image to
-  fall back on: EMVyBomberCat is a multi-file Arduino sketch compiled with
-  `arduino-cli` from `bombercat-firmware/EMVyBomberCat`, not a `.uf2` in the
-  firmware releases. `emvy` therefore gates by **firmware identity**
-  (`info.fw_name == emvybombercat`) and, on a mismatch, refuses with a
-  build-and-flash hint instead of reflashing the board — `bombercat flash` has
-  nothing to install. Build and flash it yourself from the firmware checkout
-  before using `emvy`.
+- <a id="emvybombercat-is-built-from-source"></a>**`emvy` double-checks the
+  firmware it just cleared.** [`emvy`](commands/emvy.md) auto-flashes like every
+  other group — `EMVyBomberCat.uf2` is built by the firmware repo's
+  `build-firmware.yml` and attached to each release — but it then also verifies
+  **firmware identity** over the handshake (`info.fw_name == emvybombercat`)
+  before driving the hardware, because auto-flash may clear a board on a
+  boot-banner match, which is likely but not certain. A board that passes
+  detection yet names itself something else is refused rather than driven.
 
 <a id="relay-scope"></a>
 ## Relay scope

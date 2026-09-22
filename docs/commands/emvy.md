@@ -7,8 +7,8 @@
 ## Quick Start
 
 ```sh
-# 0. This firmware is built from source, not a bombercat flash release — see below.
-#    Confirm the board is running it and see what it exposes:
+# 0. Confirm the board is running EMVyBomberCat and see what it exposes
+#    (any emvy command offers to flash it if the board is running something else):
 bombercat emvy info
 
 # 1. Read a physical EMV/contactless card (present it when prompted)
@@ -41,15 +41,21 @@ bombercat emvy nfcinfo
 
 The `emvy` commands live under `bombercat emvy …` and drive a board flashed with the **EMVyBomberCat** firmware. Every subcommand takes the [device selectors](../reference.md#device-selection) (`-d`/`-p`) plus its own `-v`/`--verbose` (see [Global options](../reference.md#global-options) — `-v` also traces the raw `>`/`<` wire protocol here).
 
-### Gating by firmware identity — no auto-flash
+### Auto-flash, then a firmware-identity check
 
-Every other command group can reflash a board that's running the wrong firmware ([Auto-flash](../reference.md#auto-flash)). **`emvy` cannot, on purpose.** EMVyBomberCat is a multi-file Arduino sketch built from source with `arduino-cli`; it is **not** a prebuilt `.uf2` in the [firmware releases](https://github.com/ElectronicCats/bombercat-firmware), so there is no image `bombercat flash` could install. Instead, `emvy` gates by **firmware identity**: it opens the control link, checks that `info` reports `fw_name = emvybombercat`, and on a mismatch refuses with a build-and-flash hint rather than reaching for auto-flash:
+`emvy` gates like every other command group ([Auto-flash](../reference.md#auto-flash)): it requires the `emvy` **capability**, which only the EMVyBomberCat image provides. The firmware repo's `build-firmware.yml` builds `EMVyBomberCat.uf2` alongside the Electronic Cats sketches and attaches it to each release, so there *is* an image to install — a board running something else is reflashed under the usual policy (`--auto-flash` / `--no-auto-flash` / `BOMBERCAT_AUTO_FLASH`; on a TTY you're asked first), and you can always write it by hand:
+
+```sh
+bombercat flash EMVyBomberCat
+```
+
+Behind that, `emvy` still verifies **firmware identity** over the handshake before driving the hardware: auto-flash may clear a board on a boot-banner match, which is likely but not certain, so the group also checks that `info` reports `fw_name = emvybombercat` and refuses otherwise:
 
 ```
 ✗ /dev/ttyACM0 is not running EMVyBomberCat (it reports fw_name=nfcgate).
-ℹ the `emvy` commands need the EMVyBomberCat firmware — build and flash it
-  from bombercat-firmware/EMVyBomberCat with arduino-cli. It is not a prebuilt
-  release, so `bombercat flash` cannot install it.
+ℹ the `emvy` commands need the EMVyBomberCat firmware — install it with
+  `bombercat flash EMVyBomberCat`, or re-run with --auto-flash to let the CLI
+  write it for you.
 ```
 
 Discovery (`ping`/`info`/`identify`) speaks the canonical `+OK`/`-ERR` REPL, so `emvy info` reads it directly. The operative verbs (`read`/`apdu`/`tag`/`mag`/`emu`/`cardscan`/`nfcinfo`) speak EMVyBomberCat's own historical serial dialect (`WAIT`/`APDU:`/`RESP:`/`SCAN`+`JSON_START/END`/`EMU:…`), which the CLI talks through a dedicated client once the identity gate passes.
@@ -400,7 +406,7 @@ The USB CDC re-enumerates on reset, so **this port cannot be reused** and a subs
 
 ## Notes
 
-- **Built from source, no auto-flash.** EMVyBomberCat is compiled with `arduino-cli` from `bombercat-firmware/EMVyBomberCat`, not published as a `.uf2` release, so `bombercat flash` cannot install it and `emvy` never auto-flashes. See [Gating by firmware identity](#gating-by-firmware-identity--no-auto-flash) and [limitations](../limitations.md#emvybombercat-is-built-from-source).
+- **Auto-flashable, and identity-checked anyway.** `EMVyBomberCat.uf2` is built by the firmware repo's `build-firmware.yml` and attached to each release, so `bombercat flash EMVyBomberCat` installs it and `emvy` auto-flashes a board running the wrong firmware under the usual policy — then still confirms `info.fw_name == emvybombercat` over the handshake before driving the hardware. See [Auto-flash, then a firmware-identity check](#auto-flash-then-a-firmware-identity-check) and [limitations](../limitations.md#emvybombercat-is-built-from-source).
 - **Fixed NFC pins.** The PN7150 uses the BomberCat defaults (`IRQ=11`, `VEN=13`, I2C `0x28`); no extra wiring.
 - **Fixtures pending hardware.** The exact wire format of `SCAN`'s JSON and `TAG:` is confirmed by reading the firmware source, not yet by a captured fixture on real hardware. `emvy read --raw` / `emvy tag --json` against a real card/tag are the way to pin those down — see the [implementation plan](../IMPLEMENTATION_PLAN_EMVyBomberCat_CLI.md)'s Progress Log (Fase 0).
 - **Authorized testing only.** Reading, tunnelling to, and emulating payment cards is for cards/terminals you own or are explicitly authorized to test.

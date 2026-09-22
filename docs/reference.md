@@ -177,7 +177,7 @@ IDs renumbering, zero/several boards found), see
 <a id="auto-flash"></a>
 ## Auto-flash
 
-Every command that needs a specific firmware capability — [`tags`](commands/tags.md), [`tags mifare`](commands/tags.md#tags-mifare), [`readers`](commands/readers.md), [`magspoof`](commands/magspoof.md), [`relay`](commands/relay.md)/`config`, [`capture`](commands/capture.md) — checks what's actually flashed *before* it opens the control link, and can fix a mismatch itself instead of just failing (docs/AUTOFLASH_PLAN.md). `status` and `flash` never do this: `status`'s job is to report, and `flash` already *is* the explicit flash.
+Every command that needs a specific firmware capability — [`tags`](commands/tags.md), [`tags mifare`](commands/tags.md#tags-mifare), [`readers`](commands/readers.md), [`magspoof`](commands/magspoof.md), [`emvy`](commands/emvy.md), [`relay`](commands/relay.md)/`config`, [`capture`](commands/capture.md) — checks what's actually flashed *before* it opens the control link, and can fix a mismatch itself instead of just failing (docs/AUTOFLASH_PLAN.md). `status` and `flash` never do this: `status`'s job is to report, and `flash` already *is* the explicit flash.
 
 **What triggers it.** The board answers, but with firmware that doesn't provide what the command needs — e.g. `tags read` on a board running `magspoof`:
 
@@ -223,7 +223,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `restore`, `code`, `write-text` |
 | [`readers`](commands/readers.md) | NFC reader/terminal detection over the DetectReaders firmware. | `read`, `watch`, `scan`, `info` |
 | [`magspoof`](commands/magspoof.md) | Magstripe emulation: play, show, watch, NFC, and multi-card store. | `play`, `show`, `watch`, `info`, `nfc *`, `card *` |
-| [`emvy`](commands/emvy.md) | EMVyBomberCat swiss-army: EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation (built-from-source firmware, gated by identity). | `info`, `read`, `apdu`, `tag`, `mag`, `cardscan`, `emu *`, `nfcinfo`, `reboot` |
+| [`emvy`](commands/emvy.md) | EMVyBomberCat swiss-army: EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation (auto-flashable, then gated by firmware identity). | `info`, `read`, `apdu`, `tag`, `mag`, `cardscan`, `emu *`, `nfcinfo`, `reboot` |
 | [`proto`](commands/proto.md) | Nanopb protobuf sources for the NFCGate relay. | `proto gen` |
 | [`testserver`](commands/testserver.md) | Local nfcgate-server for relay testing (no hardware/RF). | `run`, `verify`, `smoke` |
 | [`completion`](commands/completion.md) | Install shell tab completion for bombercat. | `completion install` |

@@ -17,7 +17,19 @@ import pytest
 from conftest import FakeLink, flat, ok
 from modules.core.cli import cli, main_cli
 from modules.emvy import cli as emvycli
-from modules.emvy.cli import apdu_cmd, emvy, info_cmd, read_cmd
+from modules.emvy.cli import (
+    apdu_cmd,
+    cardscan_cmd,
+    emu_card_cmd,
+    emu_ndef_cmd,
+    emvy,
+    info_cmd,
+    mag_cmd,
+    nfcinfo_cmd,
+    read_cmd,
+    reboot_cmd,
+    tag_cmd,
+)
 from modules.emvy.parser import EmvyError
 
 # What a healthy EMVyBomberCat answers `info` with (see §2.2 of the plan).
@@ -38,9 +50,15 @@ class FakeEmvyLink:
         self,
         script: Optional[Dict[str, List[str]]] = None,
         stream_lines: Iterable[str] = (),
+        interrupt_after: Optional[int] = None,
     ):
         self.script = dict(script or {})
         self.stream_lines = list(stream_lines)
+        # If set, raise KeyboardInterrupt after this many stream lines have
+        # been delivered to on_line — simulating Ctrl-C mid-emulation
+        # (Fase 4's `emu ndef`/`emu card`). Mirrors EmvyLink.stream_until's
+        # own contract: send stop_cmd, then re-raise.
+        self.interrupt_after = interrupt_after
         self.sent: List[str] = []
         self.opened = False
         self.closed = False
@@ -72,7 +90,11 @@ class FakeEmvyLink:
 
     def stream_until(self, sentinel, on_line=None, stop_cmd=None, timeout=None):
         lines: List[str] = []
-        for text in self.stream_lines:
+        for i, text in enumerate(self.stream_lines):
+            if self.interrupt_after is not None and i == self.interrupt_after:
+                if stop_cmd is not None:
+                    self.send(stop_cmd)
+                raise KeyboardInterrupt()
             lines.append(text)
             if on_line is not None:
                 on_line(text)
@@ -393,3 +415,305 @@ def test_apdu_stdin_continues_after_one_bad_apdu(runner, use_link, use_emvy_link
     assert result.exit_code == 1
     assert "TXFAIL" in out
     assert "9000" in out
+
+
+# ── tag ──────────────────────────────────────────────────────────────────────
+
+
+def test_tag_prints_proto_tech_uid(runner, use_link, use_emvy_link):
+    # Real wire format (modes_tags.ino): TAG:<proto> TECH:<tech> UID:<hex> —
+    # the TECH: field the plan's §2.3 table omitted.
+    fake = _gated(
+        FakeEmvyLink(script={"TAG": ["TAG:4 TECH:2 UID:04AABBCC"]}),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(tag_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["TAG"]
+    assert "04AABBCC" in out
+
+
+def test_tag_json_includes_tech(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(script={"TAG": ["TAG:4 TECH:2 UID:04AABBCC"]}),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(tag_cmd, ["--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {"proto": "4", "tech": "2", "uid": "04AABBCC"}
+
+
+def test_tag_reports_notag(runner, use_link, use_emvy_link):
+    _gated(FakeEmvyLink(script={"TAG": ["ERR:NOTAG"]}), use_link, use_emvy_link)
+    result = runner.invoke(tag_cmd, [])
+
+    assert result.exit_code == 1
+    assert "NOTAG" in flat(result.output)
+
+
+# ── mag ──────────────────────────────────────────────────────────────────────
+
+
+def test_mag_plays_both_tracks(runner, use_link, use_emvy_link):
+    fake = _gated(FakeEmvyLink(script={"MAG": ["OK"]}), use_link, use_emvy_link)
+    result = runner.invoke(mag_cmd, ["%B123?", ";456?"])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["MAG:%B123?|;456?"]
+    assert "emulated" in flat(result.output)
+
+
+def test_mag_single_track_leaves_the_other_empty(runner, use_link, use_emvy_link):
+    fake = _gated(FakeEmvyLink(script={"MAG": ["OK"]}), use_link, use_emvy_link)
+    result = runner.invoke(mag_cmd, ["", ";456?"])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["MAG:|;456?"]
+
+
+def test_mag_requires_at_least_one_track(runner):
+    # No use_link/use_emvy_link: rejected before any port is touched.
+    result = runner.invoke(mag_cmd, ["", ""])
+
+    assert result.exit_code == 1
+    assert "at least one" in flat(result.output)
+
+
+def test_mag_rejects_a_pipe_in_a_track(runner):
+    result = runner.invoke(mag_cmd, ["a|b", ""])
+
+    assert result.exit_code == 1
+    assert "'|'" in flat(result.output)
+
+
+def test_mag_reports_a_firmware_error(runner, use_link, use_emvy_link):
+    _gated(FakeEmvyLink(script={"MAG": ["ERR:BUSY"]}), use_link, use_emvy_link)
+    result = runner.invoke(mag_cmd, ["%B123?", ""])
+
+    assert result.exit_code == 1
+    assert "BUSY" in flat(result.output)
+
+
+# ── cardscan ─────────────────────────────────────────────────────────────────
+
+
+def test_cardscan_prints_the_scanned_fields(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            script={
+                "CARDSCAN": [
+                    "# CARDSCAN: acerca la tarjeta contactless a leer...",
+                    "EMU:SCANNED aid=A0000000031010 pan=4111111111111111 "
+                    "exp=2512 t2=4111111111111111D2512",
+                ]
+            }
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(cardscan_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["CARDSCAN"]
+    assert "A0000000031010" in out
+    assert "4111111111111111" in out
+    assert "from ram" in out.lower() or "--from-ram" in out
+
+
+def test_cardscan_json(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(
+            script={"CARDSCAN": ["EMU:SCANNED aid=A0 pan=4111 exp=2512 t2=41"]}
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(cardscan_cmd, ["--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == {
+        "aid": "A0",
+        "pan": "4111",
+        "exp": "2512",
+        "t2": "41",
+    }
+
+
+def test_cardscan_reports_nocard(runner, use_link, use_emvy_link):
+    _gated(FakeEmvyLink(script={"CARDSCAN": ["ERR:NOCARD"]}), use_link, use_emvy_link)
+    result = runner.invoke(cardscan_cmd, [])
+
+    assert result.exit_code == 1
+    assert "NOCARD" in flat(result.output)
+
+
+# ── emu ndef ─────────────────────────────────────────────────────────────────
+
+
+def test_emu_ndef_streams_formatted_events(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=[
+                "EMU:START len=4",
+                "EMU:RX SELECT-APP D2760000850101 00A4040007D2760000850101",
+                "EMU:TX 9000",
+                "EMU:DONE sent=0 reason=stop",
+            ]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_ndef_cmd, ["AABBCCDD"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert fake.sent[0] == "EMU:AABBCCDD"
+    assert "EMU:START" in out
+    assert "EMU:RX" in out
+    assert "EMU:DONE" in out
+
+
+def test_emu_ndef_raw_prints_lines_verbatim(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(stream_lines=["EMU:START len=0", "EMU:DONE sent=0 reason=stop"]),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_ndef_cmd, ["", "--raw"])
+
+    assert result.exit_code == 0
+    assert "EMU:START len=0" in flat(result.output)
+
+
+def test_emu_ndef_rejects_bad_hex_before_opening_a_session(runner):
+    result = runner.invoke(emu_ndef_cmd, ["ZZ"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)
+
+
+def test_emu_ndef_stops_cleanly_on_ctrl_c(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START len=2", "EMU:RX APDU 00A4", "EMU:TX 9000"],
+            interrupt_after=1,
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_ndef_cmd, ["AABB"])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "stopped" in out.lower()
+    assert "STOP" in fake.sent
+
+
+# ── emu card ─────────────────────────────────────────────────────────────────
+
+
+def test_emu_card_bare_uses_the_canned_test_card(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_card_cmd, [])
+
+    assert result.exit_code == 0
+    assert fake.sent[0] == "EMUEMV"
+
+
+def test_emu_card_from_ram(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_card_cmd, ["--from-ram"])
+
+    assert result.exit_code == 0
+    assert fake.sent[0] == "EMUEMV:RAM"
+
+
+def test_emu_card_custom_fields(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_card_cmd, ["--aid", "A0", "--pan", "4111"])
+
+    assert result.exit_code == 0
+    assert fake.sent[0] == "EMUEMV:A0|4111||"
+
+
+def test_emu_card_from_ram_and_custom_fields_are_mutually_exclusive(runner):
+    result = runner.invoke(emu_card_cmd, ["--from-ram", "--aid", "A0"])
+
+    assert result.exit_code == 1
+    assert "mutually exclusive" in flat(result.output)
+
+
+def test_emu_card_rejects_bad_hex_before_opening_a_session(runner):
+    result = runner.invoke(emu_card_cmd, ["--pan", "ZZ"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)
+
+
+# ── nfcinfo ──────────────────────────────────────────────────────────────────
+
+
+def test_nfcinfo_reports_the_firmware_version(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(script={"NFCINFO": ["NFCINFO: fwver=32 (chip vivo)"]}),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(nfcinfo_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["NFCINFO"]
+    assert "32" in out
+
+
+def test_nfcinfo_reports_a_dead_chip(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(
+            script={"NFCINFO": ["NFCINFO: ERR connectNCI (chip no responde)"]}
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(nfcinfo_cmd, [])
+
+    assert result.exit_code == 1
+    assert "connectNCI" in flat(result.output)
+
+
+# ── reboot ───────────────────────────────────────────────────────────────────
+
+
+def test_reboot_sends_reboot_and_warns_to_reconnect(runner, use_link, use_emvy_link):
+    fake = _gated(FakeEmvyLink(), use_link, use_emvy_link)
+    result = runner.invoke(reboot_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert fake.sent == ["REBOOT"]
+    assert "re-enumerate" in out
+    assert fake.closed

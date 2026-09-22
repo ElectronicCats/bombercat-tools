@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 # Electronic Cats
-# track_parser.py — card-standard detection + enriched Service Code analysis
-# for `magspoof show`. docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
+# track_parser.py — card-standard detection + enriched Service Code analysis.
+# Firmware-agnostic core (pure, no serial I/O), shared by `magspoof show` and
+# `emvy read`; lives in core/ so both groups import it from one place.
+# docs/IMPLEMENTATION_PLAN_SHOW_ENHANCED.md
 #
 # Only ISO 7813 (financial) and PBOC/UnionPay have a full field parse +
 # Service Code analysis, because they share one well-documented wire format.

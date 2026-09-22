@@ -461,31 +461,51 @@ def test_tag_reports_notag(runner, use_link, use_emvy_link):
 
 def test_mag_plays_both_tracks(runner, use_link, use_emvy_link):
     fake = _gated(FakeEmvyLink(script={"MAG": ["OK"]}), use_link, use_emvy_link)
-    result = runner.invoke(mag_cmd, ["%B123?", ";456?"])
+    result = runner.invoke(mag_cmd, ["--t1", "%B123?", "--t2", ";456?"])
 
     assert result.exit_code == 0
     assert fake.sent == ["MAG:%B123?|;456?"]
+    assert "2-track" in flat(result.output)
     assert "emulated" in flat(result.output)
 
 
 def test_mag_single_track_leaves_the_other_empty(runner, use_link, use_emvy_link):
     fake = _gated(FakeEmvyLink(script={"MAG": ["OK"]}), use_link, use_emvy_link)
-    result = runner.invoke(mag_cmd, ["", ";456?"])
+    result = runner.invoke(mag_cmd, ["--t2", ";456?"])
 
     assert result.exit_code == 0
     assert fake.sent == ["MAG:|;456?"]
+    assert "1-track" in flat(result.output)
+
+
+def test_mag_single_track1_leaves_track2_empty(runner, use_link, use_emvy_link):
+    fake = _gated(FakeEmvyLink(script={"MAG": ["OK"]}), use_link, use_emvy_link)
+    result = runner.invoke(mag_cmd, ["--t1", "%B123?"])
+
+    assert result.exit_code == 0
+    assert fake.sent == ["MAG:%B123?|"]
+    assert "1-track" in flat(result.output)
 
 
 def test_mag_requires_at_least_one_track(runner):
-    # No use_link/use_emvy_link: rejected before any port is touched.
-    result = runner.invoke(mag_cmd, ["", ""])
+    # No flags, and no use_link/use_emvy_link: rejected before any port is touched.
+    result = runner.invoke(mag_cmd, [])
+
+    assert result.exit_code == 1
+    assert "at least one" in flat(result.output)
+
+
+def test_mag_treats_an_empty_track_as_absent(runner):
+    # `--t1 ""` is "no track 1" (matches the firmware's own non-empty test), so
+    # an otherwise trackless invocation is still rejected before touching a port.
+    result = runner.invoke(mag_cmd, ["--t1", ""])
 
     assert result.exit_code == 1
     assert "at least one" in flat(result.output)
 
 
 def test_mag_rejects_a_pipe_in_a_track(runner):
-    result = runner.invoke(mag_cmd, ["a|b", ""])
+    result = runner.invoke(mag_cmd, ["--t1", "a|b"])
 
     assert result.exit_code == 1
     assert "'|'" in flat(result.output)
@@ -493,7 +513,7 @@ def test_mag_rejects_a_pipe_in_a_track(runner):
 
 def test_mag_reports_a_firmware_error(runner, use_link, use_emvy_link):
     _gated(FakeEmvyLink(script={"MAG": ["ERR:BUSY"]}), use_link, use_emvy_link)
-    result = runner.invoke(mag_cmd, ["%B123?", ""])
+    result = runner.invoke(mag_cmd, ["--t1", "%B123?"])
 
     assert result.exit_code == 1
     assert "BUSY" in flat(result.output)

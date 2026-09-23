@@ -91,8 +91,7 @@ def device_session(
     detecting with `resolve_status_port`/`detect_firmware` (no handshake
     required, D-3.3/D7) and flashing it if missing and the auto-flash policy
     (root `--auto-flash`, read via `_policy_flag`) allows it. `requires=None`
-    (the default) keeps today's behavior byte-for-byte: no caller passes it
-    yet — see docs/AUTOFLASH_PLAN.md F4.
+    (the default) keeps today's behavior byte-for-byte.
     """
     link = None
     try:
@@ -217,8 +216,7 @@ class DetectionSpec:
     dedupe_cap_attr: Optional[str] = None
     legacy_csv_json_aliases: bool = False
     # Capability the board must have to run this group's commands, or None to
-    # skip the auto-flash check entirely (docs/AUTOFLASH_PLAN.md D-3.1). Not
-    # yet set by `tags`/`readers` — wiring a real value here is F4b.
+    # skip the auto-flash check entirely.
     requires: Optional[str] = None
 
 

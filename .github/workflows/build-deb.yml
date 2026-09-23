@@ -15,9 +15,9 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Tag del release al que subir el asset (ej: v1.3.1)"
+        description: "Tag del release al que subir el asset (ej: v1.4.0)"
         required: true
-        default: "v1.3.1"
+        default: "v1.4.0"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}

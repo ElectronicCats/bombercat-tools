@@ -17,7 +17,7 @@ Building any of them yourself is covered in [`packaging.md`](packaging.md).
 
 > [!Note]
 > `VERSION` uses four components (`1.2.0.0`) while git tags use semver
-> (`v1.3.1`), so the tag and the file name never match exactly — see
+> (`v1.4.0`), so the tag and the file name never match exactly — see
 > [`release.md`](release.md).
 
 No drivers to install anywhere: the board enumerates as a standard USB CDC

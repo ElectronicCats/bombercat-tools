@@ -135,7 +135,7 @@ make clean      # remove build/dist/pkg_root and every built artifact
   the firmware repo's releases) and a mounted `RPI-RP2` mass-storage volume.
   No packaging format changes either requirement.
 - **`VERSION` has 4 components** (e.g. `1.2.0.0`) while git tags use semver
-  (`v1.3.1`) — both `dpkg`/`makepkg`/Inno Setup accept the 4-component form,
+  (`v1.4.0`) — both `dpkg`/`makepkg`/Inno Setup accept the 4-component form,
   just don't conflate it with the tag name. See
   [`docs/release.md`](release.md) for how the two stay in sync through a
   release.

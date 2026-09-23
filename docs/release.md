@@ -28,13 +28,13 @@ automatically once the tag is pushed and the release is created.
 
    ```sh
    git add VERSION
-   git commit -m "chore(release): v1.2.0.1"
-   git tag v1.2.0.1
+   git commit -m "chore(release): v1.4.0.1"
+   git tag v1.4.0.1
    git push origin main --tags
    ```
 
    `VERSION`'s 4-component form (`1.2.0.1`) and the git tag's semver-ish form
-   (`v1.2.0.1`) are two different strings by convention — don't try to make
+   (`v1.4.0.1`) are two different strings by convention — don't try to make
    them byte-identical, just keep the numeric parts in sync.
 
 4. **Create the GitHub Release.** This is what triggers the four
@@ -42,7 +42,7 @@ automatically once the tag is pushed and the release is created.
    attach their artifacts:
 
    ```sh
-   gh release create v1.2.0.1 --generate-notes
+   gh release create v1.4.0.1 --generate-notes
    ```
 
 5. **Verify the 5 assets land on the release**, once the workflows finish
@@ -64,7 +64,7 @@ automatically once the tag is pushed and the release is created.
    without re-tagging or re-releasing:
 
    ```sh
-   gh workflow run build-mac.yml -f release_tag=v1.2.0.1
+   gh workflow run build-mac.yml -f release_tag=v1.4.0.1
    ```
 
    `workflow_dispatch` re-runs that one workflow against the existing

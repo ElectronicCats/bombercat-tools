@@ -143,6 +143,21 @@ def test_only_magspoof_claims_the_magspoof_capability():
             assert f.id == "magspoof"
 
 
+def test_emvybombercat_claims_the_emvy_capability():
+    emvybombercat = fw.by_id("emvybombercat")
+    assert emvybombercat.can(fw.CAP_EMVY)
+    assert emvybombercat.has_repl
+
+
+def test_only_emvybombercat_claims_the_emvy_capability():
+    """CAP_EMVY is what `bombercat emvy …` requires and auto-flashes, so it
+    must name exactly one image — EMVy's own serial dialect is not the
+    vendor's tags/mifare/relay/magspoof protocol."""
+    for f in fw.all_firmwares(enrich=False):
+        if f.can(fw.CAP_EMVY):
+            assert f.id == "emvybombercat"
+
+
 def test_a_non_object_descriptions_payload_is_ignored_instead_of_crashing():
     """descriptions.json is user-editable, remote-persisted cache data — a
     malformed top-level shape must degrade to "no descriptions", not raise

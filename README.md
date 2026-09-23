@@ -19,7 +19,9 @@ watch it live, capture the relayed APDUs to Wireshark; on the
 **MifareClassic** — authenticate, read, write, dump and restore Mifare Classic
 cards; on **DetectReaders** — detect the readers/terminals that probe it; and on
 **magspoof** — control magstripe emulation: play/inspect the active card,
-manage a flash-resident multi-card store, and emulate/read EMV cards over NFC.
+manage a flash-resident multi-card store, and emulate/read EMV cards over NFC;
+and on **EMVyBomberCat** — read EMV cards, tunnel raw APDUs to a live card, and
+emulate tags/magstripe/NDEF/EMV cards while watching each APDU live.
 
 **Control plane only.** No APDUs travel over serial — those go over WiFi/TCP to
 the `nfcgate-server`. The USB link is a text, line-based control channel: it
@@ -150,6 +152,23 @@ bombercat magspoof card add visa --t2 ';4111111111111111=25121010000000000000?'
 See [`magspoof`](docs/commands/magspoof.md). Several `card`/`nfc` subcommands
 are **for authorized security testing only** — see the doc's per-command notes.
 
+Or, on a board flashed with the **EMVyBomberCat** firmware, `bombercat emvy …`
+reads EMV cards, tunnels raw APDUs to a live card, and emulates
+tags/magstripe/NDEF/EMV cards while streaming each APDU:
+
+```sh
+bombercat emvy info                     # confirm the firmware and see what it exposes
+bombercat emvy read                     # read a contactless card (PAN/expiry/AID/track2)
+bombercat emvy apdu 00A404000E325041592E5359532E444446303100   # SELECT PPSE
+bombercat emvy emu card                 # emulate an EMV card, watch the terminal's APDUs
+```
+
+See [`emvy`](docs/commands/emvy.md). `EMVyBomberCat.uf2` ships with the firmware
+releases, so `bombercat flash EMVyBomberCat` installs it and `emvy` auto-flashes
+a board running the wrong firmware like every other group — then confirms the
+firmware's identity over the handshake before driving the hardware. The commands
+are **for authorized testing only**.
+
 > **Command layout changed.** The relay commands now live under `bombercat
 > relay …`, and `bombercat status` reports the **flashed firmware** instead of
 > the relay state (that moved to `bombercat relay status`). The old root
@@ -166,7 +185,7 @@ one by its ID with `-d/--device`. See the
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`, `mifare *`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`, `mifare *`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `emvy …` (`info`/`read`/`apdu`/`tag`/`mag`/`cardscan`/`emu *`/`nfcinfo`/`reboot`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags`/`readers` workflows on DetectTags/DetectReaders. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/commands/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |

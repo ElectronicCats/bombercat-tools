@@ -51,7 +51,7 @@ class FakeGitHub:
 
     def __init__(
         self,
-        tag="v1.2.0",
+        tag="v1.4.0",
         images=None,
         descriptions=True,
         digest=True,
@@ -175,8 +175,8 @@ def test_an_empty_cache_has_no_tag_and_no_images(cache):
 def test_refresh_downloads_the_release_and_its_descriptions(cache):
     c, github = cache()
 
-    assert c.refresh() == "v1.2.0"
-    assert c.tag == "v1.2.0"
+    assert c.refresh() == "v1.4.0"
+    assert c.tag == "v1.4.0"
 
     names = [i.name for i in c.images()]
     assert names == ["DetectTags.uf2", "MagspoofCVSAttack.uf2", "NFCGate.uf2"]
@@ -191,7 +191,7 @@ def test_refresh_on_an_up_to_date_cache_downloads_nothing(cache):
     c.refresh()
     before = len(github.asset_calls)
 
-    assert c.refresh() == "v1.2.0"
+    assert c.refresh() == "v1.4.0"
     assert github.asset_calls[before:] == [], "assets were re-downloaded needlessly"
 
 
@@ -209,13 +209,13 @@ def test_a_newer_tag_replaces_the_cached_one(cache, tmp_path):
     c, _ = cache()
     c.refresh()
 
-    newer = FakeGitHub(tag="v1.3.0", images={"NFCGate.uf2": b"\x09" * 512})
+    newer = FakeGitHub(tag="v1.4.1", images={"NFCGate.uf2": b"\x09" * 512})
     c._fetch = newer
 
-    assert c.refresh() == "v1.3.0"
-    assert c.tag == "v1.3.0"
+    assert c.refresh() == "v1.4.1"
+    assert c.tag == "v1.4.1"
     assert [i.name for i in c.images()] == ["NFCGate.uf2"]
-    assert (tmp_path / "v1.2.0").is_dir(), "the old tag stays on disk, unreferenced"
+    assert (tmp_path / "v1.4.0").is_dir(), "the old tag stays on disk, unreferenced"
 
 
 def test_a_stale_stamp_is_what_triggers_the_re_check(cache):
@@ -327,7 +327,7 @@ def test_missing_descriptions_leave_the_images_usable(cache):
 def test_an_asset_without_a_digest_is_accepted(cache):
     c, _ = cache(digest=False)
 
-    assert c.refresh() == "v1.2.0"
+    assert c.refresh() == "v1.4.0"
     assert len(c.images()) == 3
     assert set(c.unverified_assets) == set(DEFAULT_IMAGES)
 
@@ -543,7 +543,7 @@ def test_list_fills_an_empty_cache_and_tabulates_it(runner, cache, use_cache):
     out = flat(result.output)
 
     assert result.exit_code == 0
-    assert "Firmware images — v1.2.0" in out
+    assert "Firmware images — v1.4.0" in out
     assert "NFCGate" in out and "DetectTags" in out
     assert "4 KB" in out
     assert "bombercat flash DetectTags" in out

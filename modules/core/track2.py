@@ -2,9 +2,11 @@
 
 # Electronic Cats
 # track2.py — ISO 7813 Track 2 parsing + Service Code normalization for
-# magstripe fallback. Local-only (never touches the serial link) so
-# `magspoof card normalize-sc` can preview the rewrite before anything
-# round-trips to the device via `magcard set NAME 2 ...`.
+# magstripe fallback. Firmware-agnostic core: pure and local-only (never
+# touches a serial link), so any module can decode a track without pulling in
+# device I/O — e.g. `magspoof card normalize-sc` previews the rewrite before it
+# round-trips via `magcard set NAME 2 ...`, and `emvy read` decodes a scanned
+# track2. Lives in core/ (not magspoof/) precisely so both groups can share it.
 # docs/IMPLEMENTATION_PLAN_AUTO_NORMALIZE_SC.md
 # Distributed as-is; no warranty is given.
 
@@ -127,6 +129,44 @@ def parse_track2(track2: str) -> Optional[Track2Data]:
     return Track2Data(
         pan=m["pan"], expiration=m["exp"], service_code=m["sc"], discretionary=m["disc"]
     )
+
+
+# EMV Track 2 Equivalent Data (tag 57), the shape a chip read yields — e.g.
+# `emvy read` renders tag 57 compact (EMVyBomberCat.ino, `HexUtils::toCompact`
+# into card.track2). It packs the same PAN/expiry/SC/discretionary as an ISO
+# magstripe track but as BCD nibbles: 'D' is the field separator (in place of
+# the magstripe '='), there are no '%'/';'/'?' sentinels, and a trailing 'F'
+# nibble pads the last byte. (EMV Book 3, Annex B.)
+_TRACK2_EQUIV_RE = re.compile(
+    r"^(?P<pan>[0-9]{13,19})D(?P<exp>[0-9]{4})(?P<sc>[0-9]{3})(?P<disc>[0-9F]*)$"
+)
+
+
+def parse_track2_equivalent(track2: str) -> Optional[Track2Data]:
+    """Parse an EMV Track 2 Equivalent (tag 57) compact-hex string
+    (`PAN 'D' YYMM SC disc ['F'...]`) into the same `Track2Data` an ISO track
+    parses to. Trailing 'F' nibble padding is stripped off the discretionary
+    data. Returns None if it doesn't match that shape."""
+    m = _TRACK2_EQUIV_RE.match(track2.strip().upper())
+    if not m:
+        return None
+    return Track2Data(
+        pan=m["pan"],
+        expiration=m["exp"],
+        service_code=m["sc"],
+        discretionary=m["disc"].rstrip("F"),
+    )
+
+
+def to_iso_track2(track2: str) -> Optional[str]:
+    """Coerce a Track 2 string to the ISO 7813 magstripe form (`;PAN=YYMMSC…?`),
+    accepting either that form already or the EMV tag-57 equivalent (`…D…`) a
+    chip read yields. Returns None if neither parses — letting a caller decode a
+    scanned track without caring which of the two shapes the firmware handed it."""
+    parsed = parse_track2(track2)
+    if parsed is None:
+        parsed = parse_track2_equivalent(track2)
+    return parsed.to_track2() if parsed else None
 
 
 def normalize_track2(

@@ -36,6 +36,7 @@ CAP_READERS = (
 )
 CAP_MAGSPOOF = "magspoof"  # magstripe emulation control (`bombercat magspoof …`)
 CAP_MIFARE = "mifare"  # Mifare Classic auth/read/write (`bombercat tags mifare …`)
+CAP_EMVY = "emvy"  # EMVy swiss-army surface (`bombercat emvy …`)
 
 
 @dataclass(frozen=True)
@@ -140,17 +141,21 @@ _ENTRIES = (
     # contract (ping→+OK bombercat / info→fw_name emvybombercat / identify / -ERR)
     # so `status`/`device list` recognise it, but its operational surface (EMV
     # read, APDU passthrough, tag/mag/NDEF/EMV emulation) uses EMVy's own serial
-    # dialect, driven by emvy/readers/bombercat.py — NOT the vendor's tags/mifare/
-    # relay/magspoof protocols. So it declares only identify + passthrough (honest;
-    # the vendor's gated commands correctly refuse against it). Registered here
+    # dialect, driven by emvy/link.py — NOT the vendor's tags/mifare/relay/
+    # magspoof protocols. That surface is CAP_EMVY, its own capability: the
+    # vendor's gated commands still correctly refuse against it, and `bombercat
+    # emvy …` can require (and auto-flash) exactly this image. Registered here
     # because EMVy vendors these tools and this is the documented place to add a
     # firmware. Its `id` must match the `fw_name` its `info` reports.
     Firmware(
         id="emvybombercat",
         display="EMVyBomberCat",
-        uf2="EMVyBomberCat.uf2",  # built from source (arduino-cli), not a prebuilt release
+        # Built by the firmware repo's build-firmware.yml action alongside the
+        # Electronic Cats sketches, so it ships as a prebuilt .uf2 release asset
+        # that `bombercat flash EMVyBomberCat` (and auto-flash) can install.
+        uf2="EMVyBomberCat.uf2",
         has_repl=True,  # answers the BomberCatControl REPL (ping/info/identify)
-        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_PASSTHROUGH}),
+        capabilities=frozenset({CAP_MONITOR, CAP_IDENTIFY, CAP_PASSTHROUGH, CAP_EMVY}),
         banners=("EMVyBomberCat",),  # best-effort: printed by setup() at boot
         description=(
             "EMVy Controller's swiss-army firmware: EMV read, APDU passthrough and "

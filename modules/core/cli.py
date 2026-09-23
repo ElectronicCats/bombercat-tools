@@ -23,6 +23,7 @@ from .firmwares import (
     INFERRED,
     NONE,
     USB,
+    CAP_EMVY,
     CAP_MAGSPOOF,
     CAP_MIFARE,
     CAP_MONITOR,
@@ -39,6 +40,7 @@ from ..nfcgate.cli import (
     status_cmd as _status,
 )
 from ..capture.cli import capture as _capture
+from ..emvy.cli import emvy as _emvy
 from ..firmware.cli import flash as _flash
 from ..magspoof.cli import magspoof as _magspoof
 from ..proto.cli import proto as _proto
@@ -227,6 +229,12 @@ def _next_steps(detection):
     elif detection.confidence in (USB, NONE):
         steps.append("bombercat flash --list    — see the firmwares you can write")
         steps.append("bombercat device list     — what is attached and its IDs")
+    elif fw.can(CAP_EMVY):
+        # Before CAP_PASSTHROUGH on purpose: EMVyBomberCat claims both, and its
+        # own command group is the useful answer — "bridge the ESP32 with an
+        # external serial tool" describes the bare passthrough image, not this.
+        steps.append("bombercat emvy read       — read an EMV card (PAN/expiry/track2)")
+        steps.append("bombercat emvy info       — the operations this firmware exposes")
     elif fw.can(CAP_PASSTHROUGH):
         steps.append(
             "passthrough firmware: bridge the ESP32 with an external serial tool"
@@ -593,6 +601,7 @@ def main_cli() -> None:
     cli.add_command(_tags)
     cli.add_command(_readers)
     cli.add_command(_magspoof)
+    cli.add_command(_emvy)
 
     # Dev tooling under tools/ — only where the checkout it drives is present.
     if _dev_checkout():

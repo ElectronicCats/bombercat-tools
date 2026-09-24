@@ -40,6 +40,7 @@ from ...utils.output import (
     print_warning,
 )
 from .access_bits import _KEY_A, parse_access_bits
+from .dicts import REGISTRY, CandidatePlan, UnknownDictError, select as _select_dicts
 from .keyfile import default_keyfile, load_keys
 from .common import (
     _MIFARE_BLOCK_HEX_LEN,
@@ -54,6 +55,40 @@ from .session import (
     _mifare_session,
     _run_mifare_command,
 )
+
+
+_TIER_LABEL = {0: "default", 1: "app", 2: "vendor"}
+
+
+def _print_dict_registry() -> None:
+    """Render the registered `--dict` families (name, tier, key count, sector
+    bias, description). Pure host-side; no device involved."""
+    table = Table(
+        title="mifare check — named key dictionaries", header_style="cyan bold"
+    )
+    table.add_column("name", style="cyan")
+    table.add_column("tier")
+    table.add_column("keys", justify="right")
+    table.add_column("sectors")
+    table.add_column("description")
+    for nd in REGISTRY.values():
+        try:
+            count = str(len(nd.load()))
+        except OSError:
+            count = "[red]missing[/red]"
+        sectors = ", ".join(str(s) for s in sorted(nd.sectors)) if nd.sectors else "—"
+        table.add_row(
+            nd.name,
+            _TIER_LABEL.get(nd.tier, str(nd.tier)),
+            count,
+            sectors,
+            nd.description,
+        )
+    console.print(table)
+    print_info(
+        "add with --dict <names> (comma-separated, or 'all'); "
+        "one-off files with --dict-file <path>"
+    )
 
 
 def _write_keyfile(path: str, keys: List[str]) -> None:
@@ -137,6 +172,31 @@ def _recover_key_b_via_trailer(
     "include the bundled file yourself alongside others if you want both.",
 )
 @click.option(
+    "--dict",
+    "dict_names",
+    multiple=True,
+    metavar="NAMES",
+    help="Named key families to add on top, comma-separated and repeatable "
+    f"(e.g. --dict mad,transport). Known: {', '.join(REGISTRY)}, or 'all'. "
+    "Their higher-probability keys are tried before the base dictionary; MAD "
+    "keys are tried first on the MAD sectors. See --list-dicts.",
+)
+@click.option(
+    "--dict-file",
+    "dict_files",
+    multiple=True,
+    type=click.Path(exists=True, dir_okay=False),
+    metavar="FILE",
+    help="Extra .dic/.keys file to add as candidates (repeatable), at the "
+    "lowest/generic priority. Unlike --keys, this adds to the base dictionary "
+    "instead of replacing it.",
+)
+@click.option(
+    "--list-dicts",
+    is_flag=True,
+    help="List the registered named key families and exit (no device needed).",
+)
+@click.option(
     "--sectors",
     type=click.IntRange(1, _MIFARE_CHECK_MAX_SECTORS),
     default=16,
@@ -181,6 +241,9 @@ def _recover_key_b_via_trailer(
 def mifare_check_cmd(
     ctx,
     keyfiles,
+    dict_names,
+    dict_files,
+    list_dicts,
     sectors,
     key_type,
     as_json,
@@ -202,14 +265,25 @@ def mifare_check_cmd(
     Exit code: 0 if every requested (sector, key type) was recovered, 1
     otherwise (some unknown, or the sweep was interrupted early).
     """
+    if list_dicts:
+        _print_dict_registry()
+        raise SystemExit(0)
+
     if out_file:
         _refuse_overwrite(out_file, force)
     if output_keys_file:
         _refuse_overwrite(output_keys_file, force)
 
-    dictionary = load_keys(keyfiles or [str(default_keyfile())])
-    if not dictionary:
-        print_error("no keys loaded — check --keys")
+    base = load_keys(keyfiles or [str(default_keyfile())])
+    try:
+        named = _select_dicts(dict_names)
+    except UnknownDictError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+    extra = load_keys(dict_files) if dict_files else []
+    plan = CandidatePlan(base, named, extra)
+    if not plan:
+        print_error("no keys loaded — check --keys/--dict/--dict-file")
         raise SystemExit(1)
 
     key_types = ["A", "B"] if key_type.lower() == "both" else [key_type.upper()]
@@ -222,11 +296,15 @@ def mifare_check_cmd(
 
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
         if not as_json:
+            if named or extra:
+                sources = [nd.name for nd in named]
+                sources += [f"file:{f}" for f in dict_files]
+                print_info(f"dictionaries: base + {', '.join(sources)}")
             print_info(
                 f"Checking {target} — {sectors} sector(s) x {len(key_types)} key "
-                f"type(s), {len(dictionary)} keys — Ctrl-C for partial results"
+                f"type(s), {plan.size} keys — Ctrl-C for partial results"
             )
-        total_attempts = total * len(dictionary)
+        total_attempts = total * plan.size
         progress = (
             None
             if as_json
@@ -265,7 +343,7 @@ def mifare_check_cmd(
                         sector=0,
                         key_type="",
                         tried=0,
-                        key_total=len(dictionary),
+                        key_total=plan.size,
                         rate=0.0,
                     )
                     if progress
@@ -275,7 +353,7 @@ def mifare_check_cmd(
                     block = _sector_first_block(s)
                     for kt in key_types:
                         candidates = list(known) + [
-                            k for k in dictionary if k not in known
+                            k for k in plan.for_sector(s) if k not in known
                         ]
                         key = None
                         tried = 0

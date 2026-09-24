@@ -1,0 +1,24 @@
+# locks.dic — access-control / lock vendor default keys (Fase 2, familia "locks")
+#
+# Product-specific default keys used by some electronic locks and access-control
+# systems that never got personalised. This is the "vendor" tier: lower
+# probability than factory/transport defaults, tried after them.
+#
+# ⚠ AUTHORIZED USE ONLY. Like the rest of `check`, this only tries keys you
+# already have against a card you are permitted to test. It performs no
+# cryptographic attack.
+#
+# This shipped set is intentionally small and generic: sequential/example
+# defaults that already appear in the open public dictionaries. Real
+# engagement-specific vendor sets are curated by the operator — drop your own
+# `<vendor>.dic` in this folder and register it in dicts.py, or pass it ad hoc
+# with `--dict-file <path>`. Provenance/licence: see dicts/README.md.
+#
+# Format: one 12-hex key per line; `#` comments and blanks ignored (load_keys).
+
+010203040506
+123456789ABC
+1122334455AA
+# Example/demonstration entry (not a real product key): shows a card opening
+# with a vendor-only key the factory dictionary does not contain.
+A1B2C3D4E5F6

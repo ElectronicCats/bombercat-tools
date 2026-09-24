@@ -40,7 +40,9 @@ from ...utils.output import (
     print_warning,
 )
 from .access_bits import _KEY_A, parse_access_bits
+from .block0 import parse_block0
 from .dicts import REGISTRY, CandidatePlan, UnknownDictError, select as _select_dicts
+from . import uidkeys
 from .keyfile import default_keyfile, load_keys
 from .common import (
     _MIFARE_BLOCK_HEX_LEN,
@@ -89,6 +91,44 @@ def _print_dict_registry() -> None:
         "add with --dict <names> (comma-separated, or 'all'); "
         "one-off files with --dict-file <path>"
     )
+
+
+def _print_uid_schemes() -> None:
+    """Render the registered `--uid-derived` schemes (name, whether they need a
+    secret master key, sectors covered, description). Pure host-side."""
+    table = Table(
+        title="mifare check — UID-derived key schemes", header_style="cyan bold"
+    )
+    table.add_column("name", style="cyan")
+    table.add_column("generable")
+    table.add_column("sectors")
+    table.add_column("description")
+    for sc in uidkeys.SCHEMES.values():
+        generable = (
+            "[red]no (secret)[/red]" if sc.requires_secret else "[green]yes[/green]"
+        )
+        sectors = ", ".join(str(s) for s in sorted(sc.sectors)) if sc.sectors else "—"
+        table.add_row(sc.name, generable, sectors, sc.description)
+    console.print(table)
+    print_info(
+        "enable with --uid-derived <names> (comma-separated, or 'all' for every "
+        "public scheme); needs the card's UID (read from block 0). Secret-key "
+        "schemes are out of scope and refuse."
+    )
+
+
+def _read_uid_via_block0(link, key_type: str, key: str) -> Optional[str]:
+    """Read block 0 of sector 0 with a key already known to open it and return
+    the 4-byte UID (8 hex chars), or None if it couldn't be read/parsed. Pure
+    read — no cryptography; UID-derived schemes need it as their input."""
+    r = link.command(f"mifare sector 0 {key_type} {key.upper()}")
+    if not r.ok:
+        return None
+    data_hex = r.data.get("mifare_sector", "")
+    if len(data_hex) < _MIFARE_BLOCK_HEX_LEN:
+        return None
+    b0 = parse_block0(data_hex[:_MIFARE_BLOCK_HEX_LEN])
+    return b0.uid if b0 and len(b0.uid) == uidkeys._UID4_HEX_LEN else None
 
 
 def _write_keyfile(path: str, keys: List[str]) -> None:
@@ -197,6 +237,31 @@ def _recover_key_b_via_trailer(
     help="List the registered named key families and exit (no device needed).",
 )
 @click.option(
+    "--uid-derived",
+    "uid_schemes",
+    multiple=True,
+    metavar="NAMES",
+    help="Also try keys derived from the card UID by a PUBLIC diversification "
+    f"scheme, comma-separated and repeatable. Known: {', '.join(uidkeys.SCHEMES)}, "
+    "or 'all'. Off by default; needs the UID (read from block 0). Only public "
+    "algorithms — secret-key (AES/HMAC) schemes are out of scope. See "
+    "--list-uid-schemes.",
+)
+@click.option(
+    "--uid-max",
+    type=click.IntRange(0, None),
+    default=0,
+    show_default=True,
+    metavar="N",
+    help="Cap UID-derived candidates tried per sector (0 = no cap). Bounds the "
+    "extra authentications over the slow I2C link.",
+)
+@click.option(
+    "--list-uid-schemes",
+    is_flag=True,
+    help="List the registered UID-derived key schemes and exit (no device).",
+)
+@click.option(
     "--sectors",
     type=click.IntRange(1, _MIFARE_CHECK_MAX_SECTORS),
     default=16,
@@ -244,6 +309,9 @@ def mifare_check_cmd(
     dict_names,
     dict_files,
     list_dicts,
+    uid_schemes,
+    uid_max,
+    list_uid_schemes,
     sectors,
     key_type,
     as_json,
@@ -268,6 +336,16 @@ def mifare_check_cmd(
     if list_dicts:
         _print_dict_registry()
         raise SystemExit(0)
+
+    if list_uid_schemes:
+        _print_uid_schemes()
+        raise SystemExit(0)
+
+    try:
+        schemes = uidkeys.select(uid_schemes)
+    except (uidkeys.UnknownUidSchemeError, uidkeys.SecretKeyRequiredError) as e:
+        print_error(str(e))
+        raise SystemExit(1)
 
     if out_file:
         _refuse_overwrite(out_file, force)
@@ -331,6 +409,7 @@ def mifare_check_cmd(
         )
         first = True
         attempts = 0
+        uid: Optional[str] = None  # filled once sector 0 opens (UID-derived schemes)
         start_time = time.monotonic()
         try:
             with progress or nullcontext():
@@ -351,10 +430,19 @@ def mifare_check_cmd(
                 )
                 for s in range(sectors):
                     block = _sector_first_block(s)
+                    uid_cands = (
+                        uidkeys.candidates_for(uid, schemes, s, uid_max)
+                        if schemes and uid
+                        else []
+                    )
                     for kt in key_types:
-                        candidates = list(known) + [
-                            k for k in plan.for_sector(s) if k not in known
-                        ]
+                        # confirmed keys (reuse) first, then UID-derived, then the
+                        # dictionary; deduped, first occurrence wins.
+                        candidates = list(
+                            dict.fromkeys(
+                                list(known) + uid_cands + list(plan.for_sector(s))
+                            )
+                        )
                         key = None
                         tried = 0
                         for candidate in candidates:
@@ -388,8 +476,36 @@ def mifare_check_cmd(
                             if skipped:
                                 progress.update(task, advance=skipped)
                             progress.update(task, recovered=recovered)
+
+                    # Once sector 0 is open, read block 0 for the UID so the
+                    # UID-derived schemes can generate candidates for the rest.
+                    # (Feedback is printed after the progress bar closes, below.)
+                    if schemes and uid is None and s == 0:
+                        kt0, key0 = next(
+                            (
+                                (kt, found[(0, kt)])
+                                for kt in ("A", "B")
+                                if found.get((0, kt))
+                            ),
+                            (None, None),
+                        )
+                        if key0:
+                            uid = _read_uid_via_block0(link, kt0, key0)
         except KeyboardInterrupt:
             interrupted = True
+
+        if schemes and not as_json:
+            if uid:
+                print_info(
+                    f"UID {uid} — UID-derived candidates via "
+                    f"{', '.join(sc.name for sc in schemes)}"
+                    + (f" (max {uid_max}/sector)" if uid_max else "")
+                )
+            else:
+                print_dim(
+                    "UID unavailable (sector 0 not opened / block 0 unreadable) "
+                    "— UID-derived schemes skipped"
+                )
 
         # Trailer-read fallback (still inside the open session): for sectors
         # the dictionary opened with key A but not key B, try to read key B

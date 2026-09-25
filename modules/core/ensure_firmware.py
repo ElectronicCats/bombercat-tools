@@ -101,6 +101,8 @@ def ensure_firmware(
     confirm_fn: Callable[[str], bool] = click.confirm,
     verify_retries: int = 2,
     verify_delay: float = 1.0,
+    detect_retries: int = 2,
+    detect_delay: float = 1.0,
 ) -> EnsureOutcome:
     """Make sure `port` can do `req.capability`, flashing it if allowed to.
 
@@ -108,10 +110,26 @@ def ensure_firmware(
     consent policy in D-3.4/D-3.5. Never flashes twice in one call (R4): one
     attempt, and a failed re-verification afterwards warns instead of
     retrying the flash (D-3.7).
+
+    A board that has just been flashed or replugged re-enumerates and then
+    spends a beat in `setup()` (waiting on `Serial`, bringing the PN7150 up)
+    before its control REPL starts answering. During that window
+    detect_firmware sees the USB device but gets no handshake and reports
+    USB/UNKNOWN — so a command run right after a flash would wrongly refuse
+    with "this board is running Unknown / none". `detect_retries`/`detect_delay`
+    re-probe while the reading is still USB, giving a still-booting board time
+    to name itself. Only USB confidence is transient this way: a firmware that
+    named itself (HANDSHAKE/INFERRED), matched a banner, or is truly absent
+    (NONE) will not change by waiting, so those break out immediately.
     """
     flash_fn = flash_fn or _flash_provider
 
     detection = detect_fn(port, sniff=sniff, usb_present=usb_tagged)
+    for _ in range(detect_retries):
+        if detection.confidence != USB:
+            break
+        time.sleep(detect_delay)
+        detection = detect_fn(port, sniff=sniff, usb_present=usb_tagged)
 
     if detection.confidence == NONE:
         raise DeviceError(f"nothing responded on {port}.")

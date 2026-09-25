@@ -176,6 +176,44 @@ class Card:
     sak: str  # 2 hex
     atqa: str  # 4 hex, byte order as read (e.g. "0400" for 1K)
     sectors: List[Sector] = field(default_factory=list)
+    # Block-0 writability, the axis Fase 6 verifies. "locked": a genuine
+    # factory-OTP block 0 — a standard write NAKs (the gen1a backdoor that could
+    # rewrite it is unreachable on the PN7150). "gen2": a CUID/direct-write magic
+    # — block 0 takes a normal auth + write, so the UID CAN be rewritten here.
+    block0_mode: str = "locked"
+
+    # -- block access (absolute block index) --------------------------------
+    def block_hex(self, block: int) -> Optional[str]:
+        """The 16-byte block at absolute index BLOCK as the card stores it
+        (block 0 = sector 0's first data block). None if out of range."""
+        s = sector_of_block(block)
+        if not 0 <= s < len(self.sectors):
+            return None
+        idx = block - first_block(s)
+        sec = self.sectors[s]
+        if idx == sector_block_count(s) - 1:
+            return sec.trailer()
+        if 0 <= idx < len(sec.data):
+            return sec.data[idx]
+        return None
+
+    def write_block(self, block: int, data_hex: str) -> bool:
+        """Write a data block, mimicking the firmware. Block 0 only accepts a
+        write on a gen2/direct-write card; on a locked (genuine) card it NAKs.
+        Trailer writes are refused here (Fase 6 never touches them)."""
+        s = sector_of_block(block)
+        if not 0 <= s < len(self.sectors):
+            return False
+        idx = block - first_block(s)
+        sec = self.sectors[s]
+        if idx == sector_block_count(s) - 1:
+            return False  # trailer write: out of scope for this mock
+        if block == 0:
+            if self.block0_mode != "gen2":
+                return False
+            self.uid = data_hex[:8].upper()
+        sec.data[idx] = data_hex.upper()
+        return True
 
     # -- what the firmware would answer -------------------------------------
     def auth(self, block: int, key_type: str, key: str) -> bool:
@@ -252,25 +290,51 @@ class CardLink(FakeLink):
     def __init__(self, card: Card, **kw):
         super().__init__(**kw)
         self.card = card
+        # Which sector the last successful auth left open. `read`/`write` reuse
+        # it, exactly as the firmware requires a prior `mifare auth`.
+        self.authed_sector: Optional[int] = None
+
+    def _log(self, stripped: str) -> None:
+        self.sent.append(stripped)
+        if self._trace is not None:
+            self._trace("tx", stripped)
 
     def command(self, line: str, read_timeout: Optional[float] = None):
         stripped = line.strip()
         parts = stripped.split()
         if parts[:2] == ["mifare", "auth"] and len(parts) == 5:
-            self.sent.append(stripped)
-            if self._trace is not None:
-                self._trace("tx", stripped)
+            self._log(stripped)
             block, kt, key = int(parts[2]), parts[3].upper(), parts[4]
-            return (
-                ok() if self.card.auth(block, kt, key) else err("authentication failed")
-            )
+            if self.card.auth(block, kt, key):
+                self.authed_sector = sector_of_block(block)
+                return ok()
+            self.authed_sector = None
+            return err("authentication failed")
         if parts[:2] == ["mifare", "sector"] and len(parts) == 5:
-            self.sent.append(stripped)
-            if self._trace is not None:
-                self._trace("tx", stripped)
+            self._log(stripped)
             sector, kt, key = int(parts[2]), parts[3].upper(), parts[4]
             data, reason = self.card.read_sector(sector, kt, key)
-            return ok(mifare_sector=data) if data is not None else err(reason)
+            if data is not None:
+                self.authed_sector = sector
+                return ok(mifare_sector=data)
+            return err(reason)
+        if parts[:2] == ["mifare", "read"] and len(parts) == 3:
+            self._log(stripped)
+            block = int(parts[2])
+            if self.authed_sector != sector_of_block(block):
+                return err("read failed (not authenticated, or card gone)")
+            data = self.card.block_hex(block)
+            if data is None:
+                return err("read failed (not authenticated, or card gone)")
+            return ok(mifare_data=f"{block} {data}")
+        if parts[:2] == ["mifare", "write"] and len(parts) == 4:
+            self._log(stripped)
+            block = int(parts[2])
+            if self.authed_sector != sector_of_block(block):
+                return err("write failed (not authenticated, or card gone)")
+            if self.card.write_block(block, parts[3]):
+                return ok()
+            return err("write failed (not authenticated, or card gone)")
         return super().command(line, read_timeout)
 
 
@@ -313,6 +377,21 @@ def card_1k() -> Card:
     # sector 15: private, unknown to any dictionary
     sectors.append(Sector("445566778899", "998877665544", AC_HARDENED, ["22" * 16] * 3))
     return Card("DECAFBAD", "08", "0400", sectors)
+
+
+def magic_card_1k(block0_mode: str = "gen2", uid: str = "DECAFBAD") -> Card:
+    """A minimal 1K whose sector 0 opens with the transport default key A
+    (FFFFFFFFFFFF) — what `mifare clone-uid` authenticates with by default —
+    used by Fase 6 to verify UID rewrite. `block0_mode` picks a gen2
+    direct-write card ("gen2", block 0 writable) or a genuine/locked one
+    ("locked", block 0 NAKs a write)."""
+    b0 = _block0(uid, "08", "0400")
+    sectors: List[Sector] = [
+        Sector(KEY_DEFAULT, KEY_DEFAULT, AC_TRANSPORT, [b0, "00" * 16, "00" * 16])
+    ]
+    for _ in range(1, 16):
+        sectors.append(Sector(KEY_DEFAULT, KEY_DEFAULT, AC_TRANSPORT, ["00" * 16] * 3))
+    return Card(uid, "08", "0400", sectors, block0_mode=block0_mode)
 
 
 def card_4k() -> Card:

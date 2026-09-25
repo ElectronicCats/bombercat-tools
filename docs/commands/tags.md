@@ -191,7 +191,7 @@ A published (pre-FW-1) image, still on legacy text:
 
 ### `tags mifare`
 
-> Mifare Classic auth/read/write/sector/check/dump/restore/code/write-text commands. Requires the **MifareClassic** firmware (not DetectTags — confirm with [`bombercat status`](../commands/status.md)).
+> Mifare Classic auth/read/write/sector/check/dump/analyze/restore/code/write-text commands. Requires the **MifareClassic** firmware (not DetectTags — confirm with [`bombercat status`](../commands/status.md)). `analyze` is the exception — it runs fully offline on a saved dump and needs no firmware or card.
 
 Tap a Mifare Classic card to let the firmware select it — `auth`, `read`, `write`, `sector`, `check`, `dump`, `restore` and `write-text` all wait for this automatically (default 5s, `-t/--timeout` to change it — `write-text` defaults to `15`) if no card is selected yet. The card then stays selected for ~10s of inactivity between commands before the firmware closes the session and re-arms discovery.
 
@@ -219,18 +219,27 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 | Option | Description |
 |---|---|
 | `--keys FILE` | Key dictionary (`.keys`/`.dic`/`.md`), repeatable. Defaults to the bundled dictionary (2477 known keys); passing `--keys` **replaces** the bundled one — include it explicitly alongside your own file if you want both. |
+| `--dict NAMES` | Named key families to add **on top** of the base dictionary, comma-separated and repeatable (e.g. `--dict mad,transport`). Known: `transport`, `mad`, `ndef`, `locks`, or `all`. Their higher-probability keys are tried before the base dictionary; MAD keys are tried first on the MAD sectors (0/16). See `--list-dicts`. |
+| `--dict-file FILE` | Extra `.dic`/`.keys` file to add as candidates (repeatable), at the lowest/generic priority. Unlike `--keys`, this **adds** to the base dictionary instead of replacing it. |
+| `--list-dicts` | List the registered named key families and exit (no device needed). |
+| `--uid-derived NAMES` | Also try keys derived from the card UID by a **public** diversification scheme, comma-separated and repeatable. Known: `mizip` (MiZip / MIFARE Mini), or `all`. Off by default; needs the UID (read from block 0). Secret-key (AES/HMAC) schemes are out of scope and refuse. See `--list-uid-schemes`. |
+| `--uid-max N` | Cap UID-derived candidates tried per sector (`0` = no cap). Bounds the extra authentications over the slow I²C link. |
+| `--list-uid-schemes` | List the registered UID-derived key schemes and exit (no device needed). |
 | `--sectors N` | Number of sectors to check (default `16` = 1K). Max `32`; 4K's 16-block sectors (32–39) aren't supported yet. |
 | `--key-type A\|B\|both` | Which key slot(s) to try (default `both`). |
 | `--json` | Emit one JSON object on stdout instead of the table. |
 | `--out FILE` | Write the recovered keys as a keyfile (one 12-hex key per line, mfoc/proxmark-compatible). |
-| `-o, --output-keys FILE` | Write the recovered keys as one `sector:keyA:keyB` line per sector — the format [`mifare sector --keys-file`](#tags-mifare), [`mifare dump -k`](#tags-mifare-dump), [`mifare code -k`](#tags-mifare-code) and [`mifare write-text -k`](#tags-mifare-write-text) all read. A key type not recovered is left blank. |
+| `-o, --output-keys FILE` | Write the recovered keys as one `sector:keyA:keyB` line per sector — the format [`mifare sector --keys-file`](#tags-mifare), [`mifare dump -k`](#tags-mifare-dump), [`mifare analyze -k`](#tags-mifare-analyze), [`mifare code -k`](#tags-mifare-code) and [`mifare write-text -k`](#tags-mifare-write-text) all read. A key type not recovered is left blank. |
 | `--force` | Overwrite `--out`/`--output-keys` if it already exists. |
 | `-t, --timeout SEC` | Seconds to wait for a card tap if none is selected yet (default `5`). |
 
 ```sh
 bombercat tags mifare check
 bombercat tags mifare check --sectors 16 --key-type A --out recovered.keys
-bombercat tags mifare check -o card.keys           # sector:keyA:keyB file for sector/dump/code/write-text
+bombercat tags mifare check -o card.keys           # sector:keyA:keyB file for sector/dump/analyze/code/write-text
+bombercat tags mifare check --dict mad,transport   # add named families on top of the base dictionary
+bombercat tags mifare check --uid-derived mizip    # + try public UID-derived keys (MiZip/MIFARE Mini)
+bombercat tags mifare check --list-dicts           # inspect the named families, no device needed
 bombercat tags mifare check --keys mine.dic --json
 ```
 
@@ -252,9 +261,15 @@ A cell with no key in the dictionary shows `[unknown]` instead. `--json` emits o
 
 Known keys are tried first on later sectors — real cards commonly reuse the same key across sectors, so once one is recovered the sweep tries it before the rest of the dictionary. A progress bar tracks sectors completed; **Ctrl-C prints whatever was recovered so far** instead of losing it. Exit code is `0` only if every requested `(sector, key type)` was recovered — `1` if anything came back `unknown` or the sweep was interrupted.
 
+**Named dictionaries (`--dict`) and UID-derived keys (`--uid-derived`).** Both only add *more known/public keys* to the candidate pool — they never break Crypto-1. `--dict` layers registered families (MAD, transport, NDEF, lock-vendor defaults) ahead of the base dictionary, ordered by probability, with sector-biased families (MAD → sectors 0/16) tried first where they belong; add your own with `--dict-file <file>`. `--uid-derived` recomputes the keys a **public** diversification algorithm fully specifies for the card's UID (currently `mizip`, ported verbatim from proxmark3's public MiZip calculator) and injects them right after the reuse candidates. Schemes that would need a secret master key (AES/HMAC) are registered only so the CLI can name the boundary and **refuse** — the master key is never guessed, and `all` never sweeps a secret scheme. Because both feed the same known-first-then-early-cut pipeline, turning them on is cheap: on a card that reuses keys, the extra candidates are only ever paid for on the sectors no reuse or default opened (see the performance note below).
+
+Per-sector candidate order is: **confirmed keys (reuse) → UID-derived → named families → base dictionary → `--dict-file`**, de-duplicated. With no `--dict`/`--dict-file`/`--uid-derived`, the sweep is byte-for-byte the pre-Fase-2 behaviour.
+
 **Trailer-read key-B recovery.** When the dictionary opens a sector's key A but not its key B, `check` then reads that sector's trailer with key A. On cards whose access bits leave key B *readable with key A* (the common transport/default configuration — NXP MF1S50yyX Table 8, trailer configs `000`/`001`), key B is stored in the trailer in cleartext and comes back for free — reported as `sector N key B recovered via trailer read` and folded into the table, `--json`, `--out` and `-o`/`--output-keys` output like any dictionary hit. This is **not** the Crypto-1 *nested* attack: the onboard PN7150 performs Crypto-1 inside the chip and never surfaces an encrypted nonce, so no host-side cryptographic recovery is possible on this hardware. It is a plain authenticated read of a key the card is configured to hand over. Key A itself never reads back under any access condition, so only key B is recoverable this way.
 
 Worst case (a card using no known key) means trying the full dictionary against every sector/key-type — with the bundled 2477-key list and `both` key types over 16 sectors that's tens of thousands of auth round-trips, which can take minutes; the progress bar and Ctrl-C partial results make that tolerable for a one-off check.
+
+**Performance note.** The dominant cost is any *unknown* sector, which must sweep the whole candidate pool once. Everything else opens early: a confirmed key is tried first on the remaining sectors (reuse), and the search cuts as soon as a sector's key types are found. This is why `--dict`/`--uid-derived` stay cheap even though they enlarge the pool — the added candidates are only ever fully paid for on sectors that nothing else opened. On the representative 1K test card (key-type A, one private-key sector), the auth count moves from **2514** (baseline) to **2525** with `--dict all` and **2527** with `--dict all --uid-derived mizip` — a naive per-sector sweep of the same enlarged pool would be ≈ 39 000. This is pinned as a regression test (`tests/test_mifare_phase5.py`).
 
 ---
 
@@ -345,6 +360,80 @@ Key A never reads back from the card (it's always zeros in the raw trailer), so 
 **`--mfd`/`--eml` are not canonical** — they can't tell "not read" from real zeros and can't carry the recovered keys, so a gap is silently zero-filled in both. Prefer `--out` when you need to know what was actually read, or to round-trip into [`mifare restore`](#tags-mifare-restore).
 
 Exit code is `0` only if every requested sector was read and the run wasn't interrupted — `1` for any gap or a Ctrl-C partial, in both table and `--json` mode (same convention as `check`).
+
+---
+
+<a id="tags-mifare-analyze"></a>
+### `tags mifare analyze`
+
+> Turn a [`mifare dump`](#tags-mifare-dump) JSON into an interpretable security report. **100% offline** — no card, no board, no firmware: it only reads what a dump already holds and explains it. The report sibling of `dump`/`restore`.
+
+`analyze` never breaks Crypto-1 and never guesses a key. It reads a canonical `mifare dump --out` file and reports: the **MAD** (which application owns each sector, sector 0 plus MAD2 in sector 16), **value blocks** (the ±value/complement/address layout, told apart from data), **weak keys** (which sectors opened with a default/known key vs. a custom one), **insecure access bits** (readable key B, unprotected data blocks, bits that fail their own inverse), and — always — the **gaps**: sectors that were never opened, declared as not evaluable rather than assumed secure. Use it to justify migrating off MIFARE Classic.
+
+| Option | Description |
+|---|---|
+| `DUMP_FILE` | **Required (positional).** A canonical `mifare dump --out` JSON to analyze. |
+| `-k, --keys-file FILE` | A `sector:keyA:keyB` file (from [`mifare check --output-keys`](#tags-mifare-check)). When given it is **authoritative** for which keys were recovered — it tells a genuine all-zero key apart from a sector whose key was never found. |
+| `--dict NAMES` | Named key families counted as *known/weak* when classifying keys, comma-separated and repeatable. Same families as [`mifare check --dict`](#tags-mifare-check) (`transport`, `mad`, `ndef`, `locks`, or `all`) — a key that is a public family key is a weakness, not a custom key. |
+| `--dict-file FILE` | Extra key dictionary file counted as *known/weak* (repeatable). The bundled default dictionary is always included. |
+| `--json` | Emit the full report as JSON on stdout instead of the tables. |
+
+```sh
+bombercat tags mifare analyze card.json                       # offline report from a dump
+bombercat tags mifare analyze card.json -k recovered.keys     # classify recovered keys precisely
+bombercat tags mifare analyze card.json --dict locks --json   # count lock-vendor keys as weak, machine-readable
+```
+
+```
+ℹ MIFARE Classic dump analysis — uid DECAFBAD (1K)
+   sectors            15 analyzed / 16 total
+
+MAD (application directory)
+  crc                12  (CRC ok)
+  sector 1           AID 0004
+  sector 4           AID 1234
+
+Sectors
+┏━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ S ┃ Opened ┃ Key A                 ┃ Key B                 ┃ Notes                ┃
+┡━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ 0 │ A weak │ A0A1A2A3A4A5 default  │ …           default   │ MAD1 directory       │
+│ 4 │ A weak │ FFFFFFFFFFFF default  │ …           default   │ value block @16 = 1000 │
+└───┴────────┴───────────────────────┴───────────────────────┴──────────────────────┘
+
+Gaps (not evaluable)
+  sector 15          not present in dump (never read)
+⚠ gaps were never opened — no security claim is made about them
+
+Summary
+  weak-key sectors   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+  custom-key sectors none
+  gap sectors        15
+```
+
+`--keys-file` makes the classification precise: without it, keys come from the dump's trailer bytes, where the all-zero read-back a card gives for a hidden key is treated as "not recovered". A sector that never opened is always listed under **Gaps** and never contributes a security claim — the report cannot conclude a sector is "secure" just because it could not be read. `analyze` exits `0` unless the dump file itself can't be read (it's a report tool, not a pass/fail verdict).
+
+**`--json`** emits the full report — `uid`, `size`, `mad`/`mad2`, a per-sector array (`key_a`/`key_a_class`, `value_blocks`, `access.issues`, …), a `gaps` list, and a `summary` (weak/custom/insecure/gap sector lists, value-block count) — with a stable schema for downstream tooling.
+
+---
+
+<a id="tags-mifare-workflow"></a>
+### End-to-end workflow: `check` → `dump` → `analyze`
+
+The three commands chain through two stable file contracts — the `sector:keyA:keyB` keyfile and the canonical dump JSON — so a full "recover keys, extract, report" pass is:
+
+```sh
+# 1. recover keys and write the per-sector keyfile
+bombercat tags mifare check -o card.keys
+
+# 2. dump the whole card using those keys, to canonical JSON
+bombercat tags mifare dump -k card.keys --out card.json
+
+# 3. report on the dump, offline, with the keyfile for precise classification
+bombercat tags mifare analyze card.json -k card.keys
+```
+
+Steps 1–2 need the **MifareClassic** firmware and the card on the reader; step 3 needs neither — it runs anywhere from the saved `card.json`. A sector `check` cannot open stays blank in `card.keys`, becomes a gap in `card.json`, and is reported as *not evaluable* by `analyze` — honest end to end, never filled in or assumed secure. `check --out card.dic` additionally writes a flat mfoc/proxmark keyfile if you want to feed the keys to other tooling.
 
 ---
 

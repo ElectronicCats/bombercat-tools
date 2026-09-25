@@ -34,6 +34,12 @@ _MIFARE_KEYS_LINE = ok(
 )
 
 
+def _auths(fake):
+    """Count the `mifare auth` lines a check sweep actually issued — the same
+    view as the Fase 1 `stats.attempts` counter."""
+    return sum(1 for line in fake.sent if line.startswith("mifare auth"))
+
+
 def test_mifare_auth_succeeds_when_a_session_is_already_open(runner, use_link):
     fake = use_link(mifare_session, FakeLink())
     result = runner.invoke(
@@ -261,6 +267,7 @@ def test_mifare_check_continues_past_a_failed_key_and_finds_the_real_one(
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "A0A1A2A3A4A5", "key_b": None}],
         "recovered": 1,
@@ -367,6 +374,7 @@ def test_mifare_check_key_type_a_never_tries_b(runner, use_link, tmp_path):
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": None}],
         "recovered": 1,
@@ -408,6 +416,7 @@ def test_mifare_check_recovers_key_b_via_trailer_read(runner, use_link, tmp_path
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": "B0B1B2B3B4B5"}],
         "recovered": 2,

@@ -514,6 +514,40 @@ A sector's dump entry with an all-zero key A/B (what a card reads back when the 
 
 ---
 
+<a id="tags-mifare-clone-uid"></a>
+### `tags mifare clone-uid`
+
+> Verify whether **this hardware** (PN7150) can rewrite a Mifare Classic UID — block 0 — and, when asked, write a UID and read it back to confirm a real 1:1 clone. Plan Fase 6; full hardware investigation in [`docs/MIFARE_IMPROVEMENTS_Phase6.md`](../MIFARE_IMPROVEMENTS_Phase6.md).
+
+> ⚠️ **Authorized use only.** Only probe/clone cards you own or have explicit permission to test.
+
+It authenticates sector 0, reads block 0 and runs a **non-destructive writability probe** (writes the current block 0 back unchanged) to classify the card:
+
+- **gen2 / CUID (direct-write)** — block 0 is writable with a normal auth + write. The PN7150 does exactly this, so the UID **can** be rewritten. Pass `--uid` (or `--from-dump`) and the command writes it, then reads block 0 back and compares byte-for-byte.
+- **genuine / locked** — block 0 is factory-OTP. Rewriting the UID would need the **gen1a backdoor** (a 7-bit CRC-less unlock frame), which the PN7150's NCI reader stack **cannot emit** — reported, never attempted.
+
+With no `--uid`/`--from-dump` the run is **read-only** (the card is not changed).
+
+| Option | Meaning |
+|--------|---------|
+| `--uid HEX8` | 4-byte UID to write, then verify by read-back. Omit for a read-only capability probe. |
+| `--from-dump FILE` | Take the source UID from a canonical [`mifare dump --out`](#tags-mifare-dump) JSON's block 0 (mutually exclusive with `--uid`). |
+| `--key HEX12` / `--key-type A\|B` | Key to authenticate sector 0 (default `FFFFFFFFFFFF`, key A). |
+| `-k, --keys-file FILE` | Take sector 0's key from a `sector:keyA:keyB` file instead. |
+| `--sak HH` / `--atqa HHHH` | Override SAK/ATQA in the written block 0 (default: keep the card's current values). The BCC is always recomputed for the new UID. |
+| `--yes` | Skip the confirmation before a UID write (scripted use). |
+| `--json` | Emit the verdict as JSON. |
+
+```bash
+bombercat tags mifare clone-uid                              # read-only: is the UID rewritable here?
+bombercat tags mifare clone-uid --uid A1B2C3D4 --yes         # write + verify a 1:1 clone (gen2/CUID only)
+bombercat tags mifare clone-uid --from-dump source.json --yes
+```
+
+Exit code is `0` when a UID rewrite works here (probe shows block 0 writable, or a write verified by read-back) and `1` otherwise (not writable, not verified, or an auth/read/write error) — so a script can gate on "is a 1:1 UID clone possible on this card?".
+
+---
+
 <a id="tags-mifare-code"></a>
 ### `tags mifare code`
 

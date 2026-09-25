@@ -220,7 +220,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`relay`](commands/relay.md) | NFCGate relay: configure it, run it, and watch the APDU relay. | `config wifi/nfcgate/show`, `run`, `stop`, `status`, `monitor` |
 | [`capture`](commands/capture.md) | Capture relayed APDUs to pcap (live Wireshark and/or a file). | `capture start`, `capture stop` |
 | [`tags`](commands/tags.md) | NFC tag detection over the DetectTags firmware's PN7150 reader. | `read`, `watch`, `scan`, `info` |
-| [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware, plus offline dump analysis. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `analyze`, `restore`, `code`, `write-text` |
+| [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware, plus offline dump analysis. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `analyze`, `restore`, `clone-uid`, `code`, `write-text` |
 | [`readers`](commands/readers.md) | NFC reader/terminal detection over the DetectReaders firmware. | `read`, `watch`, `scan`, `info` |
 | [`magspoof`](commands/magspoof.md) | Magstripe emulation: play, show, watch, NFC, and multi-card store. | `play`, `show`, `watch`, `info`, `nfc *`, `card *` |
 | [`emvy`](commands/emvy.md) | EMVyBomberCat swiss-army: EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation (auto-flashable, then gated by firmware identity). | `info`, `read`, `apdu`, `tag`, `mag`, `cardscan`, `emu *`, `nfcinfo`, `reboot` |
@@ -297,6 +297,7 @@ Before this file was split into `docs/commands/*.md`, every command lived here a
 | <a id="tags-mifare-dump"></a>`#tags-mifare-dump` | [`tags mifare dump`](commands/tags.md#tags-mifare-dump) |
 | <a id="tags-mifare-analyze"></a>`#tags-mifare-analyze` | [`tags mifare analyze`](commands/tags.md#tags-mifare-analyze) |
 | <a id="tags-mifare-restore"></a>`#tags-mifare-restore` | [`tags mifare restore`](commands/tags.md#tags-mifare-restore) |
+| <a id="tags-mifare-clone-uid"></a>`#tags-mifare-clone-uid` | [`tags mifare clone-uid`](commands/tags.md#tags-mifare-clone-uid) |
 | <a id="tags-mifare-code"></a>`#tags-mifare-code` | [`tags mifare code`](commands/tags.md#tags-mifare-code) |
 | <a id="tags-mifare-write-text"></a>`#tags-mifare-write-text` | [`tags mifare write-text`](commands/tags.md#tags-mifare-write-text) |
 | <a id="readers"></a>`#readers` | [`readers`](commands/readers.md) |

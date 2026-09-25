@@ -409,6 +409,12 @@ def mifare_check_cmd(
         )
         first = True
         attempts = 0
+        # Honest baseline for the "auths saved" stat: how many authentications a
+        # naive sweep of the SAME candidate universe would cost — every (sector,
+        # key type) slot trying its full pool to the end, with no reuse shortcut
+        # and no early cut. Accumulated per slot below; attempts is what we
+        # actually issued. See the Timing summary / JSON `stats`.
+        naive_attempts = 0
         uid: Optional[str] = None  # filled once sector 0 opens (UID-derived schemes)
         start_time = time.monotonic()
         try:
@@ -436,13 +442,20 @@ def mifare_check_cmd(
                         else []
                     )
                     for kt in key_types:
-                        # confirmed keys (reuse) first, then UID-derived, then the
-                        # dictionary; deduped, first occurrence wins.
-                        candidates = list(
-                            dict.fromkeys(
-                                list(known) + uid_cands + list(plan.for_sector(s))
-                            )
+                        # The universe a naive sweep would try for this slot:
+                        # UID-derived candidates + the full dictionary for this
+                        # sector, deduped — WITHOUT the reuse shortcut and run to
+                        # completion. This is the baseline "auths saved" is
+                        # measured against (equals sectors x universe when no
+                        # --dict/--uid-derived, matching the Fase 0 pins).
+                        naive_pool = list(
+                            dict.fromkeys(uid_cands + list(plan.for_sector(s)))
                         )
+                        naive_attempts += len(naive_pool)
+                        # What we actually try: confirmed keys (reuse) first, then
+                        # that pool; deduped, first occurrence wins, with an early
+                        # cut on the first hit.
+                        candidates = list(dict.fromkeys(list(known) + naive_pool))
                         key = None
                         tried = 0
                         for candidate in candidates:
@@ -542,6 +555,12 @@ def mifare_check_cmd(
     recovered = sum(1 for v in found.values() if v)
     exposed_sectors = len({s for (s, _kt), v in found.items() if v})
 
+    # Auths saved by known-key reuse + per-sector early cut vs. a naive sweep of
+    # the same candidate universe (Fase 1). Honest even on interrupt: both
+    # counters stop together, so the ratio reflects the work actually done.
+    auths_saved = naive_attempts - attempts
+    saved_pct = (auths_saved / naive_attempts * 100.0) if naive_attempts else 0.0
+
     if out_file:
         try:
             _write_keyfile(out_file, list(known))
@@ -566,7 +585,22 @@ def mifare_check_cmd(
             key_a = found.get((s, "A")) if "A" in key_types else None
             key_b = found.get((s, "B")) if "B" in key_types else None
             rows.append({"sector": s, "key_a": key_a, "key_b": key_b})
-        print(json.dumps({"sectors": rows, "recovered": recovered, "total": total}))
+        print(
+            json.dumps(
+                {
+                    "sectors": rows,
+                    "recovered": recovered,
+                    "total": total,
+                    "stats": {
+                        "attempts": attempts,
+                        "naive_attempts": naive_attempts,
+                        "auths_saved": auths_saved,
+                        "saved_pct": round(saved_pct, 1),
+                        "interrupted": interrupted,
+                    },
+                }
+            )
+        )
         raise SystemExit(0 if recovered == total else 1)
 
     console.print("")
@@ -602,6 +636,8 @@ def mifare_check_cmd(
     _print_field("keys identified", f"{recovered}/{total}")
     _print_field("failures", str(total - recovered))
     _print_field("sectors exposed", f"{exposed_sectors}/{sectors}")
+    _print_field("naive sweep", f"{naive_attempts} auths")
+    _print_field("auths saved", f"{auths_saved} ({saved_pct:.1f}% vs. naive sweep)")
     if interrupted:
         _print_field("status", "[yellow]interrupted — partial results[/yellow]")
 

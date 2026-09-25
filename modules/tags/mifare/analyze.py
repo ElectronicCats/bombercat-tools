@@ -31,6 +31,7 @@ from ...utils.output import (
 from ...utils.detection_cli import print_field as _print_field
 from .access_bits import parse_access_bits
 from .common import _MIFARE_BLOCK_HEX_LEN, _MIFARE_KEY_HEX_LEN, _MIFARE_TRAILER_AC_LEN
+from .dicts import REGISTRY, UnknownDictError, select as _select_dicts
 from .keyfile import (
     SectorKeyfileError,
     default_keyfile,
@@ -376,26 +377,42 @@ def _fmt_list(items: List[int]) -> str:
 )
 @click.option(
     "--dict",
+    "dict_names",
+    multiple=True,
+    metavar="NAMES",
+    help="Named key families counted as 'known/weak' when classifying keys, "
+    f"comma-separated and repeatable. Known: {', '.join(REGISTRY)}, or 'all'. "
+    "The same families `mifare check --dict` uses — see its `--list-dicts`.",
+)
+@click.option(
+    "--dict-file",
     "dict_files",
     multiple=True,
     type=click.Path(exists=True, dir_okay=False),
     metavar="FILE",
-    help="Extra key dictionary counted as 'known/weak' when classifying keys "
-    "(repeatable). The bundled default dictionary is always included.",
+    help="Extra key dictionary file counted as 'known/weak' when classifying "
+    "keys (repeatable). The bundled default dictionary is always included.",
 )
 @click.option(
     "--json", "as_json", is_flag=True, help="Emit the full report as JSON on stdout."
 )
-def mifare_analyze_cmd(dump_file, keys_file, dict_files, as_json):
+def mifare_analyze_cmd(dump_file, keys_file, dict_names, dict_files, as_json):
     """Analyze a canonical `mifare dump --out` JSON — 100% offline, no card.
 
     Reports the MAD (which application owns each sector), value blocks, which
     sectors opened with a weak/default key vs. a custom one, insecure access-bit
     configurations, and — always — the sectors that were never opened, declared
     as gaps rather than assumed secure. Use it to justify migrating off MIFARE
-    Classic. Pass --keys-file to classify recovered keys precisely; --json for a
+    Classic. Pass --keys-file to classify recovered keys precisely; --dict/
+    --dict-file to count extra known-weak families/files; --json for a
     machine-readable report.
     """
+    try:
+        named = _select_dicts(dict_names)
+    except UnknownDictError as e:
+        print_error(str(e))
+        raise SystemExit(1)
+
     try:
         with open(dump_file, encoding="utf-8") as f:
             dump = json.load(f)
@@ -410,6 +427,8 @@ def mifare_analyze_cmd(dump_file, keys_file, dict_files, as_json):
         raise SystemExit(1)
 
     default_keys = set(load_keys([str(default_keyfile()), *dict_files]))
+    for nd in named:
+        default_keys.update(nd.load())
 
     keyfile_keys = None
     if keys_file:

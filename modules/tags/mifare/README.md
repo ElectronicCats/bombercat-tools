@@ -30,6 +30,7 @@ out of reach on this hardware. Two consequences run through the whole module:
 | `dump` | [`dump.py`](dump.py) | yes | Read the whole card in one pass to canonical JSON (`--out`) / `.mfd` / `.eml`. |
 | `analyze` | [`analyze.py`](analyze.py) | **no** | Offline security report from a dump JSON (MAD, value blocks, weak keys, access bits, gaps). |
 | `restore` | [`restore.py`](restore.py) | yes | Write a dump JSON back to a (magic) card. |
+| `clone-uid` | [`clone_uid.py`](clone_uid.py) | yes | Verify whether this hardware can rewrite the UID (block 0): classify gen2/direct-write vs genuine/locked, and (with `--uid`) write + read-back a 1:1 clone. Plan Fase 6. |
 | `code` / `write-text` | [`code.py`](code.py) / [`write_text.py`](write_text.py) | `code` no, `write-text` yes | Encode a string to block hex; `write-text` also writes it. |
 
 ### Shared pieces
@@ -80,8 +81,11 @@ the full pool. See the performance pins in
 - **Slow I²C link.** Every candidate is an auth round-trip over a slow bus, so
   candidates are ordered by probability and cut early; `--uid-max` bounds the
   UID-derived additions per sector.
-- **UID cloning is uncertain** — probably unsupported by the PN7150 (plan Fase 6,
-  not implemented).
+- **UID cloning is split** (plan Fase 6, [`docs/MIFARE_IMPROVEMENTS_Phase6.md`](../../../docs/MIFARE_IMPROVEMENTS_Phase6.md)):
+  **gen2/CUID direct-write cards can be cloned** (block 0 takes a normal
+  auth + write; `clone-uid` verifies it by read-back), but the **gen1a backdoor
+  is out of reach** — its 7-bit CRC-less unlock frame can't be expressed through
+  the NCI reader API, which only carries whole-byte data packets.
 
 ## Testing (no hardware)
 

@@ -39,6 +39,7 @@ from ...utils.output import (
 from .analyze import mifare_analyze_cmd
 from .block0 import parse_block0
 from .check import mifare_check_cmd
+from .clone_uid import mifare_clone_uid_cmd
 from .code import mifare_code_cmd
 from .common import (
     _MIFARE_BLOCK_HEX_LEN,
@@ -301,5 +302,6 @@ mifare.add_command(mifare_check_cmd)
 mifare.add_command(mifare_dump_cmd)
 mifare.add_command(mifare_analyze_cmd)
 mifare.add_command(mifare_restore_cmd)
+mifare.add_command(mifare_clone_uid_cmd)
 mifare.add_command(mifare_code_cmd)
 mifare.add_command(mifare_write_text_cmd)

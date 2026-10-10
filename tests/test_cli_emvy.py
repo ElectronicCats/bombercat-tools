@@ -62,6 +62,7 @@ class FakeEmvyLink:
         # own contract: send stop_cmd, then re-raise.
         self.interrupt_after = interrupt_after
         self.sent: List[str] = []
+        self.stream_kwargs: Dict[str, object] = {}
         self.opened = False
         self.closed = False
 
@@ -90,7 +91,10 @@ class FakeEmvyLink:
                 return list(self.script[key])
         return ["OK"]
 
-    def stream_until(self, sentinel, on_line=None, stop_cmd=None, timeout=None):
+    def stream_until(
+        self, sentinel, on_line=None, stop_cmd=None, timeout=None, **kwargs
+    ):
+        self.stream_kwargs = {"sentinel": sentinel, "stop_cmd": stop_cmd, **kwargs}
         lines: List[str] = []
         for i, text in enumerate(self.stream_lines):
             if self.interrupt_after is not None and i == self.interrupt_after:
@@ -684,6 +688,23 @@ def test_emu_ndef_stops_cleanly_on_ctrl_c(runner, use_link, use_emvy_link):
     assert result.exit_code == 0
     assert "stopped" in out.lower()
     assert "STOP" in fake.sent
+
+
+def test_emu_stream_passes_the_trigger_as_restart_cmd(runner, use_link, use_emvy_link):
+    """A mid-emulation MCU reset (USB re-enumeration) must not kill the
+    session: the CLI hands stream_until the trigger line as restart_cmd so the
+    link reopens the port and re-sends the emulation."""
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_card_cmd, [])
+
+    assert result.exit_code == 0
+    assert fake.stream_kwargs.get("restart_cmd") == fake.sent[0]
 
 
 # ── emu card ─────────────────────────────────────────────────────────────────

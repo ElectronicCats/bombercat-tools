@@ -8,6 +8,9 @@
 # docs/IMPLEMENTATION_PLAN_EMVyBomberCat_CLI.md.
 
 import pytest
+import serial
+
+from typing import List, Optional
 
 from conftest import FakeSerial
 from modules.emvy import link as link_mod
@@ -126,6 +129,115 @@ def test_stream_until_times_out_when_sentinel_never_arrives(linked):
     ser.feed("EMU:RX 00A4")  # no EMU:DONE ever
     with pytest.raises(EmvyError, match="timed out"):
         link.stream_until("EMU:DONE", timeout=0.05)
+
+
+# ── stream_until(): reconnect after an MCU reset ─────────────────────────────
+#
+# The EMVyBomberCat MCU resets when USB re-enumerates (or on some errors), which
+# kills the open fd with a SerialException mid-stream. With ``restart_cmd`` the
+# link reopens the port, re-sends the trigger and keeps streaming; without it
+# the error propagates as before.
+
+
+class _FlakySerial(FakeSerial):
+    """Fails one readline() mid-stream with a SerialException (the open fd
+    dying when the MCU resets), reading normally otherwise."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fail_on_read: Optional[int] = None
+        self._reads = 0
+
+    def readline(self, size: int = -1) -> bytes:
+        self._reads += 1
+        if self._reads == self.fail_on_read:
+            raise serial.SerialException("device disconnected")
+        return super().readline(size)
+
+
+def _patched_open(monkeypatch, *serials):
+    """open_serial() returning the given serials in order, then raising."""
+    pending = list(serials)
+
+    def _open(*args, **kwargs):
+        if pending:
+            return pending.pop(0)
+        raise serial.SerialException("no such device")
+
+    monkeypatch.setattr(link_mod, "open_serial", _open)
+
+
+def test_stream_until_reconnects_and_resends_the_trigger(monkeypatch):
+    monkeypatch.setattr(link_mod.time, "sleep", lambda _s: None)
+    flaky = _FlakySerial({})
+    fresh = FakeSerial(
+        {"EMUEMV:RAM|80": ["# relaunched", "EMU:DONE sent=0 reason=stop"]}
+    )
+    _patched_open(monkeypatch, flaky, fresh)
+
+    link = EmvyLink("/dev/fake0", timeout=0.2).open()
+    flaky.feed("EMU:START mode=emv")
+    flaky.fail_on_read = 2  # first line lands, then the fd dies mid-stream
+
+    seen: List[str] = []
+    lines = link.stream_until(
+        "EMU:DONE", on_line=seen.append, restart_cmd="EMUEMV:RAM|80"
+    )
+
+    # The pre-reset line was delivered, the reconnect was reported, and the
+    # session resumed on the fresh port — ending at the sentinel.
+    assert seen[0] == "EMU:START mode=emv"
+    assert any(l.startswith("# RECONNECT attempt=1/") for l in seen)
+    assert "# RECONNECT ok: resuming the session" in seen
+    assert lines[-1] == "EMU:DONE sent=0 reason=stop"
+    # The trigger was re-sent on the reopened port.
+    assert fresh.written == ["EMUEMV:RAM|80"]
+
+
+def test_stream_until_reconnect_notice_goes_to_stderr_without_on_line(
+    monkeypatch, capsys
+):
+    monkeypatch.setattr(link_mod.time, "sleep", lambda _s: None)
+    flaky = _FlakySerial({})
+    fresh = FakeSerial({"EMU:": ["EMU:DONE sent=0 reason=stop"]})
+    _patched_open(monkeypatch, flaky, fresh)
+
+    link = EmvyLink("/dev/fake0", timeout=0.2).open()
+    flaky.fail_on_read = 1
+
+    lines = link.stream_until("EMU:DONE", restart_cmd="EMU:")
+    assert lines[-1] == "EMU:DONE sent=0 reason=stop"
+    assert "# RECONNECT attempt=1/" in capsys.readouterr().err
+
+
+def test_stream_until_gives_up_when_the_port_never_comes_back(monkeypatch):
+    monkeypatch.setattr(link_mod.time, "sleep", lambda _s: None)
+    flaky = _FlakySerial({})
+    flaky.fail_on_read = 1
+    _patched_open(monkeypatch, flaky)  # the first open works, every retry fails
+
+    link = EmvyLink("/dev/fake0", timeout=0.2).open()
+    seen: List[str] = []
+    with pytest.raises(EmvyError, match="link not open"):
+        link.stream_until(
+            "EMU:DONE", on_line=seen.append, restart_cmd="EMUEMV", max_reconnects=3
+        )
+    # Every bounded attempt was reported, then the error surfaced.
+    assert any(l.startswith("# RECONNECT attempt=3/3") for l in seen)
+    assert not any(l.startswith("# RECONNECT ok") for l in seen)
+
+
+def test_stream_until_fails_fast_without_restart_cmd(monkeypatch):
+    # Callers that don't opt in keep the old behavior: a mid-stream serial
+    # error propagates immediately, with no reopen attempts.
+    monkeypatch.setattr(link_mod.time, "sleep", lambda _s: None)
+    flaky = _FlakySerial({})
+    flaky.fail_on_read = 1
+    _patched_open(monkeypatch, flaky, _FlakySerial({}))
+
+    link = EmvyLink("/dev/fake0", timeout=0.2).open()
+    with pytest.raises(EmvyError, match="serial error"):
+        link.stream_until("EMU:DONE")
 
 
 # ── lifecycle ────────────────────────────────────────────────────────────────

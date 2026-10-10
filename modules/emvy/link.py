@@ -17,6 +17,7 @@
 # framing; see docs/IMPLEMENTATION_PLAN_EMVyBomberCat_CLI.md §4/§6 Fase 1 and D7.
 # Distributed as-is; no warranty is given.
 
+import sys
 import time
 from typing import Callable, List, Optional, Sequence
 
@@ -32,6 +33,16 @@ from .parser import EmvyError
 # Same guard DeviceLink uses: cap one readline() so a wedged firmware spewing
 # non-newline bytes can't grow memory without bound (see core/bombercat.py).
 _MAX_LINE_BYTES = 4096
+
+# How many times stream_until() reopens the port and resends the trigger when
+# the MCU resets mid-stream (USB CDC re-enumerates on reset, so the open fd
+# dies with a SerialException). Bounded so a board that is really gone surfaces
+# as an error instead of looping forever.
+_MAX_RECONNECTS = 5
+# Attempts/delay when reopening the port after a reset: re-enumeration can take
+# a moment, so a single try is not enough; the sleeps keep the poll gentle.
+_REOPEN_ATTEMPTS = 20
+_REOPEN_DELAY_S = 0.5
 
 # Prefixes that end a plain `exchange()`. A command whose reply ends on a
 # different marker (e.g. `TAG` → `TAG:…`, `CARDSCAN` → `EMU:SCANNED`) passes its
@@ -104,6 +115,35 @@ class EmvyLink:
     def __exit__(self, *exc) -> None:
         self.close()
 
+    # -- reconnect ---------------------------------------------------------
+    @staticmethod
+    def _notify(on_line: Optional[Callable[[str], None]], text: str) -> None:
+        """Surface a reconnect notice: through the stream's on_line callback
+        when there is one (the CLI renders it like any other stream line), or
+        to stderr when streaming without a callback."""
+        if on_line is not None:
+            on_line(text)
+        else:
+            print(text, file=sys.stderr)
+
+    def _reopen(self) -> None:
+        """Reopen the port after the MCU reset dropped it.
+
+        USB re-enumeration takes a moment, so the open is retried
+        ``_REOPEN_ATTEMPTS`` times (``_REOPEN_DELAY_S`` apart) before giving
+        up. Raises EmvyError when the port never comes back.
+        """
+        self.close()
+        last: Optional[Exception] = None
+        for _ in range(_REOPEN_ATTEMPTS):
+            try:
+                self.open()
+                return
+            except (serial.SerialException, EmvyError) as exc:
+                last = exc
+                time.sleep(_REOPEN_DELAY_S)
+        raise EmvyError(f"port {self.port!r} did not come back: {last}")
+
     # -- low-level I/O ---------------------------------------------------------
     def send(self, line: str) -> None:
         """Write one command line (`\\n`-terminated). Used before a stream, and
@@ -175,6 +215,8 @@ class EmvyLink:
         on_line: Optional[Callable[[str], None]] = None,
         stop_cmd: Optional[str] = None,
         timeout: Optional[float] = None,
+        restart_cmd: Optional[str] = None,
+        max_reconnects: int = _MAX_RECONNECTS,
     ) -> List[str]:
         """Read a stream, calling ``on_line`` per non-empty line, until a line
         starts with ``sentinel`` (e.g. ``JSON_END`` for SCAN, ``EMU:DONE`` for
@@ -185,14 +227,49 @@ class EmvyLink:
         ``timeout`` bounds a stream that never reaches its sentinel; with the
         default None it waits as long as the underlying readline timeout allows
         between lines (suitable for a genuinely open-ended EMU stream).
+
+        With ``restart_cmd`` (the trigger line that started the stream, e.g.
+        ``EMUEMV:…``) the stream survives an MCU reset mid-run: the EMVyBomberCat
+        firmware resets when USB re-enumerates (or on some errors), which kills
+        the open fd with a SerialException — instead of aborting, the port is
+        reopened (bounded retries) and the trigger re-sent so the emulation
+        session resumes, each attempt reported as a ``# RECONNECT …`` notice.
+        After ``max_reconnects`` failed attempts the last error is raised.
+        Callers that don't pass ``restart_cmd`` keep the previous fail-fast
+        behavior.
         """
         if self._ser is None:
             raise EmvyError("link not open")
         deadline = (time.monotonic() + timeout) if timeout is not None else None
         lines: List[str] = []
+        reconnects = 0
         try:
             while deadline is None or time.monotonic() < deadline:
-                text = self._readline(sentinel)
+                try:
+                    text = self._readline(sentinel)
+                except EmvyError as exc:
+                    # A mid-stream SerialException (MCU reset / USB
+                    # re-enumeration) is only recoverable when the caller gave
+                    # us the trigger line to re-send after reopening the port.
+                    if restart_cmd is None or reconnects >= max_reconnects:
+                        raise
+                    reconnects += 1
+                    self._notify(
+                        on_line,
+                        f"# RECONNECT attempt={reconnects}/{max_reconnects} "
+                        f"({exc}); reopening {self.port}",
+                    )
+                    try:
+                        self._reopen()
+                    except EmvyError as reopen_exc:
+                        # Not back yet: count it as an attempt and let the loop
+                        # retry (the next readline fails on the closed port and
+                        # lands back here until max_reconnects exhausts).
+                        self._notify(on_line, f"# RECONNECT {reopen_exc}")
+                        continue
+                    self._notify(on_line, "# RECONNECT ok: resuming the session")
+                    self.send(restart_cmd)
+                    continue
                 if not text:
                     continue
                 lines.append(text)

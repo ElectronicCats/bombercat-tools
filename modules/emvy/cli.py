@@ -745,7 +745,12 @@ def _emu_stream(elink, trigger: str, *, timeout: Optional[float], as_raw: bool) 
     event live until `EMU:DONE`, `--timeout`, or Ctrl-C (which sends `STOP`
     first, per `EmvyLink.stream_until`, then returns cleanly instead of
     propagating — Ctrl-C ending a long-running emulation is the expected,
-    not exceptional, way to stop it)."""
+    not exceptional, way to stop it).
+
+    The trigger doubles as `stream_until`'s `restart_cmd`: if the MCU resets
+    mid-emulation (USB re-enumerates, e.g. after a link error) the port is
+    reopened and the emulation re-sent so the session survives, with each
+    attempt reported as a `# RECONNECT …` line."""
     elink.send(trigger)
     try:
         elink.stream_until(
@@ -753,6 +758,7 @@ def _emu_stream(elink, trigger: str, *, timeout: Optional[float], as_raw: bool) 
             on_line=lambda line: _render_emu_line(line, as_raw),
             stop_cmd="STOP",
             timeout=timeout,
+            restart_cmd=trigger,
         )
     except KeyboardInterrupt:
         print_warning("stopped")

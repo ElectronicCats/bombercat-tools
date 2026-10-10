@@ -253,8 +253,18 @@ class EmvyLink:
         reopen failure, when that is what kept failing. The reopen wait counts
         against ``timeout`` when one is set, so a deadline stays a real bound.
         Only the original port path is retried: a board that re-enumerates
-        under a different device name is not rediscovered. Callers that don't
-        pass ``restart_cmd`` keep the previous fail-fast behavior.
+        under a different device name is not rediscovered.
+
+        ``restart_cmd`` also marks the stream as owning its trigger, which
+        unlocks one more firmware quirk: a leftover emulation orphaned by a
+        previous run is preempted by our trigger with an ``EMU:DONE
+        reason=restart`` *before* the new session's ``EMU:START`` — that DONE
+        belongs to the old session and must not end the stream (without this
+        the CLI would exit rc=0 with the new emulation running unobserved).
+        Only a restart-DONE seen before our own ``EMU:START`` is ignored; a
+        genuine restart later in the session still terminates the stream.
+        Callers that don't pass ``restart_cmd`` keep the previous fail-fast
+        behavior, on both counts.
         """
         if self._ser is None:
             raise EmvyError("link not open")
@@ -262,6 +272,24 @@ class EmvyLink:
         lines: List[str] = []
         reconnects = 0
         reopen_fail: Optional[EmvyError] = None
+        started = False  # an EMU:START of *our* session has been seen
+
+        def _consume(text: str) -> bool:
+            """Deliver one stream line; True when it terminates the stream."""
+            nonlocal started
+            lines.append(text)
+            if on_line is not None:
+                on_line(text)
+            if text.startswith("EMU:START"):
+                started = True
+            if not text.startswith(sentinel):
+                return False
+            if restart_cmd is not None and not started and "reason=restart" in text:
+                # Our trigger preempted an orphaned emulation: this DONE is
+                # the old session's epilogue and the new EMU:START comes next.
+                return False
+            return True
+
         try:
             while deadline is None or time.monotonic() < deadline:
                 try:
@@ -295,15 +323,13 @@ class EmvyLink:
                         self._notify(on_line, f"# RECONNECT {reopen_exc}")
                         continue
                     reopen_fail = None
+                    started = False  # the re-sent trigger preempts again
                     self._notify(on_line, "# RECONNECT ok: resuming the session")
                     self.send(restart_cmd)
                     continue
                 if not text:
                     continue
-                lines.append(text)
-                if on_line is not None:
-                    on_line(text)
-                if text.startswith(sentinel):
+                if _consume(text):
                     return lines
         except KeyboardInterrupt:
             if stop_cmd is not None:

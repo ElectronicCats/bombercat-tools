@@ -251,6 +251,49 @@ def test_stream_until_reconnect_respects_the_stream_timeout(monkeypatch):
         )
 
 
+# ── stream_until(): stale EMU:DONE reason=restart ────────────────────────────
+#
+# Firmware behavior (seen on hardware): when our trigger arrives while an
+# emulation orphaned by a previous run is still active, the firmware preempts
+# it with an `EMU:DONE sent=0 reason=restart` BEFORE the new session's
+# EMU:START. That DONE is the old session's epilogue — ending the stream there
+# would exit rc=0 with the new emulation running unobserved.
+
+
+def test_stream_until_ignores_a_stale_restart_done_from_its_own_trigger(linked):
+    link, ser = linked(
+        {
+            "EMUEMV": [
+                "EMU:CARD aid=0 pan=0 exp=0 t2=0 cid=0",
+                "EMU:DONE sent=0 reason=restart",  # the orphaned session's end
+                "EMU:START mode=emv",  # our session begins here
+                "EMU:DONE sent=2 reason=stop",
+            ]
+        }
+    )
+    link.send("EMUEMV")
+
+    lines = link.stream_until("EMU:DONE", restart_cmd="EMUEMV")
+
+    # The stale restart-DONE was delivered but did not end the stream: the
+    # run terminated on our own session's DONE, after its EMU:START.
+    assert lines[-1] == "EMU:DONE sent=2 reason=stop"
+    assert lines.index("EMU:DONE sent=0 reason=restart") < lines.index(
+        "EMU:START mode=emv"
+    )
+
+
+def test_stream_until_still_terminates_on_a_restart_done_without_restart_cmd(linked):
+    # Without restart_cmd the stream can't tell a stale DONE from a real one,
+    # so the fail-fast contract is unchanged: any sentinel line ends it.
+    link, _ = linked({"X": ["EMU:DONE sent=0 reason=restart"]})
+    link.send("X")
+
+    lines = link.stream_until("EMU:DONE")
+
+    assert lines == ["EMU:DONE sent=0 reason=restart"]
+
+
 def test_stream_until_fails_fast_without_restart_cmd(monkeypatch):
     # Callers that don't opt in keep the old behavior: a mid-stream serial
     # error propagates immediately, with no reopen attempts.

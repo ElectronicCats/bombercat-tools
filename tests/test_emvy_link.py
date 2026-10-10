@@ -9,8 +9,14 @@
 
 import pytest
 import serial
+import time
 
 from typing import List, Optional
+
+# Captured before any fixture replaces time.sleep with a no-op (the autouse
+# `no_settle_sleep` below patches the time *module*), for tests that need the
+# real sleep to elapse a monotonic deadline.
+_REAL_SLEEP = time.sleep
 
 from conftest import FakeSerial
 from modules.emvy import link as link_mod
@@ -218,13 +224,31 @@ def test_stream_until_gives_up_when_the_port_never_comes_back(monkeypatch):
 
     link = EmvyLink("/dev/fake0", timeout=0.2).open()
     seen: List[str] = []
-    with pytest.raises(EmvyError, match="link not open"):
+    with pytest.raises(EmvyError, match="did not come back"):
         link.stream_until(
             "EMU:DONE", on_line=seen.append, restart_cmd="EMUEMV", max_reconnects=3
         )
-    # Every bounded attempt was reported, then the error surfaced.
+    # Every bounded attempt was reported, then the *reopen* failure surfaced
+    # (not the "link not open" of the readline on the closed port).
     assert any(l.startswith("# RECONNECT attempt=3/3") for l in seen)
     assert not any(l.startswith("# RECONNECT ok") for l in seen)
+
+
+def test_stream_until_reconnect_respects_the_stream_timeout(monkeypatch):
+    # With a deadline the reopen poll stops when its budget runs out and the
+    # stream surfaces its own timeout, instead of reconnecting past it. Real
+    # sleeps: the budget is measured against the monotonic deadline (undo the
+    # module-wide no-op sleep for this test only).
+    monkeypatch.setattr(link_mod.time, "sleep", _REAL_SLEEP)
+    flaky = _FlakySerial({})
+    flaky.fail_on_read = 1
+    _patched_open(monkeypatch, flaky)  # the first open works, every reopen fails
+
+    link = EmvyLink("/dev/fake0", timeout=0.2).open()
+    with pytest.raises(EmvyError, match="timed out waiting"):
+        link.stream_until(
+            "EMU:DONE", restart_cmd="EMUEMV", max_reconnects=99, timeout=0.2
+        )
 
 
 def test_stream_until_fails_fast_without_restart_cmd(monkeypatch):

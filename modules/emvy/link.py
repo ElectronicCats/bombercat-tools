@@ -126,23 +126,38 @@ class EmvyLink:
         else:
             print(text, file=sys.stderr)
 
-    def _reopen(self) -> None:
+    def _reopen(self, budget_s: Optional[float] = None) -> None:
         """Reopen the port after the MCU reset dropped it.
 
         USB re-enumeration takes a moment, so the open is retried
         ``_REOPEN_ATTEMPTS`` times (``_REOPEN_DELAY_S`` apart) before giving
-        up. Raises EmvyError when the port never comes back.
+        up. ``budget_s`` bounds the total wait for callers that have their own
+        deadline (a stream ``timeout``): the poll stops early when the budget
+        runs out. Raises EmvyError when the port never comes back. Only the
+        original port path is retried — a board that re-enumerates under a
+        *different* device name is not rediscovered here.
         """
         self.close()
         last: Optional[Exception] = None
+        remaining = budget_s
         for _ in range(_REOPEN_ATTEMPTS):
             try:
                 self.open()
                 return
             except (serial.SerialException, EmvyError) as exc:
                 last = exc
-                time.sleep(_REOPEN_DELAY_S)
-        raise EmvyError(f"port {self.port!r} did not come back: {last}")
+                if remaining is not None and remaining <= 0:
+                    break
+                delay = _REOPEN_DELAY_S
+                if remaining is not None:
+                    delay = min(delay, remaining)
+                    remaining -= delay
+                time.sleep(delay)
+        raise EmvyError(
+            f"port {self.port!r} did not come back: {last} "
+            "(if the board re-enumerated under a different name, re-run "
+            "the command)"
+        )
 
     # -- low-level I/O ---------------------------------------------------------
     def send(self, line: str) -> None:
@@ -234,15 +249,19 @@ class EmvyLink:
         the open fd with a SerialException — instead of aborting, the port is
         reopened (bounded retries) and the trigger re-sent so the emulation
         session resumes, each attempt reported as a ``# RECONNECT …`` notice.
-        After ``max_reconnects`` failed attempts the last error is raised.
-        Callers that don't pass ``restart_cmd`` keep the previous fail-fast
-        behavior.
+        After ``max_reconnects`` failed attempts the last error is raised — the
+        reopen failure, when that is what kept failing. The reopen wait counts
+        against ``timeout`` when one is set, so a deadline stays a real bound.
+        Only the original port path is retried: a board that re-enumerates
+        under a different device name is not rediscovered. Callers that don't
+        pass ``restart_cmd`` keep the previous fail-fast behavior.
         """
         if self._ser is None:
             raise EmvyError("link not open")
         deadline = (time.monotonic() + timeout) if timeout is not None else None
         lines: List[str] = []
         reconnects = 0
+        reopen_fail: Optional[EmvyError] = None
         try:
             while deadline is None or time.monotonic() < deadline:
                 try:
@@ -251,22 +270,31 @@ class EmvyLink:
                     # A mid-stream SerialException (MCU reset / USB
                     # re-enumeration) is only recoverable when the caller gave
                     # us the trigger line to re-send after reopening the port.
-                    if restart_cmd is None or reconnects >= max_reconnects:
+                    if restart_cmd is None:
                         raise
+                    if reconnects >= max_reconnects:
+                        # The readline that lands here after a failed reopen
+                        # only says "link not open" — surface the reason.
+                        raise (reopen_fail or exc)
                     reconnects += 1
                     self._notify(
                         on_line,
                         f"# RECONNECT attempt={reconnects}/{max_reconnects} "
                         f"({exc}); reopening {self.port}",
                     )
+                    budget = None
+                    if deadline is not None:
+                        budget = max(0.0, deadline - time.monotonic())
                     try:
-                        self._reopen()
+                        self._reopen(budget_s=budget)
                     except EmvyError as reopen_exc:
                         # Not back yet: count it as an attempt and let the loop
                         # retry (the next readline fails on the closed port and
                         # lands back here until max_reconnects exhausts).
+                        reopen_fail = reopen_exc
                         self._notify(on_line, f"# RECONNECT {reopen_exc}")
                         continue
+                    reopen_fail = None
                     self._notify(on_line, "# RECONNECT ok: resuming the session")
                     self.send(restart_cmd)
                     continue

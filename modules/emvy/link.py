@@ -44,6 +44,14 @@ _MAX_RECONNECTS = 5
 _REOPEN_ATTEMPTS = 20
 _REOPEN_DELAY_S = 0.5
 
+# When a stream's deadline passes, stream_until() sends stop_cmd and waits
+# this long — fixed, independent of the (now spent) stream timeout — for the
+# firmware's sentinel answer (EMU:DONE reason=stop arrives in <1s on real
+# hardware). Without the grace period a bounded emulation would die right at
+# the deadline with rc=1 and the firmware left emulating; with it the command
+# ends cleanly at rc=0.
+_STOP_GRACE_S = 3.0
+
 # Prefixes that end a plain `exchange()`. A command whose reply ends on a
 # different marker (e.g. `TAG` → `TAG:…`, `CARDSCAN` → `EMU:SCANNED`) passes its
 # own `terminators=`. `ERR:` is always terminal.
@@ -241,7 +249,14 @@ class EmvyLink:
         stops emulating instead of streaming on — and re-raises so the CLI exits.
         ``timeout`` bounds a stream that never reaches its sentinel; with the
         default None it waits as long as the underlying readline timeout allows
-        between lines (suitable for a genuinely open-ended EMU stream).
+        between lines (suitable for a genuinely open-ended EMU stream). A
+        deadline that passes without the sentinel is not an immediate error
+        when ``stop_cmd`` is set: the stop is sent and the firmware gets a
+        short fixed grace period (``_STOP_GRACE_S``) to answer with the
+        sentinel — EMU:DONE reason=stop lands in <1s on real hardware — so a
+        bounded emulation ends cleanly instead of dying at the deadline and
+        leaving the firmware emulating. The original timeout error is raised
+        only when the sentinel stays silent through the grace period.
 
         With ``restart_cmd`` (the trigger line that started the stream, e.g.
         ``EMUEMV:…``) the stream survives an MCU reset mid-run: the EMVyBomberCat
@@ -338,6 +353,25 @@ class EmvyLink:
                 except EmvyError:
                     pass  # best-effort: link may already be gone
             raise
+        # Deadline passed without the sentinel: stop the firmware and give it
+        # a fixed grace period to answer (see _STOP_GRACE_S), so a bounded
+        # stream ends cleanly instead of erroring out with the emulation left
+        # running.
+        if stop_cmd is not None and self._ser is not None:
+            try:
+                self.send(stop_cmd)
+            except EmvyError:
+                pass  # link gone: the timeout error below is the real story
+            grace_deadline = time.monotonic() + _STOP_GRACE_S
+            while self._ser is not None and time.monotonic() < grace_deadline:
+                try:
+                    text = self._readline(sentinel)
+                except EmvyError:
+                    break  # link gone: nothing more to wait on
+                if not text:
+                    continue
+                if _consume(text):
+                    return lines
         raise EmvyError(f"timed out waiting for {sentinel!r}")
 
 

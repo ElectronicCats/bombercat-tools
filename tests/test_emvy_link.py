@@ -294,6 +294,37 @@ def test_stream_until_still_terminates_on_a_restart_done_without_restart_cmd(lin
     assert lines == ["EMU:DONE sent=0 reason=restart"]
 
 
+# ── stream_until(): stop grace period after a deadline ───────────────────────
+#
+# When --timeout expires, the stop is sent and the firmware answers the
+# sentinel (EMU:DONE reason=stop) in <1s on real hardware. The wait for that
+# answer has its own fixed budget (_STOP_GRACE_S), independent of the spent
+# stream timeout, so a bounded emulation ends cleanly instead of erroring out
+# at the deadline with the emulation left running.
+
+
+def test_stream_until_stops_cleanly_when_the_firmware_answers_the_stop(linked):
+    link, ser = linked({"STOP": ["EMU:DONE sent=3 reason=stop"]})
+
+    lines = link.stream_until("EMU:DONE", stop_cmd="STOP", timeout=0.05)
+
+    assert ser.written == ["STOP"]
+    assert lines[-1] == "EMU:DONE sent=3 reason=stop"
+
+
+def test_stream_until_still_times_out_when_the_firmware_ignores_the_stop(
+    linked, monkeypatch
+):
+    # Bound the grace period so the test doesn't wait the full _STOP_GRACE_S.
+    monkeypatch.setattr(link_mod, "_STOP_GRACE_S", 0.05)
+    link, ser = linked({})
+
+    with pytest.raises(EmvyError, match="timed out waiting"):
+        link.stream_until("EMU:DONE", stop_cmd="STOP", timeout=0.05)
+
+    assert ser.written == ["STOP"]
+
+
 def test_stream_until_fails_fast_without_restart_cmd(monkeypatch):
     # Callers that don't opt in keep the old behavior: a mid-stream serial
     # error propagates immediately, with no reopen attempts.

@@ -1025,3 +1025,55 @@ def test_probe_card_rejects_bad_country_hex(runner):
 
     assert result.exit_code == 1
     assert "not valid hex" in flat(result.output)
+
+
+def test_probe_card_rejects_country_hex_with_whitespace(runner):
+    # bytes.fromhex() alone accepts "04 84" — validation must not, or the
+    # value would crash _build_gpo's fromhex() later with a traceback.
+    result = runner.invoke(probe_card_cmd, ["--country", "04 84"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)
+
+
+def _tlv(tag_hex: str, value: bytes) -> bytes:
+    """Length-encoded TLV (long form when the value is ≥ 0x80 bytes)."""
+    n = len(value)
+    if n < 0x80:
+        ln = bytes([n])
+    else:
+        raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+        ln = bytes([0x80 | len(raw)]) + raw
+    return bytes.fromhex(tag_hex) + ln + value
+
+
+def test_probe_card_rejects_an_oversized_pdol_cleanly(runner, use_link, use_emvy_link):
+    # A bogus PDOL that builds a >255-byte GPO body must surface as a clean
+    # error (and RELEASE), not a ValueError traceback from bytes([...]).
+    big_pdol = bytes.fromhex("9F0206" * 43)  # 43 entries × 6 bytes = 258
+    fci = (
+        (
+            _tlv(
+                "6F",
+                _tlv("84", bytes.fromhex("A0000000031010"))
+                + _tlv("A5", _tlv("9F38", big_pdol)),
+            )
+            + b"\x90\x00"
+        )
+        .hex()
+        .upper()
+    )
+    fake = _gated(
+        FakeEmvyLink(
+            script=_probe_script(**{f"APDU:{_SELECT_AID_CMD}": [f"RESP:{fci}"]})
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "PDOL" in out
+    assert "Traceback" not in out
+    assert "RELEASE" in fake.sent

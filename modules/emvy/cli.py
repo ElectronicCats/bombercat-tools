@@ -24,10 +24,11 @@
 
 import json
 import random
+import re
 import sys
 import time
 from contextlib import contextmanager
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import click
 from rich.table import Table
@@ -738,6 +739,14 @@ def _build_gpo(pdol: bytes, amount_cents: int, country: str, currency: str) -> b
     for tag, ln in parse_dol(pdol):
         v = values.get(tag, "")
         body.extend(bytes.fromhex(v[: ln * 2].ljust(ln * 2, "0")))
+    if 2 + len(body) > 0xFF:
+        # Lc and the 83-length are single bytes — a body this size means the
+        # card announced a bogus PDOL, not that we should emit a broken APDU.
+        raise EmvyError(
+            f"the card's PDOL builds a {len(body)}-byte GPO body "
+            f"({pdol.hex().upper()}) — larger than one APDU carries; "
+            "the card data looks bogus"
+        )
     return (
         bytes([0x80, 0xA8, 0x00, 0x00, 2 + len(body), 0x83, len(body)])
         + bytes(body)
@@ -747,16 +756,17 @@ def _build_gpo(pdol: bytes, amount_cents: int, country: str, currency: str) -> b
 
 def _probe_card_flow(
     elink, amount_cents: int, country: str, currency: str
-) -> "dict[str, object]":
+) -> Dict[str, object]:
     """SELECT PPSE → SELECT AID → GPO (PDOL-aware) → READ RECORD over the AFL.
 
     Prints each command APDU and its response as it goes. Returns the raw
     responses keyed by step (``ppse``/``aid``/``fci``/``pdol``/``gpo``/
     ``aip``/``afl``/``records``/``sw``); when the GPO is declined the flow
     stops there and ``sw`` carries the status word. Raises EmvyError on a
-    link failure or a declined SELECT AID.
+    link failure, a declined SELECT AID, or a PDOL that cannot fit a command
+    APDU.
     """
-    out: "dict[str, object]" = {}
+    out: Dict[str, object] = {}
 
     def apdu(cmd: bytes, what: str) -> bytes:
         console.print(f"[cyan]>> {what:<12}[/cyan] [dim]{cmd.hex().upper()}[/dim]")
@@ -790,7 +800,7 @@ def _probe_card_flow(
     out["aip"] = tlv_find(body, 0x82)
     afl = tlv_find(body, 0x94)
     out["afl"] = afl
-    records: "list[Tuple[str, str]]" = []
+    records: List[Tuple[str, str]] = []
     if afl:
         for e in range(0, len(afl) - 3, 4):
             # AFL byte 1 is the SFI pre-shifted (SFI << 3); P2 of READ RECORD
@@ -856,9 +866,9 @@ def probe_card_cmd(
         print_error("--amount cannot be negative")
         raise SystemExit(1)
     for label, value in (("--country", country), ("--currency", currency or country)):
-        try:
-            bytes.fromhex(value)
-        except ValueError:
+        # bytes.fromhex() alone is too lax here: it ignores whitespace, so
+        # "04 84" would validate and then crash _build_gpo's fromhex later.
+        if not value or len(value) % 2 or not re.fullmatch(r"[0-9A-Fa-f]+", value):
             print_error(f"{label}: not valid hex: {value!r}")
             raise SystemExit(1)
     currency = currency or country

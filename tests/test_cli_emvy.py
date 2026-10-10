@@ -28,6 +28,7 @@ from modules.emvy.cli import (
     info_cmd,
     mag_cmd,
     nfcinfo_cmd,
+    probe_card_cmd,
     read_cmd,
     reboot_cmd,
     tag_cmd,
@@ -844,3 +845,183 @@ def test_reboot_sends_reboot_and_warns_to_reconnect(runner, use_link, use_emvy_l
     assert fake.sent == ["REBOOT"]
     assert "re-enumerate" in out
     assert fake.closed
+
+
+# ── probe-card ───────────────────────────────────────────────────────────────
+#
+# Scripted card answers for the minimal terminal flow. The PPSE FCI carries
+# the Visa AID, the SELECT-AID FCI announces a PDOL with only deterministic
+# tags (no 9A date / 9F37 random), and the GPO answers a 77 template whose
+# AFL sends probe-card to READ RECORD sfi=1 rec=1.
+
+
+def _ppse_resp() -> str:
+    # 6F { 84 0E "2PAY.SYS.DDF01", A5 { BF0C { 61 { 4F <aid> } } } }
+    return (
+        "6F20"
+        "840E325041592E5359532E4444463031"
+        "A50E"
+        "BF0C0B"
+        "6109"
+        "4F07A0000000031010"
+        "9000"
+    )
+
+
+_PPSE_CMD = "00A404000E325041592E5359532E444446303100"
+# SELECT AID A0000000031010 (Le=00)
+_SELECT_AID_CMD = "00A4040007A000000003101000"
+# PDOL: 9F02/6 9F1A/2 95/5 5F2A/2 9C/1 9F35/1 — all deterministic values.
+_PDOL = "9F02069F1A0295055F2A029C019F3501"
+# 6F { 84 07 <aid>, A5 { 9F38 10 <pdol> } }
+_FCI_RESP = "6F1E" "8407A0000000031010" "A513" "9F3810" + _PDOL + "9000"
+# GPO body for amount=0, country=currency="0484": the tags above in PDOL order.
+_GPO_BODY = "000000000000" "0484" "0000000000" "0484" "00" "22"
+# Lc = 2 (83 <len>) + 17-byte body = 0x13; 83 len = 0x11.
+_GPO_CMD = "80A80000138311" + _GPO_BODY + "00"
+# GPO answer: AIP 1C00, AFL sfi=1 records 1..1; then the record itself.
+_GPO_RESP = "770A" "82021C00" "940408010100" "9000"
+_RECORD_CMD = "00B2010C00"
+_RECORD_RESP = "700A" "5A0841111111111111" "9000"
+
+
+def _probe_script(**overrides):
+    script = {
+        "WAIT 60000": ["READY:"],
+        f"APDU:{_PPSE_CMD}": [f"RESP:{_ppse_resp()}"],
+        f"APDU:{_SELECT_AID_CMD}": [f"RESP:{_FCI_RESP}"],
+        f"APDU:{_GPO_CMD}": [f"RESP:{_GPO_RESP}"],
+        f"APDU:{_RECORD_CMD}": [f"RESP:{_RECORD_RESP}"],
+    }
+    script.update(overrides)
+    return script
+
+
+def test_probe_card_runs_the_terminal_flow_and_prints_each_step(
+    runner, use_link, use_emvy_link
+):
+    fake = _gated(FakeEmvyLink(script=_probe_script()), use_link, use_emvy_link)
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0, out
+    # WAIT → PPSE → SELECT AID → GPO → READ RECORD, and RELEASE on exit.
+    assert fake.sent == [
+        "WAIT 60000",
+        f"APDU:{_PPSE_CMD}",
+        f"APDU:{_SELECT_AID_CMD}",
+        f"APDU:{_GPO_CMD}",
+        f"APDU:{_RECORD_CMD}",
+        "RELEASE",
+    ]
+    # Every APDU and its raw response are printed.
+    for blob in (
+        _PPSE_CMD,
+        _SELECT_AID_CMD,
+        _GPO_CMD,
+        _RECORD_CMD,
+        _ppse_resp(),
+        _FCI_RESP,
+        _GPO_RESP,
+        _RECORD_RESP,
+    ):
+        assert blob in out
+    # Summary: AID from the PPSE, PDOL, and the parsed AFL.
+    assert "A0000000031010" in out
+    assert _PDOL in out
+    assert "08010100" in out
+
+
+def test_probe_card_gpo_lc_counts_the_wrapper_not_the_le(
+    runner, use_link, use_emvy_link
+):
+    """Regression guard for a real-hardware bug: Lc must be 2+len(body) (the
+    83 <len> wrapper plus the values, not the trailing Le) — an off-by-one
+    makes cards answer 6985. The scripted GPO above only answers when the
+    exact command arrives, so a wrong Lc would time out here."""
+    fake = _gated(FakeEmvyLink(script=_probe_script()), use_link, use_emvy_link)
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 0, flat(result.output)
+    assert f"APDU:{_GPO_CMD}" in fake.sent
+    # body = 17 bytes → Lc 0x13, 83-length 0x11.
+    assert _GPO_CMD.startswith("80A80000138311")
+
+
+def test_probe_card_feeds_the_amount_country_and_currency(
+    runner, use_link, use_emvy_link
+):
+    # amount 1234 cents → 9F02 "000000001234"; country 0124 → 9F1A "0124";
+    # currency 0978 overrides 5F2A while 9F1A keeps the country.
+    body = "000000001234" "0124" "0000000000" "0978" "00" "22"
+    gpo = "80A80000138311" + body + "00"
+    fake = _gated(
+        FakeEmvyLink(script=_probe_script(**{f"APDU:{gpo}": [f"RESP:{_GPO_RESP}"]})),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(
+        probe_card_cmd, ["--amount", "1234", "--country", "0124", "--currency", "0978"]
+    )
+
+    assert result.exit_code == 0, flat(result.output)
+    assert f"APDU:{gpo}" in fake.sent
+
+
+def test_probe_card_gpo_decline_is_reported_not_fatal(runner, use_link, use_emvy_link):
+    # 6985: the card declines this PDOL/context. probe-card reports the SW,
+    # skips the records, and still exits 0 (the probe itself worked).
+    fake = _gated(
+        FakeEmvyLink(script=_probe_script(**{f"APDU:{_GPO_CMD}": ["RESP:6985"]})),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "6985" in out
+    assert f"APDU:{_RECORD_CMD}" not in fake.sent
+    assert "RELEASE" in fake.sent
+
+
+def test_probe_card_reports_nocard(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(script={"WAIT 60000": ["ERR:NOCARD"]}),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 1
+    assert "NOCARD" in flat(result.output)
+
+
+def test_probe_card_reports_a_declined_select_aid(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            script=_probe_script(**{f"APDU:{_SELECT_AID_CMD}": ["RESP:6A82"]})
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 1
+    out = flat(result.output)
+    assert "6A82" in out
+    assert f"APDU:{_GPO_CMD}" not in fake.sent
+
+
+def test_probe_card_rejects_a_negative_amount(runner):
+    result = runner.invoke(probe_card_cmd, ["--amount", "-5"])
+
+    assert result.exit_code == 1
+    assert "negative" in flat(result.output)
+
+
+def test_probe_card_rejects_bad_country_hex(runner):
+    result = runner.invoke(probe_card_cmd, ["--country", "ZZ"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)

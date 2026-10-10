@@ -18,7 +18,6 @@ from modules.emvy.parser import (
     parse_tag,
 )
 
-
 # ── APDU passthrough ─────────────────────────────────────────────────────────
 
 
@@ -149,3 +148,19 @@ def test_parse_emu_event_done_sent_count():
 
 def test_parse_emu_event_ignores_non_emu_line():
     assert parse_emu_event("# just a log") is None
+
+
+def test_parse_emu_event_card_fields_from_old_firmware():
+    """Pre-CID firmware acks the EMUEMV injection with exactly 4 fields."""
+    ev = parse_emu_event("EMU:CARD aid=7 pan=8 exp=2 t2=19")
+    assert ev["kind"] == "CARD"
+    assert ev["fields"] == {"aid": "7", "pan": "8", "exp": "2", "t2": "19"}
+
+
+def test_parse_emu_event_card_fields_with_optional_cid():
+    """CID-aware firmware appends a 5th `cid=` field to EMU:CARD; the parser
+    must accept both shapes (fields are parsed open-ended, never positional)."""
+    ev = parse_emu_event("EMU:CARD aid=7 pan=8 exp=2 t2=19 cid=80")
+    assert ev["kind"] == "CARD"
+    assert ev["fields"]["cid"] == "80"
+    assert ev["fields"]["t2"] == "19"

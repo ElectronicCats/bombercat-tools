@@ -817,6 +817,17 @@ def emu_ndef_cmd(ctx, hex_ndef, as_raw, timeout, verbose, port, device_id):
 @click.option("--exp", default="", help="Expiry to serve in the record (hex, YYMMDD).")
 @click.option("--track2", default="", help="Track 2 to serve in the record (hex).")
 @click.option(
+    "--cid",
+    type=click.Choice(["40", "80", "00"]),
+    default="80",
+    show_default=True,
+    help="Cryptogram decision (tag 9F27) the emulated card returns: 40=TC "
+    "(approve offline, the sale completes), 80=ARQC (the terminal tries to go "
+    "online), 00=AAC (declined). Sent to the firmware as a 5th EMUEMV field — "
+    "CID-aware firmware honors it; older firmware ignores the extra field and "
+    "always requests an ARQC.",
+)
+@click.option(
     "--raw", "as_raw", is_flag=True, help="Print every raw EMU:* line, unparsed."
 )
 @click.option(
@@ -831,17 +842,31 @@ def emu_ndef_cmd(ctx, hex_ndef, as_raw, timeout, verbose, port, device_id):
 @device_options
 @click.pass_context
 def emu_card_cmd(
-    ctx, from_ram, aid, pan, exp, track2, as_raw, timeout, verbose, port, device_id
+    ctx,
+    from_ram,
+    aid,
+    pan,
+    exp,
+    track2,
+    cid,
+    as_raw,
+    timeout,
+    verbose,
+    port,
+    device_id,
 ):
     """Emulate an EMV card for a payment terminal (EMUEMV).
 
     With no options, serves a canned test Visa. --from-ram reemulates the
     card `emvy cardscan` last read; --aid/--pan/--exp/--track2 (all hex,
     empty = firmware default) inject a specific captured card instead — the
-    two are mutually exclusive. Streams every terminal APDU live (decoded:
-    SELECT-PPSE/SELECT-AID/GPO/READ-RECORD/GENERATE-AC) until EMU:DONE,
-    --timeout, or Ctrl-C. This is not a working card — it never returns a
-    valid cryptogram — the point is to see what a terminal asks for.
+    two are mutually exclusive. --cid picks the cryptogram decision the
+    emulated card makes (TC completes the sale offline, ARQC sends the
+    terminal online, AAC declines) — the cryptogram itself is still not
+    valid, but a TC/AAC decision ends the sale without one. Streams every
+    terminal APDU live (decoded: SELECT-PPSE/SELECT-AID/GPO/READ-RECORD/
+    GENERATE-AC) until EMU:DONE, --timeout, or Ctrl-C, surviving an MCU
+    reset mid-run (the emulation is re-sent automatically).
     """
     custom_fields = any((aid, pan, exp, track2))
     if from_ram and custom_fields:
@@ -859,11 +884,11 @@ def emu_card_cmd(
             raise SystemExit(1)
 
     if from_ram:
-        trigger = "EMUEMV:RAM"
+        trigger = f"EMUEMV:RAM|{cid}"
     elif custom_fields:
-        trigger = f"EMUEMV:{aid}|{pan}|{exp}|{track2}"
+        trigger = f"EMUEMV:{aid}|{pan}|{exp}|{track2}|{cid}"
     else:
-        trigger = "EMUEMV"
+        trigger = f"EMUEMV:||||{cid}"
 
     level = _verbosity(ctx, verbose)
     with _emvy_operative_session(port, device_id, trace=make_tracer(level)) as (

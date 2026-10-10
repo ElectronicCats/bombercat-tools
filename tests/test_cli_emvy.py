@@ -721,7 +721,10 @@ def test_emu_card_bare_uses_the_canned_test_card(runner, use_link, use_emvy_link
     result = runner.invoke(emu_card_cmd, [])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV"
+    # Bare emulation with the default CID (80=ARQC): the firmware receives
+    # the CID as the 5th field — CID-aware firmware honors it, old firmware
+    # ignores it.
+    assert fake.sent[0] == "EMUEMV:||||80"
 
 
 def test_emu_card_from_ram(runner, use_link, use_emvy_link):
@@ -735,7 +738,7 @@ def test_emu_card_from_ram(runner, use_link, use_emvy_link):
     result = runner.invoke(emu_card_cmd, ["--from-ram"])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV:RAM"
+    assert fake.sent[0] == "EMUEMV:RAM|80"
 
 
 def test_emu_card_custom_fields(runner, use_link, use_emvy_link):
@@ -749,7 +752,39 @@ def test_emu_card_custom_fields(runner, use_link, use_emvy_link):
     result = runner.invoke(emu_card_cmd, ["--aid", "A0", "--pan", "4111"])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV:A0|4111||"
+    assert fake.sent[0] == "EMUEMV:A0|4111|||80"
+
+
+def test_emu_card_cid_is_sent_on_every_trigger_shape(runner, use_link, use_emvy_link):
+    """--cid reaches the firmware as the 5th EMUEMV field (or after RAM|),
+    whatever the card source — that field is what CID-aware firmware reads."""
+    cases = [
+        (["--cid", "40"], "EMUEMV:||||40"),
+        (["--cid", "00", "--from-ram"], "EMUEMV:RAM|00"),
+        (
+            ["--cid", "40", "--aid", "A0", "--pan", "4111", "--exp", "2512"],
+            "EMUEMV:A0|4111|2512||40",
+        ),
+    ]
+    for args, expected in cases:
+        fake = _gated(
+            FakeEmvyLink(
+                stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+            ),
+            use_link,
+            use_emvy_link,
+        )
+        result = runner.invoke(emu_card_cmd, args)
+        assert result.exit_code == 0, flat(result.output)
+        assert fake.sent[0] == expected
+
+
+def test_emu_card_rejects_an_invalid_cid(runner):
+    # click.Choice validates before any port is touched.
+    result = runner.invoke(emu_card_cmd, ["--cid", "41"])
+
+    assert result.exit_code == 2
+    assert "not one of" in flat(result.output)
 
 
 def test_emu_card_from_ram_and_custom_fields_are_mutually_exclusive(runner):

@@ -8,7 +8,7 @@
 
 import pytest
 
-from conftest import DeviceError, FakeLink, make_device, ok
+from conftest import DeviceError, FakeLink, err, make_device, ok
 from modules.core import firmwares as fw
 
 
@@ -21,6 +21,16 @@ def fake_link(monkeypatch):
         return link
 
     return _use
+
+
+@pytest.fixture(autouse=True)
+def no_busy_wait(monkeypatch):
+    """The busy-retry window is a real wait (12 s); the suite must not pay it.
+
+    Tests that care about the retry pass their own `busy_timeout`.
+    """
+    monkeypatch.setattr(fw, "BUSY_RETRY_SECONDS", 0.0)
+    monkeypatch.setattr(fw, "BUSY_RETRY_DELAY_SECONDS", 0.0)
 
 
 # ── detection levels ─────────────────────────────────────────────────────────
@@ -190,6 +200,65 @@ def test_detection_swallows_a_serial_error(monkeypatch):
     r = fw.detect_firmware("/dev/ttyACM0", usb_present=True)
 
     assert r.confidence == fw.USB  # no traceback, honest USB verdict
+
+
+def test_a_board_that_answers_ping_but_not_info_is_busy_not_nfcgate(fake_link):
+    """A busy board is NOT an old firmware.
+
+    The MifareClassic firmware blocks its whole control REPL while it sweeps
+    a card (11 s measured on a 1K card), so a probe that lands in that window
+    sees a board that answers `ping` but never `info`. Inferring "old NFCGate"
+    from that made the CLI offer to flash MifareClassic over a perfectly
+    healthy board — and the flash resets it, which is what the user saw as
+    "the device disconnected".
+    """
+    fake_link(FakeLink({"info": err("timed out")}, ping_ok=True))
+    r = fw.detect_firmware("/dev/ttyACM0", busy_timeout=0)
+
+    assert r.busy is True
+    assert r.firmware is fw.UNKNOWN
+    assert r.confidence == fw.USB
+    assert r.confidence != fw.INFERRED
+
+
+def test_a_silent_but_present_board_is_not_inferred_either(fake_link):
+    """Same story one level down: the board does not even answer `ping`.
+
+    It may be mid-sweep; it must not be named after some other firmware. It
+    stays UNKNOWN, but flagged as busy so the caller does not flash it.
+    """
+    fake_link(FakeLink(ping_ok=False, stream_lines=[]))
+    r = fw.detect_firmware("/dev/ttyACM0", busy_timeout=0)
+
+    assert r.busy is True
+    assert r.firmware is fw.UNKNOWN
+    assert r.confidence == fw.USB
+    assert r.confidence != fw.INFERRED
+
+
+def test_a_board_that_comes_back_is_identified_normally(fake_link):
+    """The retry exists for a board that was busy, not for one that is away:
+    a board that answers on a later probe is identified as usual."""
+
+    class LateLink(FakeLink):
+        def __init__(self):
+            super().__init__(
+                {"info": ok(fw="1.2.0.0", fw_name="mifareclassic")}, ping_ok=True
+            )
+            self.pings = 0
+
+        def ping(self):
+            self.pings += 1
+            return self.pings > 1  # silent the first time (mid-sweep)
+
+    link = LateLink()
+    fake_link(link)
+    r = fw.detect_firmware("/dev/ttyACM0", busy_timeout=5.0)
+
+    assert r.confidence == fw.HANDSHAKE
+    assert r.firmware.id == "mifareclassic"
+    assert r.busy is False
+    assert link.pings > 1  # it was asked again
 
 
 # ── resolve_status_port (no handshake) ───────────────────────────────────────

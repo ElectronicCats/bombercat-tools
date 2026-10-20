@@ -155,6 +155,26 @@ def test_mismatch_off_a_non_nfcgate_firmware_has_no_config_warning():
     assert "config show" not in str(exc.value)
 
 
+def test_a_busy_board_is_never_flashed():
+    # The board answered the handshake but not `info`: it is mid-sweep, not
+    # running a different firmware. Flashing it would be wrong (and the flash
+    # resets it — which is what the user saw as "the device disconnected").
+    flash = FakeFlash()
+    busy = DetectionResult(
+        firmware=UNKNOWN, confidence=USB, port=PORT, usb_present=True, busy=True
+    )
+    with pytest.raises(DeviceError, match="busy"):
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.ALWAYS,
+            detect_fn=lambda *a, **k: busy,
+            flash_fn=flash,
+        )
+    assert flash.calls == []
+
+
 def test_usb_confidence_requires_confirmation_even_under_always_policy():
     detect = FakeDetect(detection(UNKNOWN, USB), detection(DETECTTAGS, HANDSHAKE))
     flash = FakeFlash()

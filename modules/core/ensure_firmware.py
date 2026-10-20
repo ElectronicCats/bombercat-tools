@@ -126,13 +126,27 @@ def ensure_firmware(
 
     detection = detect_fn(port, sniff=sniff, usb_present=usb_tagged)
     for _ in range(detect_retries):
-        if detection.confidence != USB:
+        # A board that says it is busy will still be busy in a second — the
+        # detection already gave it a window to come back. Re-probing it
+        # again would only make the user wait longer for the same answer.
+        if detection.confidence != USB or detection.busy:
             break
         time.sleep(detect_delay)
         detection = detect_fn(port, sniff=sniff, usb_present=usb_tagged)
 
     if detection.confidence == NONE:
         raise DeviceError(f"nothing responded on {port}.")
+
+    if detection.busy:
+        # The board answered `ping` but not `info`: it is alive and busy (a
+        # MifareClassic board sweeping a card blocks its REPL for seconds).
+        # Flashing it would be wrong — it is not a firmware mismatch, and the
+        # flash resets the board mid-operation. Say what is going on instead.
+        raise DeviceError(
+            f"the board on {port} is busy — it answered the handshake but not "
+            "`info` in time. It is probably running a long operation (a card "
+            "sweep); wait for it to finish and try again."
+        )
 
     if satisfied_by(detection.firmware, req.capability):
         if detection.confidence == BANNER:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, FrozenSet, Optional, Tuple
@@ -296,6 +297,14 @@ NONE = "none"  # nothing there
 # name is an older NFCGate. Sound, but an inference — hence INFERRED.
 _PRE_FW_NAME_REPL = "nfcgate"
 
+# How long to keep re-asking a board that answered `ping` but not `info`.
+# The MifareClassic firmware serves its REPL only between operations, and one
+# auto-probe sweep of a 1K card takes ~11 s (longer for a card whose sectors
+# nothing opens), so the wait has to outlast a sweep before the board can be
+# called "busy".
+BUSY_RETRY_SECONDS = 12.0
+BUSY_RETRY_DELAY_SECONDS = 1.0
+
 
 @dataclass
 class DetectionResult:
@@ -306,6 +315,12 @@ class DetectionResult:
     port: Optional[str] = None
     version: Optional[str] = None  # firmware version, when the REPL reports it
     usb_present: bool = False  # a BomberCat USB id is on this port
+    # The board answered `ping` but never answered `info`: it is alive and
+    # busy (the MifareClassic firmware blocks its REPL while it sweeps a card),
+    # so its firmware is UNKNOWN — not "an old NFCGate" and not "absent".
+    # Callers must not offer to flash a busy board (docs/AUTOFLASH_PLAN.md
+    # D-3.4: flashing a healthy board is destructive and pointless).
+    busy: bool = False
 
 
 def _match_banner(lines) -> Optional[Firmware]:
@@ -330,6 +345,7 @@ def detect_firmware(
     sniff: bool = True,
     usb_present: bool = True,
     baudrate: int = DEFAULT_BAUDRATE,
+    busy_timeout: Optional[float] = None,
 ) -> DetectionResult:
     """Identify what firmware a board is running, by levels of confidence.
 
@@ -345,6 +361,15 @@ def detect_firmware(
        it -> UNKNOWN, honestly.
     4. None: not a BomberCat / nothing answered.
 
+    A board that is PRESENT but does not answer is not the same as a board
+    running a different firmware: the MifareClassic firmware blocks its whole
+    control REPL while it sweeps a card (11 s measured on a 1K card, minutes
+    on a card whose sectors nothing opens), so a probe that lands in that
+    window sees a silent board. Such a board is reported as `busy` — never
+    inferred to be some other firmware — because inferring it used to make
+    the CLI offer to flash a healthy board, and the flash resets the board
+    (docs/AUTOFLASH_PLAN.md D-3.4: flashing a healthy board is destructive).
+
     Never raises for a missing/silent board — that is a NONE/USB result, not an
     error. Serial/OS trouble opening the port is swallowed the same way.
     """
@@ -353,14 +378,19 @@ def detect_firmware(
     def enriched(fw: Firmware) -> Firmware:
         return _enriched(fw, descriptions)
 
+    if busy_timeout is None:
+        busy_timeout = BUSY_RETRY_SECONDS
+
     link = None
     version = None
     try:
         link = DeviceLink(port, baudrate).open()
-        if link.ping():
-            info = link.info()
-            version = info.data.get("fw") if info.ok else None
-            named = info.data.get("fw_name") if info.ok else None
+
+        def from_info(info) -> Optional[DetectionResult]:
+            """The verdict for a board that answered `info` — None when it
+            named a firmware this CLI does not know (that stays UNKNOWN)."""
+            named = info.data.get("fw_name")
+            found = info.data.get("fw")
             # The board is the authority on its own identity; the registry is
             # consulted only to learn what that name is able to do.
             fw = by_id(named) if named and named in REGISTRY else None
@@ -369,7 +399,7 @@ def detect_firmware(
                     firmware=enriched(fw),
                     confidence=HANDSHAKE,
                     port=port,
-                    version=version,
+                    version=found,
                     usb_present=True,
                 )
             if not named:
@@ -381,9 +411,44 @@ def detect_firmware(
                     firmware=enriched(by_id(_PRE_FW_NAME_REPL)),
                     confidence=INFERRED,
                     port=port,
-                    version=version,
+                    version=found,
                     usb_present=True,
                 )
+            return None  # names something unknown: not ours, do not infer
+
+        def handshake():
+            """(ping, info) — None when the board did not answer `ping`."""
+            if not link.ping():
+                return None
+            info = link.info()
+            if not info.ok:
+                # `ping` answered but `info` did not: the board is ALIVE but
+                # busy. Retry a bounded window — a sweep in progress ends by
+                # itself — before concluding anything.
+                deadline = time.monotonic() + busy_timeout
+                while time.monotonic() < deadline:
+                    time.sleep(BUSY_RETRY_DELAY_SECONDS)
+                    info = link.info()
+                    if info.ok:
+                        break
+            return info
+
+        info = handshake()
+        if info is not None:
+            if not info.ok:
+                # Alive, busy, and still not answering `info`: present and
+                # unidentified, but explicitly NOT a firmware mismatch.
+                return DetectionResult(
+                    firmware=enriched(UNKNOWN),
+                    confidence=USB,
+                    port=port,
+                    usb_present=True,
+                    busy=True,
+                )
+            version = info.data.get("fw")
+            verdict = from_info(info)
+            if verdict is not None:
+                return verdict
             # It named itself something the registry has never heard of: a
             # newer or custom firmware. Inferring anything here would be wrong.
             usb_present = True
@@ -397,6 +462,39 @@ def detect_firmware(
                     version=version,
                     usb_present=usb_present,
                 )
+        if info is None and usb_present:
+            # Present but silent. Before calling it unidentified, give the
+            # board a window to come back: a busy board (sweeping a card)
+            # answers nothing at all, and mistaking that for "some other
+            # firmware" is what led to flashing a healthy board.
+            deadline = time.monotonic() + busy_timeout
+            while time.monotonic() < deadline:
+                time.sleep(BUSY_RETRY_DELAY_SECONDS)
+                info = handshake()
+                if info is not None:
+                    break
+            if info is not None:
+                if not info.ok:
+                    return DetectionResult(
+                        firmware=enriched(UNKNOWN),
+                        confidence=USB,
+                        port=port,
+                        usb_present=True,
+                        busy=True,
+                    )
+                version = info.data.get("fw")
+                verdict = from_info(info)
+                if verdict is not None:
+                    return verdict
+            # Still silent after the window: present, unidentified, and most
+            # likely busy — flagged as such so nobody flashes it.
+            return DetectionResult(
+                firmware=enriched(UNKNOWN),
+                confidence=USB,
+                port=port,
+                usb_present=True,
+                busy=True,
+            )
     except (DeviceError, OSError):
         # Opening or probing failed; fall through to the USB/none verdict.
         pass

@@ -289,6 +289,13 @@ bombercat tags mifare check --mode host --dict all    # the host sweeps the full
 
 A firmware without the on-device sweep (an older build) is detected and the host-driven sweep takes over automatically in `auto` mode; `--mode device` fails loudly instead. Options the device cannot express — `--dict`, `--dict-file`, `--uid-derived` — are refused in `device` mode with a pointer to `--mode host`. The device always sweeps Key A **and** Key B, so `--key-type` only filters the *report* there, and the counters shown are the device's own.
 
+**When the board is busy or gone.** Two things can happen mid-sweep, and the CLI handles both:
+
+- **The board answers `ping` but not `info`** — it is running a long operation (the firmware's own auto-probe sweep blocks its REPL for as long as the card needs — ~11 s on a 1K card with default keys). The CLI waits for the board instead of concluding that a different firmware is flashed, and it never offers to flash a board that is merely busy.
+- **The board disappears** (it rebooted: a reboot re-enumerates the USB CDC and kills the open port). The sweep is idempotent, so the CLI re-opens the port, waits for the board to come back and runs the sweep again. If the board does not come back, the error says so plainly instead of surfacing a raw serial error.
+
+The tap prompt is also honest about what the board is waiting for: while the firmware waits for the card to **leave the field** (its removal probe), tapping does nothing — the card has to go away for a moment. The board reports that state, and the CLI says so.
+
 **Performance note.** The dominant cost is any *unknown* sector, which must sweep the whole candidate pool once. Everything else opens early: a confirmed key is tried first on the remaining sectors (reuse), and the search cuts as soon as a sector's key types are found. This is why `--dict`/`--uid-derived` stay cheap even though they enlarge the pool — the added candidates are only ever fully paid for on sectors that nothing else opened. On the representative 1K test card (key-type A, one private-key sector), the auth count moves from **2514** (baseline) to **2525** with `--dict all` and **2527** with `--dict all --uid-derived mizip` — a naive per-sector sweep of the same enlarged pool would be ≈ 39 000. This is pinned as a regression test (`tests/test_mifare_phase5.py`).
 
 ---

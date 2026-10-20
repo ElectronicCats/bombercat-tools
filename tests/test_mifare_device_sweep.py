@@ -26,7 +26,7 @@ import json
 
 import pytest
 
-from modules.core.bombercat import Response
+from modules.core.bombercat import DeviceError, Response
 from modules.tags.mifare import session as mifare_session
 from modules.tags.mifare.check import mifare_check_cmd
 from modules.tags.mifare.device_sweep import (
@@ -66,6 +66,36 @@ class SweepLink(FakeLink):
                 data["mifare_check_stat"] = self.stat
             return ok(**data)
         return super().command(stripped, read_timeout)
+
+
+class DisconnectingLink(SweepLink):
+    """A board that loses USB the first time it is asked to sweep — what a
+    reboot looks like from the host: the CDC re-enumerates and the open port
+    dies mid-command."""
+
+    def __init__(self, *a, come_back: bool = True, **kw):
+        super().__init__(*a, **kw)
+        self.come_back = come_back
+        self.dropped = False
+        self.attempts = 0
+
+    def command(self, line: str, read_timeout=None) -> Response:
+        stripped = line.strip()
+        if stripped.startswith("mifare check"):
+            self.attempts += 1
+            if not self.dropped:
+                self.dropped = True
+                raise DeviceError(
+                    "the device disconnected while answering 'mifare check' "
+                    "(device reports readiness to read but returned no data "
+                    "(device disconnected or multiple access on port?)) — it "
+                    "rebooted or lost USB; re-plug it and retry"
+                )
+        return super().command(stripped, read_timeout)
+
+    def reopen(self, ready_timeout: float = 15.0) -> bool:
+        self.reopened += 1
+        return self.come_back
 
 
 def _sector_lines(link: SweepLink):
@@ -453,3 +483,106 @@ def test_the_default_sweep_is_still_the_host_one(runner, use_link):
     result = runner.invoke(mifare_check_cmd, ["--sectors", "1", "--json"])
     assert _sector_lines(link) == []
     assert json.loads(result.stdout)["stats"]["mode"] == "host"
+
+
+# ── a board that goes away mid-command ───────────────────────────────────────
+
+
+def test_device_mode_reconnects_and_retries_when_the_board_reboots(
+    runner, use_link, tmp_path
+):
+    # A reboot re-enumerates the CDC and kills the open port: the sweep
+    # command comes back as a serial error. The sweep is idempotent, so the
+    # host re-opens the port and runs it again instead of dying.
+    link = use_link(
+        mifare_session,
+        DisconnectingLink(
+            {0: ("FFFFFFFFFFFF", "FFFFFFFFFFFF")},
+            stat="attempts=2 naive=64 recovered=2/2",
+        ),
+    )
+    keyfile = _keyfile(tmp_path, "FFFFFFFFFFFF")
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--mode", "device", "--keys", str(keyfile), "--sectors", "1", "--json"],
+    )
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["recovered"] == 2
+    assert link.reopened == 1
+    assert link.attempts == 2  # the sweep was asked twice
+
+
+def test_device_mode_says_so_when_the_board_does_not_come_back(
+    runner, use_link, tmp_path
+):
+    link = use_link(
+        mifare_session,
+        DisconnectingLink(
+            {0: ("FFFFFFFFFFFF", "FFFFFFFFFFFF")},
+            stat="attempts=2 naive=64 recovered=2/2",
+            come_back=False,
+        ),
+    )
+    keyfile = _keyfile(tmp_path, "FFFFFFFFFFFF")
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--mode", "device", "--keys", str(keyfile), "--sectors", "1"],
+    )
+    assert result.exit_code == 1
+    out = flat(result.output)
+    assert "disconnected" in out
+    assert "re-plug" in out
+
+
+def test_a_rejected_command_is_not_retried_as_a_disconnect(runner, use_link, tmp_path):
+    # "authentication failed"-style refusals are answers, not link losses:
+    # re-opening the port would not help, so the host must not try.
+    link = use_link(
+        mifare_session,
+        SweepLink({0: ("FFFFFFFFFFFF", "FFFFFFFFFFFF")}),
+    )
+    keyfile = _keyfile(tmp_path, "FFFFFFFFFFFF")
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--mode", "device", "--keys", str(keyfile), "--sectors", "1"],
+    )
+    assert result.exit_code == 0
+    assert link.reopened == 0
+
+
+# ── the tap wait has to outlast the firmware's own auto-probe ───────────────
+
+
+class _StreamOnly:
+    """A link that only streams (the auto-probe's output)."""
+
+    def __init__(self, lines):
+        self.lines = list(lines)
+
+    def stream(self, yield_empty: bool = False):
+        for line in self.lines:
+            yield line
+
+
+def test_the_tap_wait_outlasts_the_firms_own_auto_probe():
+    # The firmware opens the session only AFTER its auto-probe sweep (11 s
+    # measured on a 1K card), and streams a line per sector while it runs.
+    # The tap timeout must not fire while that sweep is in progress.
+    from modules.tags.mifare.session import _wait_for_mifare_card
+
+    link = _StreamOnly(
+        [
+            ":mifare_check_s0 A0A1A2A3A4A5 FFFFFFFFFFFF",
+            ":mifare_check_s1 - -",
+            ":mifare 1017398 10922893 4 00112233445566778899AABBCCDDEEFF ok",
+        ]
+    )
+    assert _wait_for_mifare_card(link, 0.0, sweep_timeout=30.0) is True
+
+
+def test_the_tap_wait_still_gives_up_when_no_card_shows_up():
+    from modules.tags.mifare.session import _wait_for_mifare_card
+
+    link = _StreamOnly(["waiting for a card..."])
+    assert _wait_for_mifare_card(link, 0.0, sweep_timeout=30.0) is False

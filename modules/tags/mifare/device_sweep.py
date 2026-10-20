@@ -34,7 +34,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from ...utils.output import print_info
+from ...core.bombercat import DeviceError, link_lost
+from ...utils.output import print_info, print_warning
 from .session import _wait_for_mifare_card
 
 # The firmware's own caps (MifareClassic.ino: MIFARE_CHECK_MAX_KEYS and
@@ -47,6 +48,12 @@ DEVICE_SWEEP_MAX_SECTORS = 32
 # sectors nothing opens (the device tries every candidate on every sector), so
 # the read deadline is far longer than the per-command default.
 DEVICE_SWEEP_TIMEOUT = 300.0
+
+# How many times the sweep may re-open the port and try again when the board
+# disappears mid-command. A reboot re-enumerates the CDC and kills the open
+# file descriptor; the sweep itself is idempotent, so one retry recovers the
+# common case (the board rebooting under the host) without looping forever.
+DEVICE_SWEEP_RECONNECTS = 1
 
 _SECTOR_KEY_RE = re.compile(r"^mifare_check_s(\d+)$")
 _HEX_KEY_RE = re.compile(r"^[0-9A-F]{12}$")
@@ -159,12 +166,72 @@ def _classify_error(message: str) -> DeviceSweepError:
     return DeviceSweepError(message or "the device sweep failed")
 
 
+def _board_state(link) -> str:
+    """The firmware's own state, or "" when it doesn't report one.
+
+    The MifareClassic firmware reports `scanning` (no card), `tag-detected`
+    (a session is open), `sweeping` (running a dictionary sweep) and
+    `awaiting-removal` (waiting for the card to leave the field). The last one
+    matters for the host's advice: while the board waits for a removal, no
+    amount of tapping helps — the card has to go away for a moment.
+    """
+    try:
+        response = link.info()
+    except DeviceError:
+        return ""
+    if not response.ok:
+        return ""
+    return (response.data.get("state") or "").strip()
+
+
+def _reconnect(link) -> bool:
+    """Re-open the port after the board vanished. True when it came back."""
+    reopen = getattr(link, "reopen", None)
+    if reopen is None:
+        return False
+    try:
+        return bool(reopen())
+    except (DeviceError, OSError):
+        return False
+
+
+def _request_sweep(link, line: str, timeout: float, tap_timeout: float, quiet: bool):
+    """Send the sweep command, waiting for a card tap if the board has none.
+
+    Returns the device's response. Raises `DeviceSweepError` when no card was
+    tapped, and `DeviceError` (from the core link) when the board disappears.
+    """
+    response = link.command(line, read_timeout=timeout)
+    if response.ok or "no card selected" not in (response.message or "").lower():
+        return response
+
+    if not quiet:
+        if _board_state(link) == "awaiting-removal":
+            print_info(
+                "the board is waiting for the card to leave the field — lift it "
+                "for a second, then tap it again"
+            )
+        else:
+            print_info(
+                f"no card selected — tap a Mifare Classic card (up to "
+                f"{tap_timeout:g}s)..."
+            )
+    # The firmware opens the session only after its own auto-probe sweep, so
+    # the wait has to outlast that sweep — `_wait_for_mifare_card` extends
+    # itself once it sees the sweep's per-sector lines.
+    if not _wait_for_mifare_card(link, tap_timeout, sweep_timeout=timeout):
+        raise DeviceSweepError("no card was tapped")
+    return link.command(line, read_timeout=timeout)
+
+
 def run_device_sweep(
     link,
     sectors: int,
     keys: Optional[List[str]] = None,
     timeout: float = DEVICE_SWEEP_TIMEOUT,
     tap_timeout: float = 15.0,
+    reconnects: int = DEVICE_SWEEP_RECONNECTS,
+    quiet: bool = False,
 ) -> DeviceSweepResult:
     """Run the sweep on the device and return its consolidated result.
 
@@ -173,24 +240,41 @@ def run_device_sweep(
     selected yet, ask the user to tap one and retry once (the same
     choreography the host-driven sweep uses).
 
+    A board that disappears mid-command (it rebooted — a reboot re-enumerates
+    the CDC and kills the open port) is recovered: the port is re-opened and
+    the sweep is retried, because the sweep is idempotent and the firmware
+    re-detects the card by itself after a reboot.
+
+    `quiet` keeps the progress messages off stdout — the `--json` output must
+    stay machine-readable.
+
     Raises `DeviceSweepUnsupported` when the flashed firmware has no
     `mifare check` command, and `DeviceSweepError` for any other refusal.
     """
     line = build_device_command(sectors, keys)
-    response = link.command(line, read_timeout=timeout)
+    attempts_left = reconnects + 1
 
-    if not response.ok:
-        message = (response.message or "").strip()
-        if "no card selected" in message.lower():
-            print_info(
-                f"no card selected — tap a Mifare Classic card (up to "
-                f"{tap_timeout:g}s)..."
-            )
-            if not _wait_for_mifare_card(link, tap_timeout):
-                raise DeviceSweepError("no card was tapped")
-            response = link.command(line, read_timeout=timeout)
+    while True:
+        try:
+            response = _request_sweep(link, line, timeout, tap_timeout, quiet)
+        except DeviceError as e:
+            if attempts_left <= 0 or not link_lost(str(e)):
+                raise DeviceSweepError(str(e)) from e
+            attempts_left -= 1
+            if not quiet:
+                print_warning(
+                    "the board disconnected during the sweep (it rebooted?) — "
+                    "reconnecting and retrying..."
+                )
+            if not _reconnect(link):
+                raise DeviceSweepError(
+                    "the board disconnected during the sweep and did not come "
+                    "back — re-plug it and run the command again"
+                ) from e
+            continue
         if not response.ok:
             raise _classify_error((response.message or "").strip())
+        break
 
     result = parse_device_sweep(response.data)
     if not result.keys and not result.total:

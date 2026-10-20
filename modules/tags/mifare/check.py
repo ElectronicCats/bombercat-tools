@@ -439,7 +439,13 @@ def _sweep_on_device(
             transient=True,
         ) as progress:
             progress.add_task("", total=None)
-            sweep = run_device_sweep(link, sectors, device_keys, tap_timeout=timeout)
+            sweep = run_device_sweep(
+                link,
+                sectors,
+                device_keys,
+                tap_timeout=timeout,
+                quiet=as_json,
+            )
     except DeviceSweepUnsupported as e:
         if mode == "device":
             print_error(

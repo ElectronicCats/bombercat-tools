@@ -227,6 +227,7 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 | `--list-uid-schemes` | List the registered UID-derived key schemes and exit (no device needed). |
 | `--sectors N` | Number of sectors to check (default `16` = 1K). Max `32`; 4K's 16-block sectors (32–39) aren't supported yet. |
 | `--key-type A\|B\|both` | Which key slot(s) to try (default `both`). |
+| `--mode auto\|device\|host` | Where the sweep runs. `auto` (default) uses the **device's own sweep** when both sides can try the same candidates (an explicit `--keys` list of ≤ 64 keys) and the host-driven sweep otherwise; `device` forces the device sweep (one round-trip, the firmware's embedded dictionary + key-store); `host` forces the host sweep (the full bundled dictionary, one USB round-trip per candidate). See [On-device sweep](#tags-mifare-check-on-device). |
 | `--json` | Emit one JSON object on stdout instead of the table. |
 | `--out FILE` | Write the recovered keys as a keyfile (one 12-hex key per line, mfoc/proxmark-compatible). |
 | `-o, --output-keys FILE` | Write the recovered keys as one `sector:keyA:keyB` line per sector — the format [`mifare sector --keys-file`](#tags-mifare), [`mifare dump -k`](#tags-mifare-dump), [`mifare analyze -k`](#tags-mifare-analyze), [`mifare code -k`](#tags-mifare-code) and [`mifare write-text -k`](#tags-mifare-write-text) all read. A key type not recovered is left blank. |
@@ -268,6 +269,25 @@ Per-sector candidate order is: **confirmed keys (reuse) → UID-derived → name
 **Trailer-read key-B recovery.** When the dictionary opens a sector's key A but not its key B, `check` then reads that sector's trailer with key A. On cards whose access bits leave key B *readable with key A* (the common transport/default configuration — NXP MF1S50yyX Table 8, trailer configs `000`/`001`), key B is stored in the trailer in cleartext and comes back for free — reported as `sector N key B recovered via trailer read` and folded into the table, `--json`, `--out` and `-o`/`--output-keys` output like any dictionary hit. This is **not** the Crypto-1 *nested* attack: the onboard PN7150 performs Crypto-1 inside the chip and never surfaces an encrypted nonce, so no host-side cryptographic recovery is possible on this hardware. It is a plain authenticated read of a key the card is configured to hand over. Key A itself never reads back under any access condition, so only key B is recoverable this way.
 
 Worst case (a card using no known key) means trying the full dictionary against every sector/key-type — with the bundled 2477-key list and `both` key types over 16 sectors that's tens of thousands of auth round-trips, which can take minutes; the progress bar and Ctrl-C partial results make that tolerable for a one-off check.
+
+<a id="tags-mifare-check-on-device"></a>
+**On-device sweep (`--mode`).** The MifareClassic firmware can run the dictionary sweep **itself**: one `mifare check` command returns the consolidated result (a `:mifare_check_sN <keyA|-> <keyB|->` line per sector plus its own counters) instead of one `mifare auth` round-trip per candidate key. The number of authentications against the card is the same — what disappears is the USB round-trip and the host-side parse of every single key.
+
+| Mode | Who sweeps | Candidate universe |
+|---|---|---|
+| `auto` (default) | the device **only** when both sides can try the same candidates — an explicit `--keys` list of ≤ 64 keys — otherwise the host | identical to what the host would have tried |
+| `device` | the device, always | the firmware's embedded dictionary (32 keys) + the keys stored in the device (`mifare keys`), or the explicit `--keys` list |
+| `host` | the host | the full bundled dictionary (2477 keys) + `--dict` families + `--uid-derived` schemes |
+
+The default keeps the host sweep on purpose: the device's table is smaller, and silently narrowing the coverage would turn a key the host recovers into a false `unknown`. `auto` therefore only moves the sweep to the device when the candidate set is provably the same on both sides. `--mode device` is the field mode: the device sweeps with the keys **you** curated into it (`bombercat tags mifare keys add …`, persisted in the board's flash), which is also what the standalone, PC-less flow uses.
+
+```sh
+bombercat tags mifare check --keys mine.dic          # auto: the device sweeps (same candidates)
+bombercat tags mifare check --mode device             # the device's own dictionary + key-store
+bombercat tags mifare check --mode host --dict all    # the host sweeps the full dictionary
+```
+
+A firmware without the on-device sweep (an older build) is detected and the host-driven sweep takes over automatically in `auto` mode; `--mode device` fails loudly instead. Options the device cannot express — `--dict`, `--dict-file`, `--uid-derived` — are refused in `device` mode with a pointer to `--mode host`. The device always sweeps Key A **and** Key B, so `--key-type` only filters the *report* there, and the counters shown are the device's own.
 
 **Performance note.** The dominant cost is any *unknown* sector, which must sweep the whole candidate pool once. Everything else opens early: a confirmed key is tried first on the remaining sectors (reuse), and the search cuts as soon as a sector's key types are found. This is why `--dict`/`--uid-derived` stay cheap even though they enlarge the pool — the added candidates are only ever fully paid for on sectors that nothing else opened. On the representative 1K test card (key-type A, one private-key sector), the auth count moves from **2514** (baseline) to **2525** with `--dict all` and **2527** with `--dict all --uid-derived mizip` — a naive per-sector sweep of the same enlarged pool would be ≈ 39 000. This is pinned as a regression test (`tests/test_mifare_phase5.py`).
 

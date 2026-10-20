@@ -10,6 +10,7 @@ import json
 import time
 from collections import OrderedDict
 from contextlib import nullcontext
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import click
@@ -41,6 +42,12 @@ from ...utils.output import (
 )
 from .access_bits import _KEY_A, parse_access_bits
 from .block0 import parse_block0
+from .device_sweep import (
+    DEVICE_SWEEP_MAX_KEYS,
+    DeviceSweepError,
+    DeviceSweepUnsupported,
+    run_device_sweep,
+)
 from .dicts import REGISTRY, CandidatePlan, UnknownDictError, select as _select_dicts
 from . import uidkeys
 from .keyfile import default_keyfile, load_keys
@@ -151,6 +158,345 @@ def _write_sector_keyfile(
             f.write(f"{s}:{key_a}:{key_b}\n")
 
 
+# ── on-device sweep policy (Fase 4, tarea 4.1) ────────────────────────────────
+#
+# The firmware can run the sweep itself — ONE `mifare check` round-trip — but
+# only with ITS OWN candidate universe: the compact embedded dictionary (32
+# keys) plus the persistent key-store, or an explicit list of at most 64 keys
+# passed with `--keys`. The host sweep knows more (the 2477-key bundled
+# dictionary, the named families, the UID-derived schemes) but pays one USB
+# round-trip per candidate key.
+#
+# `--mode` picks between the two:
+#   auto   (default) use the device sweep only when the candidate universe is
+#          the SAME on both sides — an explicit `--keys` list of <=64 keys — so
+#          only the round-trips change and the result stays identical.
+#          Otherwise (the bundled dictionary, `--dict`, `--uid-derived`, a
+#          single key type) keep the host sweep: the device's table is smaller,
+#          and silently narrowing the coverage would turn a key the host
+#          recovers into a false "unknown".
+#   device force the device sweep: its own universe (embedded dictionary +
+#          key-store) or the explicit `--keys` list.
+#   host   force the host sweep — today's behaviour, unchanged.
+def _plan_device_sweep(
+    mode: str,
+    host_only: List[str],
+    key_type: str,
+    explicit_keys: Optional[List[str]],
+) -> Tuple[bool, Optional[List[str]]]:
+    """Decide whether the sweep runs on the device.
+
+    Returns `(use_device, device_keys)`: `device_keys` is the list to pass to
+    the device with `--keys` (None = let the device use its own dictionary +
+    key-store). Refuses (exit 1) the combinations the device cannot honour
+    when the user explicitly asked for the device sweep.
+    """
+    if mode == "host":
+        return False, None
+
+    if host_only:
+        if mode == "device":
+            print_error(
+                "the on-device sweep cannot honour "
+                + ", ".join(host_only)
+                + " — those are host-side candidate sources; use --mode host"
+            )
+            raise SystemExit(1)
+        return False, None
+
+    if mode == "device":
+        if explicit_keys and len(explicit_keys) > DEVICE_SWEEP_MAX_KEYS:
+            print_error(
+                f"the on-device sweep takes at most {DEVICE_SWEEP_MAX_KEYS} keys "
+                f"(--keys) — use --mode host for a bigger dictionary"
+            )
+            raise SystemExit(1)
+        return True, explicit_keys or None
+
+    # auto: only when both sides can try the very same candidates.
+    if key_type.lower() != "both":
+        return False, None  # the device always sweeps A and B
+    if not explicit_keys:
+        return False, None  # the bundled dictionary is bigger than the device's
+    if len(explicit_keys) > DEVICE_SWEEP_MAX_KEYS:
+        return False, None
+    return True, explicit_keys
+
+
+@dataclass
+class _SweepResult:
+    """What a sweep found, whichever side ran it."""
+
+    found: Dict[Tuple[int, str], Optional[str]] = field(default_factory=dict)
+    known: "OrderedDict[str, None]" = field(default_factory=OrderedDict)
+    attempts: int = 0
+    naive_attempts: int = 0
+    uid: Optional[str] = None
+    interrupted: bool = False
+
+
+def _run_host_sweep(
+    link,
+    target: str,
+    plan,
+    key_types: List[str],
+    sectors: int,
+    schemes,
+    uid_max: int,
+    timeout: float,
+    as_json: bool,
+    start_time: float,
+    total: int,
+) -> _SweepResult:
+    """The host-driven sweep: ONE `mifare auth` USB round-trip per candidate.
+
+    Unchanged behaviour (the Fase 0 baseline: 2514 auths on card_1k with
+    key-type A) — this is the fallback the on-device sweep replaces when it
+    can't run, and the reference the device sweep must agree with.
+    """
+    result = _SweepResult()
+    found = result.found
+    known = result.known
+    attempts = 0
+    # Honest baseline for the "auths saved" stat: how many authentications a
+    # naive sweep of the SAME candidate universe would cost — every (sector,
+    # key type) slot trying its full pool to the end, with no reuse shortcut
+    # and no early cut. Accumulated per slot below; attempts is what we
+    # actually issued. See the Timing summary / JSON `stats`.
+    naive_attempts = 0
+    uid: Optional[str] = None  # filled once sector 0 opens (UID-derived schemes)
+
+    if not as_json:
+        print_info(
+            f"Checking {target} — {sectors} sector(s) x {len(key_types)} key "
+            f"type(s), {plan.size} keys — Ctrl-C for partial results"
+        )
+    total_attempts = total * plan.size
+    progress = (
+        None
+        if as_json
+        else Progress(
+            SpinnerColumn(style="cyan"),
+            TextColumn(
+                "[cyan]sector {task.fields[sector]:>2} key {task.fields[key_type]}"
+                "[/cyan]"
+            ),
+            BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
+            TextColumn(
+                "[dim]{task.fields[tried]}/{task.fields[key_total]} keys[/dim]"
+            ),
+            TextColumn("[dim]{task.fields[rate]:.0f} keys/s[/dim]"),
+            TimeRemainingColumn(),
+            TimeElapsedColumn(),
+            TextColumn(
+                "[dim]{task.fields[recovered]}/{task.fields[pairs]} recovered[/dim]"
+            ),
+            console=console,
+            transient=True,
+        )
+    )
+    first = True
+    try:
+        with progress or nullcontext():
+            task = (
+                progress.add_task(
+                    "",
+                    total=total_attempts,
+                    recovered=0,
+                    pairs=total,
+                    sector=0,
+                    key_type="",
+                    tried=0,
+                    key_total=plan.size,
+                    rate=0.0,
+                )
+                if progress
+                else None
+            )
+            for s in range(sectors):
+                block = _sector_first_block(s)
+                uid_cands = (
+                    uidkeys.candidates_for(uid, schemes, s, uid_max)
+                    if schemes and uid
+                    else []
+                )
+                for kt in key_types:
+                    # The universe a naive sweep would try for this slot:
+                    # UID-derived candidates + the full dictionary for this
+                    # sector, deduped — WITHOUT the reuse shortcut and run to
+                    # completion. This is the baseline "auths saved" is
+                    # measured against (equals sectors x universe when no
+                    # --dict/--uid-derived, matching the Fase 0 pins).
+                    naive_pool = list(
+                        dict.fromkeys(uid_cands + list(plan.for_sector(s)))
+                    )
+                    naive_attempts += len(naive_pool)
+                    # What we actually try: confirmed keys (reuse) first, then
+                    # that pool; deduped, first occurrence wins, with an early
+                    # cut on the first hit.
+                    candidates = list(dict.fromkeys(list(known) + naive_pool))
+                    key = None
+                    tried = 0
+                    for candidate in candidates:
+                        line = f"mifare auth {block} {kt} {candidate}"
+                        if first:
+                            r = _run_mifare_command(link, line, timeout)
+                            first = False
+                        else:
+                            r = link.command(line)
+                        tried += 1
+                        attempts += 1
+                        if progress:
+                            elapsed = time.monotonic() - start_time
+                            progress.update(
+                                task,
+                                advance=1,
+                                sector=s,
+                                key_type=kt,
+                                tried=tried,
+                                rate=attempts / elapsed if elapsed > 0 else 0.0,
+                            )
+                        if r.ok:
+                            key = candidate
+                            break
+                    found[(s, kt)] = key
+                    if key:
+                        known.setdefault(key, None)
+                    if progress:
+                        recovered = sum(1 for v in found.values() if v)
+                        skipped = len(candidates) - tried
+                        if skipped:
+                            progress.update(task, advance=skipped)
+                        progress.update(task, recovered=recovered)
+
+                # Once sector 0 is open, read block 0 for the UID so the
+                # UID-derived schemes can generate candidates for the rest.
+                # (Feedback is printed after the progress bar closes, below.)
+                if schemes and uid is None and s == 0:
+                    kt0, key0 = next(
+                        (
+                            (kt, found[(0, kt)])
+                            for kt in ("A", "B")
+                            if found.get((0, kt))
+                        ),
+                        (None, None),
+                    )
+                    if key0:
+                        uid = _read_uid_via_block0(link, kt0, key0)
+    except KeyboardInterrupt:
+        result.interrupted = True
+
+    result.attempts = attempts
+    result.naive_attempts = naive_attempts
+    result.uid = uid
+
+    if schemes and not as_json:
+        if uid:
+            print_info(
+                f"UID {uid} — UID-derived candidates via "
+                f"{', '.join(sc.name for sc in schemes)}"
+                + (f" (max {uid_max}/sector)" if uid_max else "")
+            )
+        else:
+            print_dim(
+                "UID unavailable (sector 0 not opened / block 0 unreadable) "
+                "— UID-derived schemes skipped"
+            )
+    return result
+
+
+def _sweep_on_device(
+    link,
+    target: str,
+    sectors: int,
+    device_keys: Optional[List[str]],
+    key_types: List[str],
+    as_json: bool,
+    timeout: float,
+    mode: str,
+) -> Optional[_SweepResult]:
+    """The on-device sweep: ONE `mifare check` round-trip, the device sweeps.
+
+    Returns None when the flashed firmware has no `mifare check` command and
+    the caller should fall back to the host-driven sweep (only in `auto`
+    mode; in `device` mode that is a hard error).
+    """
+    if not as_json:
+        universe = (
+            f"{len(device_keys)} key(s)"
+            if device_keys
+            else "the device's dictionary + key-store"
+        )
+        print_info(
+            f"Checking {target} — on-device sweep, {sectors} sector(s) x "
+            f"{len(key_types)} key type(s), {universe} — the device runs the "
+            "dictionary itself (one round-trip)"
+        )
+    try:
+        with Progress(
+            SpinnerColumn(style="cyan"),
+            TextColumn("[cyan]device sweep[/cyan]"),
+            TextColumn("[dim]{task.elapsed:.0f}s[/dim]"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task("", total=None)
+            sweep = run_device_sweep(
+                link, sectors, device_keys, tap_timeout=timeout
+            )
+    except DeviceSweepUnsupported as e:
+        if mode == "device":
+            print_error(
+                f"the flashed firmware has no on-device sweep ({e}) — update the "
+                "firmware or use --mode host"
+            )
+            raise SystemExit(1)
+        if not as_json:
+            print_dim(
+                "the device did not run the sweep (older firmware?) — using the "
+                "host-driven sweep"
+            )
+        return None
+    except DeviceSweepError as e:
+        print_error(f"device sweep failed: {e}")
+        raise SystemExit(1)
+
+    result = _SweepResult()
+    for s in range(sectors):
+        key_a, key_b = sweep.keys.get(s, (None, None))
+        # Only the requested key types are reported: the device always sweeps
+        # A and B, but `--key-type A` means "report A".
+        if "A" in key_types:
+            result.found[(s, "A")] = key_a
+            if key_a:
+                result.known.setdefault(key_a, None)
+        if "B" in key_types:
+            result.found[(s, "B")] = key_b
+            if key_b:
+                result.known.setdefault(key_b, None)
+    result.attempts = sweep.attempts
+    result.naive_attempts = sweep.naive
+
+    # The device reports its own counters; if they disagree with what came
+    # down the wire, say so rather than picking one silently.
+    if sweep.recovered and sweep.recovered != sweep.recovered_count():
+        print_warning(
+            f"the device reported {sweep.recovered} recovered key(s) but "
+            f"{sweep.recovered_count()} arrived — trusting the wire"
+        )
+    if sweep.total and sweep.total != sectors * 2:
+        print_warning(
+            f"the device swept {sweep.total} key slots, expected "
+            f"{sectors * 2} — trusting the wire"
+        )
+    if not as_json and key_types != ["A", "B"]:
+        print_dim(
+            "the device sweep always tries Key A and B — --key-type only "
+            "filters the report"
+        )
+    return result
+
+
 # Trailer-read key-B recovery. This is NOT the Crypto-1 nested attack (that
 # needs raw nonce/parity capture the PN7150 never surfaces — it runs Crypto-1
 # in-chip and only reports auth pass/fail). Instead, once the dictionary has
@@ -198,6 +544,46 @@ def _recover_key_b_via_trailer(
     if not _MIFARE_HEX_RE.match(key_b) or key_b == "0" * _MIFARE_KEY_HEX_LEN:
         return None, "card returned zeros for key B"
     return key_b, "ok"
+
+
+def _trailer_read_pass(
+    link,
+    found: Dict[Tuple[int, str], Optional[str]],
+    known: "OrderedDict[str, None]",
+    key_types: List[str],
+    sectors: int,
+    as_json: bool,
+) -> None:
+    """Trailer-read fallback for the sectors opened with key A but not key B.
+
+    Shared by both sweep modes (host-driven and on-device): the device sweep
+    recovers keys the same way, it just does it without the USB round-trips —
+    reading key B back off the card is still a host-side step, because it
+    needs the access bits of the sector's trailer.
+    """
+    if "B" not in key_types:
+        return
+    targets = [
+        (s, key_a)
+        for s in range(sectors)
+        if found.get((s, "B")) is None and (key_a := found.get((s, "A"))) is not None
+    ]
+    if not targets:
+        return
+    if not as_json:
+        print_info(
+            f"trailer read: {len(targets)} sector(s) opened key A but "
+            "not key B — reading key B off the card (no Crypto-1 attack)"
+        )
+    for s, key_a in targets:
+        key_b, reason = _recover_key_b_via_trailer(link, s, key_a)
+        if key_b:
+            found[(s, "B")] = key_b
+            known.setdefault(key_b, None)
+            if not as_json:
+                print_success(f"sector {s} key B recovered via trailer read: {key_b}")
+        elif not as_json:
+            print_dim(f"  sector {s} key B not recovered — {reason}")
 
 
 @click.command("check")
@@ -277,6 +663,19 @@ def _recover_key_b_via_trailer(
     show_default=True,
     help="Which key slot(s) to try.",
 )
+@click.option(
+    "--mode",
+    "mode",
+    type=click.Choice(["auto", "device", "host"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Where the sweep runs. 'auto' (default) uses the device's own sweep "
+    "when both sides can try the same candidates (an explicit --keys list of "
+    f"<= {DEVICE_SWEEP_MAX_KEYS} keys) and the host-driven sweep otherwise; "
+    "'device' forces the device sweep (one round-trip, its embedded "
+    "dictionary + key-store); 'host' forces the host sweep (the full bundled "
+    "dictionary, one USB round-trip per candidate).",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout.")
 @click.option(
     "--out",
@@ -314,6 +713,7 @@ def mifare_check_cmd(
     list_uid_schemes,
     sectors,
     key_type,
+    mode,
     as_json,
     out_file,
     output_keys_file,
@@ -368,186 +768,68 @@ def mifare_check_cmd(
     total = sectors * len(key_types)
 
     level = _verbosity(ctx, verbose)
-    found: Dict[Tuple[int, str], Optional[str]] = {}
-    known: "OrderedDict[str, None]" = OrderedDict()
-    interrupted = False
+
+    # The on-device sweep can only use the device's own candidate universe;
+    # the host-only sources below make the request inexpressible on it.
+    host_only: List[str] = []
+    if named:
+        host_only.append("--dict")
+    if extra:
+        host_only.append("--dict-file")
+    if schemes:
+        host_only.append("--uid-derived")
+    explicit_keys = base if keyfiles else None
+    use_device, device_keys = _plan_device_sweep(
+        mode.lower(), host_only, key_type, explicit_keys
+    )
 
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
-        if not as_json:
-            if named or extra:
-                sources = [nd.name for nd in named]
-                sources += [f"file:{f}" for f in dict_files]
-                print_info(f"dictionaries: base + {', '.join(sources)}")
-            print_info(
-                f"Checking {target} — {sectors} sector(s) x {len(key_types)} key "
-                f"type(s), {plan.size} keys — Ctrl-C for partial results"
-            )
-        total_attempts = total * plan.size
-        progress = (
-            None
-            if as_json
-            else Progress(
-                SpinnerColumn(style="cyan"),
-                TextColumn(
-                    "[cyan]sector {task.fields[sector]:>2} key {task.fields[key_type]}"
-                    "[/cyan]"
-                ),
-                BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
-                TextColumn(
-                    "[dim]{task.fields[tried]}/{task.fields[key_total]} keys[/dim]"
-                ),
-                TextColumn("[dim]{task.fields[rate]:.0f} keys/s[/dim]"),
-                TimeRemainingColumn(),
-                TimeElapsedColumn(),
-                TextColumn(
-                    "[dim]{task.fields[recovered]}/{task.fields[pairs]} "
-                    "recovered[/dim]"
-                ),
-                console=console,
-                transient=True,
-            )
-        )
-        first = True
-        attempts = 0
-        # Honest baseline for the "auths saved" stat: how many authentications a
-        # naive sweep of the SAME candidate universe would cost — every (sector,
-        # key type) slot trying its full pool to the end, with no reuse shortcut
-        # and no early cut. Accumulated per slot below; attempts is what we
-        # actually issued. See the Timing summary / JSON `stats`.
-        naive_attempts = 0
-        uid: Optional[str] = None  # filled once sector 0 opens (UID-derived schemes)
+        if not as_json and (named or extra):
+            sources = [nd.name for nd in named]
+            sources += [f"file:{f}" for f in dict_files]
+            print_info(f"dictionaries: base + {', '.join(sources)}")
+
+        # The clock starts with the sweep itself, not with the connection: the
+        # reported time and rate are the sweep's.
         start_time = time.monotonic()
-        try:
-            with progress or nullcontext():
-                task = (
-                    progress.add_task(
-                        "",
-                        total=total_attempts,
-                        recovered=0,
-                        pairs=total,
-                        sector=0,
-                        key_type="",
-                        tried=0,
-                        key_total=plan.size,
-                        rate=0.0,
-                    )
-                    if progress
-                    else None
-                )
-                for s in range(sectors):
-                    block = _sector_first_block(s)
-                    uid_cands = (
-                        uidkeys.candidates_for(uid, schemes, s, uid_max)
-                        if schemes and uid
-                        else []
-                    )
-                    for kt in key_types:
-                        # The universe a naive sweep would try for this slot:
-                        # UID-derived candidates + the full dictionary for this
-                        # sector, deduped — WITHOUT the reuse shortcut and run to
-                        # completion. This is the baseline "auths saved" is
-                        # measured against (equals sectors x universe when no
-                        # --dict/--uid-derived, matching the Fase 0 pins).
-                        naive_pool = list(
-                            dict.fromkeys(uid_cands + list(plan.for_sector(s)))
-                        )
-                        naive_attempts += len(naive_pool)
-                        # What we actually try: confirmed keys (reuse) first, then
-                        # that pool; deduped, first occurrence wins, with an early
-                        # cut on the first hit.
-                        candidates = list(dict.fromkeys(list(known) + naive_pool))
-                        key = None
-                        tried = 0
-                        for candidate in candidates:
-                            line = f"mifare auth {block} {kt} {candidate}"
-                            if first:
-                                r = _run_mifare_command(link, line, timeout)
-                                first = False
-                            else:
-                                r = link.command(line)
-                            tried += 1
-                            attempts += 1
-                            if progress:
-                                elapsed = time.monotonic() - start_time
-                                progress.update(
-                                    task,
-                                    advance=1,
-                                    sector=s,
-                                    key_type=kt,
-                                    tried=tried,
-                                    rate=attempts / elapsed if elapsed > 0 else 0.0,
-                                )
-                            if r.ok:
-                                key = candidate
-                                break
-                        found[(s, kt)] = key
-                        if key:
-                            known.setdefault(key, None)
-                        if progress:
-                            recovered = sum(1 for v in found.values() if v)
-                            skipped = len(candidates) - tried
-                            if skipped:
-                                progress.update(task, advance=skipped)
-                            progress.update(task, recovered=recovered)
+        sweep_mode = "host"
+        result: Optional[_SweepResult] = None
+        if use_device:
+            result = _sweep_on_device(
+                link, target, sectors, device_keys, key_types, as_json, timeout, mode
+            )
+            if result is not None:
+                sweep_mode = "device"
+        if result is None:
+            # Either the host sweep was chosen, or the flashed firmware has no
+            # on-device sweep and we fell back to it.
+            result = _run_host_sweep(
+                link,
+                target,
+                plan,
+                key_types,
+                sectors,
+                schemes,
+                uid_max,
+                timeout,
+                as_json,
+                start_time,
+                total,
+            )
 
-                    # Once sector 0 is open, read block 0 for the UID so the
-                    # UID-derived schemes can generate candidates for the rest.
-                    # (Feedback is printed after the progress bar closes, below.)
-                    if schemes and uid is None and s == 0:
-                        kt0, key0 = next(
-                            (
-                                (kt, found[(0, kt)])
-                                for kt in ("A", "B")
-                                if found.get((0, kt))
-                            ),
-                            (None, None),
-                        )
-                        if key0:
-                            uid = _read_uid_via_block0(link, kt0, key0)
-        except KeyboardInterrupt:
-            interrupted = True
-
-        if schemes and not as_json:
-            if uid:
-                print_info(
-                    f"UID {uid} — UID-derived candidates via "
-                    f"{', '.join(sc.name for sc in schemes)}"
-                    + (f" (max {uid_max}/sector)" if uid_max else "")
-                )
-            else:
-                print_dim(
-                    "UID unavailable (sector 0 not opened / block 0 unreadable) "
-                    "— UID-derived schemes skipped"
-                )
+        found = result.found
+        known = result.known
+        attempts = result.attempts
+        naive_attempts = result.naive_attempts
+        interrupted = result.interrupted
 
         # Trailer-read fallback (still inside the open session): for sectors
         # the dictionary opened with key A but not key B, try to read key B
         # straight off the card. Not the Crypto-1 nested attack — that needs
         # nonce capture this reader can't do — but it recovers key B for free
         # on cards that leave it readable. See _recover_key_b_via_trailer.
-        if not interrupted and "B" in key_types:
-            targets = [
-                (s, key_a)
-                for s in range(sectors)
-                if found.get((s, "B")) is None
-                and (key_a := found.get((s, "A"))) is not None
-            ]
-            if targets and not as_json:
-                print_info(
-                    f"trailer read: {len(targets)} sector(s) opened key A but "
-                    "not key B — reading key B off the card (no Crypto-1 attack)"
-                )
-            for s, key_a in targets:
-                key_b, reason = _recover_key_b_via_trailer(link, s, key_a)
-                if key_b:
-                    found[(s, "B")] = key_b
-                    known.setdefault(key_b, None)
-                    if not as_json:
-                        print_success(
-                            f"sector {s} key B recovered via trailer read: {key_b}"
-                        )
-                elif not as_json:
-                    print_dim(f"  sector {s} key B not recovered — {reason}")
+        if not interrupted:
+            _trailer_read_pass(link, found, known, key_types, sectors, as_json)
 
     if interrupted and not as_json:
         print_warning("interrupted — showing partial results")
@@ -597,6 +879,7 @@ def mifare_check_cmd(
                         "auths_saved": auths_saved,
                         "saved_pct": round(saved_pct, 1),
                         "interrupted": interrupted,
+                        "mode": sweep_mode,
                     },
                 }
             )
@@ -629,6 +912,7 @@ def mifare_check_cmd(
     console.print("")
     print_subtitle("Timing summary")
     _print_field("total time", f"{duration:.1f}s")
+    _print_field("sweep mode", "on-device" if sweep_mode == "device" else "host")
     _print_field("attempts", str(attempts))
     _print_field(
         "avg rate", f"{attempts / duration:.1f} keys/s" if duration > 0 else "—"

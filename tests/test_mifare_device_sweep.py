@@ -61,9 +61,7 @@ class SweepLink(FakeLink):
             self.checks.append(stripped)
             data = {}
             for sector, (key_a, key_b) in self.sectors.items():
-                data[f"mifare_check_s{sector}"] = (
-                    f"{key_a or '-'} {key_b or '-'}"
-                )
+                data[f"mifare_check_s{sector}"] = f"{key_a or '-'} {key_b or '-'}"
             if self.stat:
                 data["mifare_check_stat"] = self.stat
             return ok(**data)
@@ -105,9 +103,10 @@ def test_parse_never_guesses_a_malformed_key():
     # well-formed 12-hex key is a hole too.
     result = parse_device_sweep({"mifare_check_s0": "notahexkey 000000000000"})
     assert result.keys[0] == (None, "000000000000")
-    assert parse_device_sweep({"mifare_check_s0": "ZZZZZZZZZZZZ -"}).keys[
-        0
-    ] == (None, None)
+    assert parse_device_sweep({"mifare_check_s0": "ZZZZZZZZZZZZ -"}).keys[0] == (
+        None,
+        None,
+    )
 
 
 def test_parse_ignores_unrelated_lines():
@@ -279,9 +278,7 @@ def test_device_mode_writes_the_sector_keyfile(runner, use_link, tmp_path):
         ],
     )
     assert result.exit_code == 1
-    assert out.read_text() == (
-        "0:FFFFFFFFFFFF:FFFFFFFFFFFF\n1:A0A1A2A3A4A5:\n"
-    )
+    assert out.read_text() == ("0:FFFFFFFFFFFF:FFFFFFFFFFFF\n1:A0A1A2A3A4A5:\n")
 
 
 def test_device_mode_still_recovers_key_b_by_trailer_read(runner, use_link, tmp_path):

@@ -282,9 +282,7 @@ def _run_host_sweep(
                 "[/cyan]"
             ),
             BarColumn(bar_width=24, complete_style="cyan", finished_style="cyan"),
-            TextColumn(
-                "[dim]{task.fields[tried]}/{task.fields[key_total]} keys[/dim]"
-            ),
+            TextColumn("[dim]{task.fields[tried]}/{task.fields[key_total]} keys[/dim]"),
             TextColumn("[dim]{task.fields[rate]:.0f} keys/s[/dim]"),
             TimeRemainingColumn(),
             TimeElapsedColumn(),
@@ -441,9 +439,7 @@ def _sweep_on_device(
             transient=True,
         ) as progress:
             progress.add_task("", total=None)
-            sweep = run_device_sweep(
-                link, sectors, device_keys, tap_timeout=timeout
-            )
+            sweep = run_device_sweep(link, sectors, device_keys, tap_timeout=timeout)
     except DeviceSweepUnsupported as e:
         if mode == "device":
             print_error(

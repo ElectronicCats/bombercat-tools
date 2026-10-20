@@ -121,6 +121,7 @@ class FakeLink:
         self.sent: List[str] = []
         self.opened = False
         self.closed = False
+        self.reopened = 0
         # Mirrors DeviceLink's tx/rx hook so tests can drive a real
         # `make_tracer` through the fake, the way `tags read/watch` do.
         self._trace = trace
@@ -132,6 +133,12 @@ class FakeLink:
 
     def close(self) -> None:
         self.closed = True
+
+    def reopen(self, ready_timeout: float = 15.0) -> bool:
+        """Stand-in for DeviceLink.reopen(): the fake never really loses the
+        board, so it just reports it back (and counts the attempt)."""
+        self.reopened += 1
+        return self.ping_ok
 
     def __enter__(self) -> "FakeLink":
         return self.open()

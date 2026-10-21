@@ -197,6 +197,7 @@ Tap a Mifare Classic card to let the firmware select it — `auth`, `read`, `wri
 
 ```sh
 bombercat tags mifare keys                                            # list built-in default keys, no card needed
+bombercat tags mifare standalone --on                                 # the board runs the whole workflow by itself, no card needed
 bombercat tags mifare auth --block 4 --key-type A --key FFFFFFFFFFFF  # authenticate a sector
 bombercat tags mifare read --block 4                                  # read a block from the authenticated sector
 bombercat tags mifare write --block 4 --data 00112233445566778899AABBCCDDEEFF
@@ -206,6 +207,8 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 ```
 
 `auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call. `sector` also accepts `-k, --keys-file FILE` instead of `--key`/`--key-type` — a `sector:keyA:keyB` file from `mifare check --output-keys` (tries key A, falls back to key B, and shows the real keys in the trailer line instead of the zeros the card reads back).
+
+**Standalone mode** (`mifare standalone [--on|--off]`, no card needed) makes the board finish the job **by itself** when it detects a card: the dictionary sweep, then the dump of the sectors it cracked, then everything emitted over the serial port — so the board can be used in the field with no PC attached. The setting lives in the board's flash and survives a reset; the keys it uses are the ones in its key-store (`mifare keys`, persisted) plus its embedded default dictionary.
 
 ---
 

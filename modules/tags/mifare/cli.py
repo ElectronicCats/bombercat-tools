@@ -346,6 +346,54 @@ def mifare_timing_cmd(ctx, reset, as_json, verbose, port, device_id):
     console.print(table)
 
 
+@mifare.command("standalone")
+@click.option(
+    "--on",
+    "state",
+    flag_value="on",
+    default=None,
+    help="Turn the standalone workflow on: the board runs the whole field "
+    "workflow by itself when a card is detected (sweep, dump the sectors it "
+    "cracked, emit everything over serial).",
+)
+@click.option(
+    "--off",
+    "state",
+    flag_value="off",
+    help="Turn the standalone workflow off (the board waits for the CLI).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object.")
+@device_options
+@click.pass_context
+def mifare_standalone_cmd(ctx, state, as_json, verbose, port, device_id):
+    """Show or set the board's standalone mode. No card needed.
+
+    With the standalone mode on, the firmware does the whole job on its own
+    when a card is detected — dictionary sweep, dump of the sectors it
+    cracked, everything emitted over the serial port — so it can be used in
+    the field with no PC attached. The setting is stored in the board's flash
+    and survives a reset.
+    """
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        command = "mifare standalone"
+        if state:
+            command += f" {state}"
+        r = link.command(command)
+
+    if not r.ok:
+        print_error(f"standalone failed: {r.message}")
+        raise SystemExit(1)
+
+    current = (r.message or "").strip()
+    if current.startswith("standalone "):
+        current = current[len("standalone ") :].strip()
+    if as_json:
+        print(json.dumps({"standalone": current}))
+        return
+    print_success(f"standalone mode @ {target}: {current}")
+
+
 # ── the rest of the group ────────────────────────────────────────────────────
 #
 # Commands big enough to own a module. Each is a plain `click.Command`, so

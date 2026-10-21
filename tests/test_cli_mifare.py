@@ -527,6 +527,40 @@ def test_mifare_check_trailer_read_not_attempted_for_key_type_a(
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 
+def test_mifare_timing_reports_the_boards_own_counters(runner, use_link):
+    # The board measures itself; the CLI just shows what it says. The
+    # detection counters are what tell "the card left" from "the re-select
+    # did not get the card back".
+    link = use_link(
+        mifare_session,
+        FakeLink(
+            {
+                "mifare timing": ok(
+                    mifare_timing="attempts=79 reselects=78 reselect_fails=1 "
+                    "auth_ms=1231 reselect_ms=6177 reset_ms=5085 "
+                    "detect_ms=1092 det_calls=80 det_ok=79 det_timeout=1 "
+                    "det_disc=0 det_sel=0 det_deact=0 det_err=0 rst_fail=0"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifarecli.mifare_timing_cmd, ["--json"])
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["timing"]["attempts"] == 79
+    assert doc["timing"]["det_timeout"] == 1
+    assert doc["timing"]["rst_fail"] == 0
+    assert "mifare timing" in link.sent
+
+
+def test_mifare_timing_can_zero_the_counters_first(runner, use_link):
+    link = use_link(mifare_session, FakeLink())
+    result = runner.invoke(mifarecli.mifare_timing_cmd, ["--reset", "--json"])
+    assert result.exit_code == 0
+    assert "mifare timing reset" in link.sent
+    assert "mifare timing" in link.sent
+
+
 def test_mifare_group_exposes_all_subcommands():
     assert set(mifarecli.mifare.commands) == {
         "auth",
@@ -534,6 +568,8 @@ def test_mifare_group_exposes_all_subcommands():
         "write",
         "sector",
         "keys",
+        "standalone",
+        "timing",
         "check",
         "dump",
         "analyze",

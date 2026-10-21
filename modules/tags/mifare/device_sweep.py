@@ -354,6 +354,33 @@ def run_device_sweep(
     return result
 
 
+# ── the field trigger (Fase 4, tarea 4.3) ─────────────────────────────────────
+#
+# The board's user button (SW2, "GPIO" in the BOM, on RP2040 GPIO17 = Arduino
+# D5) is what starts the standalone workflow in the field, with no PC attached:
+# a short press runs the chain for the card in the field, a long press toggles
+# the persistent standalone mode. The firmware reports what the trigger is
+# doing in a `:mifare_trigger` line, so the host can show it instead of
+# guessing.
+#
+#   :mifare_trigger pin=5 long_ms=1200 armed=0 standalone=0 presses=0 long_presses=0
+
+
+def parse_device_trigger(data: Dict[str, str]) -> Dict[str, int]:
+    """Parse the `:mifare_trigger` line into its counters.
+
+    A firmware that does not know the command answers with an error, and the
+    caller reports that; an EMPTY result means the board answered without the
+    line (an older build).
+    """
+    state: Dict[str, int] = {}
+    for token in (data.get("mifare_trigger", "") or "").split():
+        name, _, value = token.partition("=")
+        if name and value.isdigit():
+            state[name] = int(value)
+    return state
+
+
 # ── the on-device dump (Fase 4, tarea 4.4) ────────────────────────────────────
 #
 # `mifare dump` reads the sectors the sweep cracked, with the keys the sweep

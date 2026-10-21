@@ -30,11 +30,12 @@ import pytest
 from modules.core.bombercat import Response
 from modules.tags.mifare import session as mifare_session
 from modules.tags.mifare.check import mifare_check_cmd
-from modules.tags.mifare.cli import mifare_standalone_cmd
+from modules.tags.mifare.cli import mifare_standalone_cmd, mifare_trigger_cmd
 from modules.tags.mifare.device_sweep import (
     DeviceDumpNoSweep,
     DeviceDumpUnsupported,
     parse_device_dump,
+    parse_device_trigger,
     run_device_dump,
 )
 from modules.tags.mifare.dump import mifare_dump_cmd
@@ -316,6 +317,88 @@ def test_the_standalone_mode_reports_a_refusal(runner, use_link):
     result = runner.invoke(mifare_standalone_cmd, [])
     assert result.exit_code == 1
     assert "standalone failed" in flat(result.output)
+
+
+# ── the field trigger (the button that starts the workflow) ──────────────────
+
+
+def test_the_field_trigger_state_is_read_through_the_cli(runner, use_link):
+    # The board's user button (SW2 -> GPIO17 = Arduino D5) is what starts the
+    # standalone workflow in the field. The CLI shows what the trigger is
+    # doing, so the operator can tell "armed for one card" from "armed for
+    # good" without guessing.
+    link = use_link(
+        mifare_session,
+        FakeLink(
+            responses={
+                "mifare trigger": ok(
+                    mifare_trigger="pin=5 long_ms=1200 armed=1 standalone=0 "
+                    "presses=3 long_presses=1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifare_trigger_cmd, ["--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "trigger": {
+            "pin": 5,
+            "long_ms": 1200,
+            "armed": 1,
+            "standalone": 0,
+            "presses": 3,
+            "long_presses": 1,
+        }
+    }
+    assert "mifare trigger" in link.sent
+
+
+def test_the_field_trigger_says_which_mode_is_armed(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(
+            responses={
+                "mifare trigger": ok(
+                    mifare_trigger="pin=5 long_ms=1200 armed=0 standalone=1 "
+                    "presses=1 long_presses=1"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifare_trigger_cmd, [])
+    assert result.exit_code == 0
+    assert "standalone mode is ON" in flat(result.output)
+
+
+def test_the_field_trigger_reports_a_refusal(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(responses={"mifare trigger": err("unknown mifare subcommand")}),
+    )
+    result = runner.invoke(mifare_trigger_cmd, [])
+    assert result.exit_code == 1
+    assert "trigger failed" in flat(result.output)
+
+
+def test_the_field_trigger_reports_a_board_that_knows_nothing(runner, use_link):
+    # An older firmware answers "+OK" without the trigger line: that is not a
+    # trigger state, so the CLI says so instead of showing an empty table.
+    use_link(mifare_session, FakeLink(responses={"mifare trigger": ok()}))
+    result = runner.invoke(mifare_trigger_cmd, [])
+    assert result.exit_code == 1
+    assert "did not report any trigger state" in flat(result.output)
+
+
+def test_the_trigger_state_is_parsed_only_from_whole_numbers():
+    # A malformed token is dropped, never guessed.
+    state = parse_device_trigger(
+        {"mifare_trigger": "pin=5 armed=1 standalone=x presses= long_presses=2"}
+    )
+    assert state == {"pin": 5, "armed": 1, "long_presses": 2}
+
+
+def test_the_trigger_state_of_a_board_that_did_not_answer_is_empty():
+    assert parse_device_trigger({}) == {}
 
 
 # ── the trailer-read pass: done once, on one side ───────────────────────────

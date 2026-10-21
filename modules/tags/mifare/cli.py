@@ -34,6 +34,7 @@ from ...utils.output import (
     make_tracer,
     print_dim,
     print_error,
+    print_info,
     print_success,
 )
 from .analyze import mifare_analyze_cmd
@@ -49,6 +50,7 @@ from .common import (
     _sector_first_block,
 )
 from .display import _sector_display_lines, _print_access_bits, _print_block0
+from .device_sweep import parse_device_trigger
 from .dump import mifare_dump_cmd
 from .restore import mifare_restore_cmd
 from .session import (
@@ -392,6 +394,59 @@ def mifare_standalone_cmd(ctx, state, as_json, verbose, port, device_id):
         print(json.dumps({"standalone": current}))
         return
     print_success(f"standalone mode @ {target}: {current}")
+
+
+@mifare.command("trigger")
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object.")
+@device_options
+@click.pass_context
+def mifare_trigger_cmd(ctx, as_json, verbose, port, device_id):
+    """Show the board's field trigger: the button that starts the standalone
+    workflow. No card needed.
+
+    On the BomberCat board the user button (SW2, "GPIO" in the BOM, on RP2040
+    GPIO17 = Arduino D5) speaks two gestures:
+
+    • short press — run the standalone chain for the card in the field (dump
+      the sectors the sweep cracked and emit them). With no card in the field
+      it arms the run for the next card that is tapped.
+    • long press — toggle the persistent standalone mode (the chain runs on
+      every detection). The mode is stored in the board's flash, so it
+      survives a reset; `mifare standalone --on/--off` sets the same flag.
+
+    The board's LED says what happened: one blink for a short press, two for
+    the standalone mode armed, three for it disarmed.
+    """
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("mifare trigger")
+
+    if not r.ok:
+        print_error(f"trigger failed: {r.message}")
+        raise SystemExit(1)
+
+    state = parse_device_trigger(r.data)
+    if not state:
+        print_error("the board did not report any trigger state")
+        raise SystemExit(1)
+
+    if as_json:
+        print(json.dumps({"trigger": state}))
+        return
+
+    print_success(f"field trigger @ {target}")
+    table = Table(header_style="cyan bold")
+    table.add_column("field", style="cyan")
+    table.add_column("value", justify="right")
+    for name, value in state.items():
+        table.add_row(name, str(value))
+    console.print(table)
+    if state.get("standalone"):
+        print_info("the standalone mode is ON — the board runs the whole job by itself")
+    elif state.get("armed"):
+        print_info("a one-shot run is armed — it fires with the next card")
+    else:
+        print_info("the standalone mode is off — press the board's button to run it")
 
 
 # ── the rest of the group ────────────────────────────────────────────────────

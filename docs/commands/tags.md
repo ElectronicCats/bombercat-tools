@@ -210,6 +210,26 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 
 **Standalone mode** (`mifare standalone [--on|--off]`, no card needed) makes the board finish the job **by itself** when it detects a card: the dictionary sweep, then the dump of the sectors it cracked, then everything emitted over the serial port — so the board can be used in the field with no PC attached. The setting lives in the board's flash and survives a reset; the keys it uses are the ones in its key-store (`mifare keys`, persisted) plus its embedded default dictionary.
 
+**The field trigger (the button).** The BomberCat board has two push buttons: **SW1** is the board's *reset* (the RP2040's RUN pin — pressing it reboots the board), and **SW2** (labelled *GPIO* on the board) is the **user button**: RP2040 **GPIO17 = Arduino D5**, active LOW. It is the same button the MagSpoof sketch triggers with. It speaks two gestures:
+
+| gesture | what it does |
+|---|---|
+| **short press** | run the standalone chain for the card in the field: the sectors the sweep cracked are read and emitted over serial. With no card in the field it **arms** the run, and the next card that is tapped runs it. |
+| **long press** (≥ 1.2 s) | toggle the **persistent standalone mode** — the chain then runs on *every* detection. The flag is stored in the board's flash (same record as the key-store) and survives a reset; `mifare standalone --on/--off` sets the very same flag from the CLI. |
+
+The board's LED (LED1, GPIO27 = `LED_BUILTIN`) says what happened: **one blink** = a short press was taken, **two blinks** = the standalone mode was armed, **three blinks** = it was disarmed (or the action failed). The board's own LED is also what the CLI's `identify` blinks, so the two never fight over the pin.
+
+`mifare trigger` (no card needed) shows the state of that trigger — the button's pin, the long-press threshold, whether a one-shot is armed, whether the persistent mode is on, and how many presses the board has seen:
+
+```sh
+bombercat tags mifare trigger            # the table
+bombercat tags mifare trigger --json     # the same, machine-readable
+```
+
+The serial log carries the same events (`:mifare_trigger short`, `:mifare_trigger armed`, `:mifare_trigger run`, `:mifare_trigger standalone on|off`), so a field operator with a serial console sees them too.
+
+> The trigger is polled from the firmware's main loop, which the dictionary sweep blocks while it runs (seconds to minutes, depending on the card). A press **during** a sweep is therefore only seen once the sweep ends — the button cannot interrupt the sweep it is waiting for.
+
 ---
 
 <a id="tags-mifare-check"></a>

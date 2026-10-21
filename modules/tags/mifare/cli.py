@@ -292,6 +292,60 @@ def mifare_keys_cmd(ctx, as_json, verbose, port, device_id):
     console.print(table)
 
 
+@mifare.command("timing")
+@click.option(
+    "--reset",
+    "reset",
+    is_flag=True,
+    help="Zero the board's counters first, so the numbers describe only what "
+    "happens from now on.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object.")
+@device_options
+@click.pass_context
+def mifare_timing_cmd(ctx, reset, as_json, verbose, port, device_id):
+    """Show the board's own wall-clock and detection counters.
+
+    The board measures itself — the time inside each authentication, inside
+    each re-select, and how its card detection behaved — so the two sweep
+    paths (host-driven and on-device) can be compared without a stopwatch.
+
+    The detection counters are the ones that tell a "the card left the field"
+    from a "the re-select did not get the card back": `det_disc` (the chip
+    found a card and waited for the host to select it), `det_deact` (the card
+    left), `det_err` (the chip refused a command) and `rst_fail` (the reader
+    re-arm failed on I²C).
+    """
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if reset:
+            link.command("mifare timing reset")
+        r = link.command("mifare timing")
+
+    if not r.ok:
+        print_error(f"timing failed: {r.message}")
+        raise SystemExit(1)
+
+    raw = r.data.get("mifare_timing", "") or ""
+    counters = {}
+    for token in raw.split():
+        name, _, value = token.partition("=")
+        if name and value.isdigit():
+            counters[name] = int(value)
+
+    if as_json:
+        print(json.dumps({"timing": counters}))
+        return
+
+    print_success(f"timing @ {target}")
+    table = Table(header_style="cyan bold")
+    table.add_column("counter", style="cyan")
+    table.add_column("value", justify="right")
+    for name, value in counters.items():
+        table.add_row(name, str(value))
+    console.print(table)
+
+
 # ── the rest of the group ────────────────────────────────────────────────────
 #
 # Commands big enough to own a module. Each is a plain `click.Command`, so

@@ -128,6 +128,36 @@ def test_parse_reads_the_per_sector_keys_and_the_counters():
     assert result.recovered_count() == 3
 
 
+def test_parse_reads_an_interrupted_sweep_as_aborted():
+    # A sweep the device interrupted (the card left the field, or the
+    # re-selects gave up) is a PARTIAL result: the sectors it never reached
+    # are unknown because the sweep stopped, not because the keys are not
+    # there.
+    result = parse_device_sweep(
+        {
+            "mifare_check_s0": "A0A1A2A3A4A5 -",
+            "mifare_check_stat": "attempts=79 naive=1024 recovered=1/32 "
+            "trailer=0 cached=1 aborted=1",
+        }
+    )
+    assert result.aborted is True
+    assert result.keys[0] == ("A0A1A2A3A4A5", None)
+    # The trailer pass never ran on an interrupted sweep, so the host still
+    # has to do it itself for the sectors that did open.
+    assert result.did_trailer_read() is False
+
+
+def test_parse_a_complete_sweep_is_not_aborted():
+    result = parse_device_sweep(
+        {
+            "mifare_check_stat": "attempts=66 naive=1024 recovered=32/32 "
+            "trailer=0 cached=1 aborted=0",
+        }
+    )
+    assert result.aborted is False
+    assert result.did_trailer_read() is True
+
+
 def test_parse_never_guesses_a_malformed_key():
     # A hole is "-", never zeros and never a guess: a token that isn't a
     # well-formed 12-hex key is a hole too.
@@ -338,6 +368,67 @@ def test_device_mode_still_recovers_key_b_by_trailer_read(runner, use_link, tmp_
     doc = json.loads(result.stdout)
     assert doc["sectors"][0]["key_b"] == "AABBCCDDEEFF"
     assert "mifare sector 0 A FFFFFFFFFFFF" in link.sent
+
+
+def test_device_mode_says_an_interrupted_sweep_is_partial(runner, use_link, tmp_path):
+    # The device's sweep was interrupted before it covered every sector: the
+    # sectors it did not reach are unknown because the sweep STOPPED, not
+    # because the card does not open with them. The host has to say so — and
+    # it must still run its own trailer pass, which the interrupted device
+    # sweep never got to.
+    link = use_link(
+        mifare_session,
+        SweepLink(
+            {0: ("A0A1A2A3A4A5", None)},
+            stat="attempts=79 naive=1024 recovered=1/2 trailer=0 cached=1 aborted=1",
+            responses={
+                "mifare sector 0 A A0A1A2A3A4A5": ok(
+                    mifare_sector=(
+                        "00" * 48 + "00" * 6 + mc.AC_TRANSPORT + "AABBCCDDEEFF"
+                    )
+                )
+            },
+        ),
+    )
+    keyfile = _keyfile(tmp_path, "A0A1A2A3A4A5")
+    result = runner.invoke(
+        mifare_check_cmd,
+        ["--mode", "device", "--keys", str(keyfile), "--sectors", "1", "--json"],
+    )
+    doc = json.loads(result.stdout)
+    assert doc["stats"]["partial"] is True
+    # The host recovered the Key B the interrupted device sweep could not.
+    assert doc["sectors"][0]["key_b"] == "AABBCCDDEEFF"
+    assert "mifare sector 0 A A0A1A2A3A4A5" in link.sent
+
+
+def test_device_mode_can_force_a_fresh_sweep(runner, use_link, tmp_path):
+    # By default the device answers from its cached sweep (the firmware swept
+    # the card when it detected it). When that sweep was interrupted, the
+    # cache repeats the interrupted result — `--fresh` asks for a new one.
+    link = use_link(
+        mifare_session,
+        SweepLink(
+            {0: ("FFFFFFFFFFFF", "FFFFFFFFFFFF")},
+            stat="attempts=2 naive=64 recovered=2/2",
+        ),
+    )
+    keyfile = _keyfile(tmp_path, "FFFFFFFFFFFF")
+    result = runner.invoke(
+        mifare_check_cmd,
+        [
+            "--mode",
+            "device",
+            "--keys",
+            str(keyfile),
+            "--sectors",
+            "1",
+            "--fresh",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0
+    assert link.checks == ["mifare check --sectors 1 --keys FFFFFFFFFFFF --fresh"]
 
 
 def test_device_mode_filters_the_report_to_the_requested_key_type(

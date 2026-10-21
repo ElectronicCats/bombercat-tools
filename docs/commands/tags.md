@@ -298,6 +298,16 @@ The tap prompt is also honest about what the board is waiting for: while the fir
 
 **Performance note.** The dominant cost is any *unknown* sector, which must sweep the whole candidate pool once. Everything else opens early: a confirmed key is tried first on the remaining sectors (reuse), and the search cuts as soon as a sector's key types are found. This is why `--dict`/`--uid-derived` stay cheap even though they enlarge the pool — the added candidates are only ever fully paid for on sectors that nothing else opened. On the representative 1K test card (key-type A, one private-key sector), the auth count moves from **2514** (baseline) to **2525** with `--dict all` and **2527** with `--dict all --uid-derived mizip` — a naive per-sector sweep of the same enlarged pool would be ≈ 39 000. This is pinned as a regression test (`tests/test_mifare_phase5.py`).
 
+**Where the time goes (measured on the board).** The board reports its own wall-clock split in the sweep's stat line, so the two sweep modes can be compared without a stopwatch. On the reference 1K card (79 authentications, 32/32 recovered):
+
+| | host | on-device |
+|---|---|---|
+| per authentication | 16 ms | 16 ms |
+| per re-select | 78 ms (65 ms reader re-arm + 14 ms re-detection) | 78 ms |
+| total sweep | 7.4 s (one USB round-trip per key) | **0.0 s** |
+
+The on-device sweep issues the *same* authentications, so it was never slower per key — but the firmware **already sweeps the card when it detects it** (the on-detection auto-probe), so `mifare check` used to sweep the same card a second time. It now **answers from that sweep** (`cached=1` in the stat line, "the device reused its own sweep" in the report): the same result, zero extra authentications. `mifare check --fresh` forces a re-sweep, and an explicit `--keys` always sweeps (a different dictionary).
+
 ---
 
 <a id="tags-mifare-dump"></a>

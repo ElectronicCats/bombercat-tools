@@ -233,6 +233,22 @@ class _SweepResult:
     naive_attempts: int = 0
     uid: Optional[str] = None
     interrupted: bool = False
+    # True when the sweep only covered PART of the card — the device's own
+    # sweep was interrupted before it reached every sector. The keys it
+    # reports are then a partial result, and the summary has to say so.
+    partial: bool = False
+    # True when the DEVICE ran the trailer-read pass itself (Fase 4, tarea
+    # 4.4) and already recovered every Key B it could read back — the host
+    # must then not repeat the pass over USB.
+    device_trailer: bool = False
+    # Where the BOARD spent the wall-clock (device mode only), in ms:
+    # auth_ms / reselect_ms / trailer_ms.
+    auth_ms: Optional[int] = None
+    reselect_ms: Optional[int] = None
+    trailer_ms: Optional[int] = None
+    # True when the device answered from its own cached sweep (it had already
+    # swept this card on detection, so it did not sweep it again).
+    cached: Optional[bool] = None
 
 
 def _run_host_sweep(
@@ -412,6 +428,7 @@ def _sweep_on_device(
     as_json: bool,
     timeout: float,
     mode: str,
+    fresh: bool = False,
 ) -> Optional[_SweepResult]:
     """The on-device sweep: ONE `mifare check` round-trip, the device sweeps.
 
@@ -445,6 +462,7 @@ def _sweep_on_device(
                 device_keys,
                 tap_timeout=timeout,
                 quiet=as_json,
+                fresh=fresh,
             )
     except DeviceSweepUnsupported as e:
         if mode == "device":
@@ -478,6 +496,28 @@ def _sweep_on_device(
                 result.known.setdefault(key_b, None)
     result.attempts = sweep.attempts
     result.naive_attempts = sweep.naive
+    # The device runs the trailer-read pass itself when its firmware reports
+    # the `trailer=` counter (Fase 4, tarea 4.4): it recovered the same Key B
+    # the host would have read over USB, so the host must not repeat the
+    # pass. An older firmware has no such counter and the host does it.
+    result.device_trailer = sweep.did_trailer_read()
+    # The board's own wall-clock split (device mode only).
+    result.auth_ms = sweep.auth_ms
+    result.reselect_ms = sweep.reselect_ms
+    result.trailer_ms = sweep.trailer_ms
+    result.cached = sweep.cached
+    # A sweep the device interrupted is a PARTIAL result: the sectors it did
+    # not reach are unknown because the sweep stopped, not because the keys
+    # are not there. Say it out loud instead of presenting a partial card as
+    # the whole one.
+    if sweep.aborted:
+        result.partial = True
+        if not as_json:
+            print_warning(
+                "the device's sweep was interrupted before it covered every "
+                "sector — the keys below are a partial result (the card may "
+                "well open with the keys it did not get to try)"
+            )
 
     # The device reports its own counters; if they disagree with what came
     # down the wire, say so rather than picking one silently.
@@ -678,6 +718,16 @@ def _trailer_read_pass(
     "dictionary + key-store); 'host' forces the host sweep (the full bundled "
     "dictionary, one USB round-trip per candidate).",
 )
+@click.option(
+    "--fresh",
+    "fresh",
+    is_flag=True,
+    help="Sweep the card again even when the device still holds the results "
+    "of an earlier sweep. By default the device answers from its cache "
+    "(the firmware already swept the card when it detected it), which "
+    "repeats that result — use --fresh when that sweep was interrupted or "
+    "when you just want a new answer.",
+)
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object on stdout.")
 @click.option(
     "--out",
@@ -716,6 +766,7 @@ def mifare_check_cmd(
     sectors,
     key_type,
     mode,
+    fresh,
     as_json,
     out_file,
     output_keys_file,
@@ -798,7 +849,15 @@ def mifare_check_cmd(
         result: Optional[_SweepResult] = None
         if use_device:
             result = _sweep_on_device(
-                link, target, sectors, device_keys, key_types, as_json, timeout, mode
+                link,
+                target,
+                sectors,
+                device_keys,
+                key_types,
+                as_json,
+                timeout,
+                mode,
+                fresh,
             )
             if result is not None:
                 sweep_mode = "device"
@@ -830,7 +889,11 @@ def mifare_check_cmd(
         # straight off the card. Not the Crypto-1 nested attack — that needs
         # nonce capture this reader can't do — but it recovers key B for free
         # on cards that leave it readable. See _recover_key_b_via_trailer.
-        if not interrupted:
+        #
+        # Skipped when the DEVICE already did it (Fase 4, tarea 4.4): the
+        # on-device sweep reads the trailer itself, so repeating it here would
+        # cost one USB round-trip per sector for nothing.
+        if not interrupted and not result.device_trailer:
             _trailer_read_pass(link, found, known, key_types, sectors, as_json)
 
     if interrupted and not as_json:
@@ -869,20 +932,31 @@ def mifare_check_cmd(
             key_a = found.get((s, "A")) if "A" in key_types else None
             key_b = found.get((s, "B")) if "B" in key_types else None
             rows.append({"sector": s, "key_a": key_a, "key_b": key_b})
+        stats = {
+            "attempts": attempts,
+            "naive_attempts": naive_attempts,
+            "auths_saved": auths_saved,
+            "saved_pct": round(saved_pct, 1),
+            "interrupted": interrupted,
+            "partial": result.partial,
+            "mode": sweep_mode,
+        }
+        # The board's own wall-clock split (device mode only): where the time
+        # went inside the sweep. Absent in host mode (the host knows its own
+        # timings) and on a firmware that does not report them.
+        if result.auth_ms is not None:
+            stats["auth_ms"] = result.auth_ms
+            stats["reselect_ms"] = result.reselect_ms
+            stats["trailer_ms"] = result.trailer_ms
+        if result.cached is not None:
+            stats["cached"] = result.cached
         print(
             json.dumps(
                 {
                     "sectors": rows,
                     "recovered": recovered,
                     "total": total,
-                    "stats": {
-                        "attempts": attempts,
-                        "naive_attempts": naive_attempts,
-                        "auths_saved": auths_saved,
-                        "saved_pct": round(saved_pct, 1),
-                        "interrupted": interrupted,
-                        "mode": sweep_mode,
-                    },
+                    "stats": stats,
                 }
             )
         )
@@ -924,7 +998,30 @@ def mifare_check_cmd(
     _print_field("sectors exposed", f"{exposed_sectors}/{sectors}")
     _print_field("naive sweep", f"{naive_attempts} auths")
     _print_field("auths saved", f"{auths_saved} ({saved_pct:.1f}% vs. naive sweep)")
+    if result.auth_ms is not None:
+        # Where the BOARD spent the time (device mode): the same number of
+        # authentications, but the split between the authentication itself and
+        # the re-select that follows a failure.
+        _print_field("on-device auth time", f"{result.auth_ms} ms")
+        _print_field("on-device reselect time", f"{result.reselect_ms} ms")
+        if attempts:
+            _print_field(
+                "per auth",
+                f"{result.auth_ms / attempts:.0f} ms auth + "
+                f"{(result.reselect_ms or 0) / attempts:.0f} ms reselect",
+            )
+        if result.cached:
+            print_dim(
+                "the device reused its own sweep (it had already swept this "
+                "card on detection) — no authentication was repeated"
+            )
     if interrupted:
         _print_field("status", "[yellow]interrupted — partial results[/yellow]")
+    if result.partial:
+        _print_field(
+            "status",
+            "[yellow]partial — the device's sweep stopped before it covered "
+            "every sector[/yellow]",
+        )
 
     raise SystemExit(0 if recovered == total else 1)

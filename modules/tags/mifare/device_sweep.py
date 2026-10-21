@@ -79,6 +79,11 @@ class DeviceSweepResult:
     not recovered is `None` (a declared hole). `attempts`/`naive` are the
     device's own counters — `attempts` is the number of real authentications
     it issued, `naive` what a no-reuse sweep of the same universe would cost.
+
+    `trailer_reads` is how many trailer reads the device issued to recover a
+    Key B the dictionary did not find (the on-device twin of the host's
+    trailer-read pass). `None` means the flashed firmware does not report it
+    — an older build — and the host must then run its own pass.
     """
 
     keys: Dict[int, Tuple[Optional[str], Optional[str]]] = field(default_factory=dict)
@@ -86,6 +91,27 @@ class DeviceSweepResult:
     naive: int = 0
     recovered: int = 0
     total: int = 0
+    trailer_reads: Optional[int] = None
+    # Where the BOARD spent the wall-clock, in milliseconds (Fase 4, Sesión
+    # 11): `auth_ms` inside the Crypto-1 authentication, `reselect_ms` inside
+    # the re-select (a full reader re-arm + re-detection) and `trailer_ms` in
+    # the trailer-read pass. Only a firmware that reports them fills these in
+    # (None otherwise) — they are what tells the device sweep's cost apart
+    # from the host-driven one, which issues the same number of
+    # authentications.
+    auth_ms: Optional[int] = None
+    reselect_ms: Optional[int] = None
+    trailer_ms: Optional[int] = None
+    # True when the device answered from its own cached sweep (the
+    # on-detection auto-probe already swept this card with the same
+    # dictionary, so the device did NOT sweep it again — Fase 4, Sesión 11).
+    # None when the flashed firmware does not report it.
+    cached: Optional[bool] = None
+    # True when the device's sweep was INTERRUPTED before it covered every
+    # sector (the card left the field, or the re-selects gave up). The
+    # per-sector keys are then a PARTIAL result, and the caller has to say so
+    # instead of presenting them as the whole card.
+    aborted: Optional[bool] = None
 
     def recovered_count(self) -> int:
         """How many (sector, key type) slots actually carry a key — the same
@@ -94,6 +120,17 @@ class DeviceSweepResult:
             (1 if key_a else 0) + (1 if key_b else 0)
             for key_a, key_b in self.keys.values()
         )
+
+    def did_trailer_read(self) -> bool:
+        """True when the device ran the trailer-read pass itself, so the host
+        must NOT repeat it over USB."""
+        if self.aborted:
+            # The device's sweep was interrupted, so the trailer pass never
+            # ran: the host still has to do it for the sectors that did open
+            # (and `trailer=0` on an interrupted sweep means "not reached",
+            # not "nothing to recover").
+            return False
+        return self.trailer_reads is not None
 
 
 def _parse_key(token: str) -> Optional[str]:
@@ -129,6 +166,20 @@ def parse_device_sweep(data: Dict[str, str]) -> DeviceSweepResult:
             result.attempts = int(raw)
         elif name == "naive" and raw.isdigit():
             result.naive = int(raw)
+        elif name == "trailer" and raw.isdigit():
+            # Present only in firmware that runs the trailer-read pass itself
+            # (Fase 4, tarea 4.4). Its presence tells the host the device
+            # already recovered every Key B it could read back.
+            result.trailer_reads = int(raw)
+        elif name in ("auth_ms", "reselect_ms", "trailer_ms") and raw.isdigit():
+            setattr(result, name, int(raw))
+        elif name == "cached" and raw.isdigit():
+            # The device reused its own sweep instead of sweeping again.
+            result.cached = raw != "0"
+        elif name == "aborted" and raw.isdigit():
+            # The device's sweep was interrupted before it covered every
+            # sector: the keys it reports are a partial result.
+            result.aborted = raw != "0"
         elif name == "recovered" and "/" in raw:
             got, _, total = raw.partition("/")
             if got.isdigit():
@@ -138,16 +189,25 @@ def parse_device_sweep(data: Dict[str, str]) -> DeviceSweepResult:
     return result
 
 
-def build_device_command(sectors: int, keys: Optional[List[str]] = None) -> str:
+def build_device_command(
+    sectors: int, keys: Optional[List[str]] = None, fresh: bool = False
+) -> str:
     """The one REPL line that triggers the on-device sweep.
 
     `keys`, when given, REPLACES the device's dictionary for this run (the
     same semantics as the host's `--keys`); at most
     `DEVICE_SWEEP_MAX_KEYS` of them, comma-separated, 12 hex chars each.
+
+    `fresh` sweeps the card again even when the device still holds the
+    results of an earlier sweep — the way to get a new answer when that
+    earlier sweep was interrupted (the device answers from its cache, which
+    would repeat the interrupted result).
     """
     line = f"mifare check --sectors {int(sectors)}"
     if keys:
         line += " --keys " + ",".join(k.strip().upper() for k in keys)
+    if fresh:
+        line += " --fresh"
     return line
 
 
@@ -232,6 +292,7 @@ def run_device_sweep(
     tap_timeout: float = 15.0,
     reconnects: int = DEVICE_SWEEP_RECONNECTS,
     quiet: bool = False,
+    fresh: bool = False,
 ) -> DeviceSweepResult:
     """Run the sweep on the device and return its consolidated result.
 
@@ -251,7 +312,7 @@ def run_device_sweep(
     Raises `DeviceSweepUnsupported` when the flashed firmware has no
     `mifare check` command, and `DeviceSweepError` for any other refusal.
     """
-    line = build_device_command(sectors, keys)
+    line = build_device_command(sectors, keys, fresh)
     attempts_left = reconnects + 1
 
     while True:

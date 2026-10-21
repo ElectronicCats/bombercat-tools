@@ -322,7 +322,8 @@ Feed it a keyfile produced by [`mifare check --out`](#tags-mifare-check) (or han
 
 | Option | Description |
 |---|---|
-| `-k, --keys-file FILE` | **Required.** `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. |
+| `-k, --keys-file FILE` | `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. **Required for the host-driven dump** (`--mode host`, and `--mode auto` when a keyfile is given); not needed when the device dumps with the keys its own sweep recovered. |
+| `--mode auto\|device\|host` | Where the dump runs. `auto` (default) uses the **device's own dump** when no `--keys-file` is given — the board reads the card with the keys its sweep recovered, in **one round-trip** — and the host-driven dump otherwise; `device` forces the device dump; `host` forces the host-driven dump (one USB round-trip per sector). See [On-device dump](#tags-mifare-dump-on-device). |
 | `--sectors N` | Number of sectors to dump (default `16` = 1K). Max `32` (2K); 4K's 16-block sectors (32-39) aren't supported yet. |
 | `--out FILE` | Write the dump as canonical JSON — see format below. |
 | `--mfd FILE` | Write a raw binary dump (1024 bytes for 1K), Proxmark/mfoc `hf mf restore`-compatible. Gaps are filled with zeros. |
@@ -337,6 +338,7 @@ bombercat tags mifare dump -k recovered.keys --out card.json
 bombercat tags mifare dump -k recovered.keys --out card.json --mfd card.mfd --eml card.eml
 bombercat tags mifare dump -k recovered.keys --sectors 32 --json
 bombercat tags mifare dump -k recovered.keys --decode
+bombercat tags mifare dump --mode device --out card.json     # the board reads the card itself
 ```
 
 ```
@@ -400,6 +402,23 @@ Key A never reads back from the card (it's always zeros in the raw trailer), so 
 **`--mfd`/`--eml` are not canonical** — they can't tell "not read" from real zeros and can't carry the recovered keys, so a gap is silently zero-filled in both. Prefer `--out` when you need to know what was actually read, or to round-trip into [`mifare restore`](#tags-mifare-restore).
 
 Exit code is `0` only if every requested sector was read and the run wasn't interrupted — `1` for any gap or a Ctrl-C partial, in both table and `--json` mode (same convention as `check`).
+
+<a id="tags-mifare-dump-on-device"></a>
+**On-device dump (`--mode`).** The MifareClassic firmware can read the card and dump it **itself**: one `mifare dump` command returns every sector (`a :mifare_dump_sN <hex128|-> <A|B|-> [reason]` line per sector, plus the counters and the block 0 it read) instead of one `mifare sector` USB round-trip per sector. The board reads each sector with the key **its own sweep** recovered, and substitutes that key into the trailer exactly as the host-driven dump does — so both dumps carry the same bytes.
+
+| mode | when | keys used |
+|---|---|---|
+| `auto` (default) | the device, when no `--keys-file` is given | the keys the device's sweep recovered |
+| `auto` | the host, when a `--keys-file` is given | the keyfile |
+| `device` | the device, always | the keys the device's sweep recovered |
+| `host` | the host, always | the keyfile |
+
+The default splits on the keyfile on purpose: the device's key set is the one **its** sweep found, and a keyfile may hold keys that open sectors the device's sweep never opened — narrowing that silently would turn a readable sector into a false gap. With no keyfile there is nothing to narrow, so the device does the whole job in one round-trip. A firmware without `mifare dump` falls back to the host-driven dump in `auto` mode (with a note) and fails loudly in `device` mode.
+
+```sh
+bombercat tags mifare dump --mode device --out card.json   # the board reads the card
+bombercat tags mifare dump --mode host -k card.keys --out card.json
+```
 
 ---
 

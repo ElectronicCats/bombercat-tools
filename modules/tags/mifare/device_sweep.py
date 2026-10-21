@@ -58,6 +58,12 @@ DEVICE_SWEEP_RECONNECTS = 1
 _SECTOR_KEY_RE = re.compile(r"^mifare_check_s(\d+)$")
 _HEX_KEY_RE = re.compile(r"^[0-9A-F]{12}$")
 
+# The on-device dump (Fase 4, tarea 4.4): one line per sector with the 4
+# blocks as 128 hex chars (or "-" for a hole), the key type that opened it,
+# and - for a sector that could not be read - the reason.
+_DUMP_SECTOR_RE = re.compile(r"^mifare_dump_s(\d+)$")
+_HEX_SECTOR_RE = re.compile(r"^[0-9A-F]{128}$")
+
 # A key that wasn't recovered is reported as "-" (a hole), never as zeros or
 # blanks — the honest-gap rule of the wire format.
 _HOLE = "-"
@@ -345,4 +351,178 @@ def run_device_sweep(
         # as unsupported so the caller can fall back instead of reporting an
         # empty card as "every sector unknown".
         raise DeviceSweepUnsupported("the device answered without a sweep result")
+    return result
+
+
+# ── the on-device dump (Fase 4, tarea 4.4) ────────────────────────────────────
+#
+# `mifare dump` reads the sectors the sweep cracked, with the keys the sweep
+# found — ONE round-trip for the whole card instead of one per sector. The
+# firmware substitutes the recovered keys into the trailer (a card never reads
+# Key A back, and often not Key B either), exactly as the host's own dump
+# does, so both dumps carry the same bytes.
+
+# The firmware's wording when it has no sweep results to dump with.
+_NO_SWEEP_MARKER = "no sweep results"
+
+
+class DeviceDumpError(RuntimeError):
+    """The device refused or failed the on-device dump."""
+
+
+class DeviceDumpUnsupported(DeviceDumpError):
+    """The flashed firmware has no `mifare dump` command (an older build)."""
+
+
+class DeviceDumpNoSweep(DeviceDumpError):
+    """The device has no sweep results yet — it never swept this card.
+
+    Not a failure: the host can sweep first and dump afterwards, or fall back
+    to its own per-sector dump.
+    """
+
+
+@dataclass
+class DeviceDumpSector:
+    """One dumped sector: `data_hex` is the 4 blocks (128 hex chars) or None
+    for a hole; `key_type` is "A"/"B" (the key that opened it) or None;
+    `reason` says why a sector could not be read ("nokey", "readfail",
+    "removed") or is None when it was read."""
+
+    data_hex: Optional[str] = None
+    key_type: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@dataclass
+class DeviceDumpResult:
+    """What the device reported for the dump it just ran."""
+
+    sectors: Dict[int, DeviceDumpSector] = field(default_factory=dict)
+    read: int = 0
+    failed: int = 0
+    total: int = 0
+    # The raw block 0 the card returned (32 hex chars), plus the fields the
+    # firmware dissected out of it. The host re-parses the raw bytes with its
+    # own block0.py — the same dissection, so both agree.
+    card0: Optional[str] = None
+    card0_fields: Dict[str, str] = field(default_factory=dict)
+
+    def blocks_of(self, sector: int) -> Optional[List[str]]:
+        """The sector's 4 blocks (32 hex chars each), or None for a hole."""
+        entry = self.sectors.get(sector)
+        if entry is None or not entry.data_hex:
+            return None
+        return [entry.data_hex[i : i + 32] for i in range(0, len(entry.data_hex), 32)]
+
+
+def parse_device_dump(data: Dict[str, str]) -> DeviceDumpResult:
+    """Parse the device's dump reply into a `DeviceDumpResult`.
+
+    `data` is the `:key value` dict the link collected: one `mifare_dump_sN`
+    entry per sector, the `mifare_dump_stat` counters and the `mifare_card0`
+    line.
+    """
+    result = DeviceDumpResult()
+    for key, value in data.items():
+        match = _DUMP_SECTOR_RE.match(key)
+        if match:
+            parts = (value or "").split()
+            entry = DeviceDumpSector()
+            if parts and _HEX_SECTOR_RE.match(parts[0].strip().upper()):
+                entry.data_hex = parts[0].strip().upper()
+            if len(parts) > 1 and parts[1].upper() in ("A", "B"):
+                entry.key_type = parts[1].upper()
+            if len(parts) > 2 and parts[2]:
+                entry.reason = parts[2]
+            result.sectors[int(match.group(1))] = entry
+            continue
+        if key == "mifare_card0":
+            parts = (value or "").split()
+            if parts and len(parts[0]) == 32:
+                result.card0 = parts[0].upper()
+            for token in parts[1:]:
+                name, _, raw = token.partition("=")
+                if name:
+                    result.card0_fields[name] = raw
+            continue
+        if key == "mifare_dump_stat":
+            for token in (value or "").split():
+                name, _, raw = token.partition("=")
+                if name == "read" and raw.isdigit():
+                    result.read = int(raw)
+                elif name == "failed" and raw.isdigit():
+                    result.failed = int(raw)
+                elif name == "total" and raw.isdigit():
+                    result.total = int(raw)
+    return result
+
+
+def build_device_dump_command(sectors: int) -> str:
+    """The one REPL line that triggers the on-device dump."""
+    return f"mifare dump --sectors {int(sectors)}"
+
+
+def _classify_dump_error(message: str) -> DeviceDumpError:
+    """Map a firmware error message to the right exception.
+
+    "unknown mifare subcommand" is how the firmware rejects a verb it doesn't
+    know — i.e. the flashed build predates the on-device dump.
+    """
+    low = (message or "").lower()
+    if "unknown mifare subcommand" in low or "unknown command" in low:
+        return DeviceDumpUnsupported(
+            message or "the flashed firmware has no `mifare dump` command"
+        )
+    return DeviceDumpError(message or "the device dump failed")
+
+
+def run_device_dump(
+    link,
+    sectors: int,
+    timeout: float = DEVICE_SWEEP_TIMEOUT,
+    tap_timeout: float = 15.0,
+    reconnects: int = DEVICE_SWEEP_RECONNECTS,
+    quiet: bool = False,
+) -> DeviceDumpResult:
+    """Run the dump on the device and return its consolidated result.
+
+    ONE round-trip: the firmware reads every sector its sweep cracked and
+    answers with the per-sector lines, its counters and the block 0 it read.
+
+    Raises `DeviceDumpUnsupported` when the flashed firmware has no
+    `mifare dump` command, `DeviceDumpNoSweep` when it has no sweep results
+    to dump with, and `DeviceDumpError` for any other refusal.
+    """
+    line = build_device_dump_command(sectors)
+    attempts_left = reconnects + 1
+
+    while True:
+        try:
+            response = _request_sweep(link, line, timeout, tap_timeout, quiet)
+        except DeviceError as e:
+            if attempts_left <= 0 or not link_lost(str(e)):
+                raise DeviceDumpError(str(e)) from e
+            attempts_left -= 1
+            if not quiet:
+                print_warning(
+                    "the board disconnected during the dump (it rebooted?) — "
+                    "reconnecting and retrying..."
+                )
+            if not _reconnect(link):
+                raise DeviceDumpError(
+                    "the board disconnected during the dump and did not come "
+                    "back — re-plug it and run the command again"
+                ) from e
+            continue
+        if not response.ok:
+            message = (response.message or "").strip()
+            if _NO_SWEEP_MARKER in message.lower():
+                raise DeviceDumpNoSweep(message)
+            raise _classify_dump_error(message)
+        break
+
+    result = parse_device_dump(response.data)
+    if not result.sectors and not result.total:
+        raise DeviceDumpUnsupported("the device answered without a dump result")
     return result

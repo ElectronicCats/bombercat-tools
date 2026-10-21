@@ -32,11 +32,18 @@ from ...utils.detection_cli import (
 from ...utils.output import (
     console,
     make_tracer,
+    print_dim,
     print_error,
     print_info,
     print_warning,
 )
 from .block0 import parse_block0
+from .device_sweep import (
+    DeviceDumpError,
+    DeviceDumpNoSweep,
+    DeviceDumpUnsupported,
+    run_device_dump,
+)
 from .keyfile import SectorKeyfileError, load_sector_keys
 from .common import (
     _MIFARE_BLOCK_HEX_LEN,
@@ -75,16 +82,77 @@ def _dump_blocks_hex(
     return blocks
 
 
+def _dump_reason(entry) -> str:
+    """Why a sector could not be read, in the host's own wording.
+
+    The device reports short tokens ("nokey", "readfail", "removed"); the
+    host-driven dump says "no key available" for the same case. They are
+    translated here so the JSON is the same whichever side read the card.
+    """
+    reason = (entry.reason if entry else None) or "not read"
+    if reason == "nokey":
+        return "no key available"
+    return reason
+
+
+def _run_device_dump(link, sectors, timeout, as_json, mode):
+    """Run the on-device dump and return its result, or None when the host
+    must fall back to its own per-sector dump (only possible when a keyfile
+    is in hand)."""
+    if not as_json:
+        print_info(
+            "Dumping on the device — it reads the card with the keys its own "
+            "sweep recovered (one round-trip for the whole card)"
+        )
+    try:
+        return run_device_dump(
+            link,
+            sectors,
+            timeout=timeout,
+            tap_timeout=timeout,
+            quiet=as_json,
+        )
+    except DeviceDumpNoSweep:
+        if mode == "device":
+            print_error(
+                "the device has no sweep results for this card — run "
+                "`mifare check` first"
+            )
+            raise SystemExit(1)
+        print_dim(
+            "the device has no sweep results for this card — using the "
+            "host-driven dump"
+        )
+        return None
+    except DeviceDumpUnsupported as e:
+        if mode == "device":
+            print_error(
+                f"the flashed firmware has no on-device dump ({e}) — update the "
+                "firmware or use --mode host"
+            )
+            raise SystemExit(1)
+        print_dim(
+            "the device did not run the dump (older firmware?) — using the "
+            "host-driven dump"
+        )
+        return None
+    except DeviceDumpError as e:
+        print_error(f"device dump failed: {e}")
+        raise SystemExit(1)
+
+
 @click.command("dump")
 @click.option(
     "-k",
     "--keys-file",
     "keys_file",
-    required=True,
+    required=False,
     type=click.Path(exists=True, dir_okay=False),
     metavar="FILE",
     help="A `sector:keyA:keyB` file (see `mifare check --output-keys`). A "
-    "sector missing from it, or blank for both keys, is dumped as a gap.",
+    "sector missing from it, or blank for both keys, is dumped as a gap. "
+    "Required for the host-driven dump; not needed when the device dumps "
+    "with the keys its own sweep recovered.",
 )
 @click.option(
     "--sectors",
@@ -93,6 +161,18 @@ def _dump_blocks_hex(
     show_default=True,
     help=f"Number of sectors to dump (16 = 1K). Max {_MIFARE_CHECK_MAX_SECTORS} "
     "— 4K's 16-block sectors (32-39) aren't supported yet.",
+)
+@click.option(
+    "--mode",
+    "mode",
+    type=click.Choice(["auto", "device", "host"], case_sensitive=False),
+    default="auto",
+    show_default=True,
+    help="Where the dump runs. 'auto' (default) uses the device's own dump "
+    "when no --keys-file is given (the device reads the card with the keys "
+    "its sweep recovered, in ONE round-trip) and the host-driven dump "
+    "otherwise; 'device' forces the device dump; 'host' forces the "
+    "host-driven dump (one USB round-trip per sector).",
 )
 @click.option(
     "--out",
@@ -143,6 +223,7 @@ def mifare_dump_cmd(
     ctx,
     keys_file,
     sectors,
+    mode,
     out_file,
     mfd_file,
     eml_file,
@@ -168,14 +249,28 @@ def mifare_dump_cmd(
     if eml_file:
         _refuse_overwrite(eml_file, force)
 
-    try:
-        table = load_sector_keys(keys_file)
-    except OSError as e:
-        print_error(f"could not read {keys_file}: {e}")
+    mode = (mode or "auto").lower()
+    # The on-device dump uses the keys the DEVICE's sweep recovered, so it
+    # needs no keyfile. The host-driven dump needs one: it is the only place
+    # the keys come from.
+    use_device = mode == "device" or (mode == "auto" and not keys_file)
+    if mode == "host" and not keys_file:
+        print_error(
+            "the host-driven dump needs a `sector:keyA:keyB` file "
+            "(--keys-file, see `mifare check --output-keys`)"
+        )
         raise SystemExit(1)
-    except SectorKeyfileError as e:
-        print_error(str(e))
-        raise SystemExit(1)
+
+    table = {}
+    if keys_file:
+        try:
+            table = load_sector_keys(keys_file)
+        except OSError as e:
+            print_error(f"could not read {keys_file}: {e}")
+            raise SystemExit(1)
+        except SectorKeyfileError as e:
+            print_error(str(e))
+            raise SystemExit(1)
 
     level = _verbosity(ctx, verbose)
     sector_results: List[Dict[str, object]] = []
@@ -213,38 +308,92 @@ def mifare_dump_cmd(
                     if progress
                     else None
                 )
-                for s in range(sectors):
-                    key_a, key_b = table.get(s, (None, None))
-                    data_hex, used_kt, reason = _read_one_sector(
-                        link, s, key_a, key_b, timeout, first=first
+                if use_device:
+                    # ONE round-trip: the device reads the card with the keys
+                    # its sweep recovered and answers with every sector.
+                    dump_result = _run_device_dump(
+                        link, sectors, timeout, as_json, mode
                     )
-                    first = False
-                    if data_hex is not None:
-                        blocks = [
-                            data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
-                            for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
-                        ]
-                        shown_a, ac, shown_b = _substitute_trailer_keys(
-                            blocks[3], key_a, key_b
+                    if dump_result is None:
+                        # The device could not dump it (older firmware, or no
+                        # sweep results) — fall back to the host-driven dump.
+                        # Without a keyfile there are no keys to read with, so
+                        # say so instead of reporting an empty card.
+                        if not keys_file:
+                            print_error(
+                                "the device could not dump the card and no "
+                                "--keys-file was given — run `mifare check "
+                                "--output-keys keys.txt` first, or update the "
+                                "firmware"
+                            )
+                            raise SystemExit(1)
+                        use_device = False
+                if use_device:
+                    for s in range(sectors):
+                        entry = dump_result.sectors.get(s)
+                        blocks = dump_result.blocks_of(s)
+                        if blocks:
+                            sector_results.append(
+                                {
+                                    "sector": s,
+                                    "opened_with": entry.key_type or "A",
+                                    "blocks": blocks,
+                                }
+                            )
+                        else:
+                            failed.append(
+                                {
+                                    "sector": s,
+                                    "reason": _dump_reason(entry),
+                                }
+                            )
+                        if progress:
+                            progress.update(
+                                task,
+                                advance=1,
+                                sector=s,
+                                ok=len(sector_results),
+                                failed=len(failed),
+                            )
+                    # The block 0 the device read, dissected with the host's
+                    # own block0.py — the same rules the firmware applied.
+                    if dump_result.card0:
+                        b0 = parse_block0(dump_result.card0)
+                        if b0 is not None:
+                            uid = b0.uid
+                else:
+                    for s in range(sectors):
+                        key_a, key_b = table.get(s, (None, None))
+                        data_hex, used_kt, reason = _read_one_sector(
+                            link, s, key_a, key_b, timeout, first=first
                         )
-                        blocks[3] = f"{shown_a}{ac}{shown_b}"
-                        sector_results.append(
-                            {"sector": s, "opened_with": used_kt, "blocks": blocks}
-                        )
-                        if s == 0:
-                            b0 = parse_block0(blocks[0])
-                            if b0 is not None:
-                                uid = b0.uid
-                    else:
-                        failed.append({"sector": s, "reason": reason})
-                    if progress:
-                        progress.update(
-                            task,
-                            advance=1,
-                            sector=s,
-                            ok=len(sector_results),
-                            failed=len(failed),
-                        )
+                        first = False
+                        if data_hex is not None:
+                            blocks = [
+                                data_hex[i : i + _MIFARE_BLOCK_HEX_LEN]
+                                for i in range(0, len(data_hex), _MIFARE_BLOCK_HEX_LEN)
+                            ]
+                            shown_a, ac, shown_b = _substitute_trailer_keys(
+                                blocks[3], key_a, key_b
+                            )
+                            blocks[3] = f"{shown_a}{ac}{shown_b}"
+                            sector_results.append(
+                                {"sector": s, "opened_with": used_kt, "blocks": blocks}
+                            )
+                            if s == 0:
+                                b0 = parse_block0(blocks[0])
+                                if b0 is not None:
+                                    uid = b0.uid
+                        else:
+                            failed.append({"sector": s, "reason": reason})
+                        if progress:
+                            progress.update(
+                                task,
+                                advance=1,
+                                sector=s,
+                                ok=len(sector_results),
+                                failed=len(failed),
+                            )
         except KeyboardInterrupt:
             interrupted = True
 
@@ -257,7 +406,8 @@ def mifare_dump_cmd(
         "sectors_read": len(sector_results),
         "sectors_total": sectors,
         "read_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source_keyfile": keys_file,
+        # Where the keys came from: the keyfile, or the device's own sweep.
+        "source_keyfile": "device" if use_device else keys_file,
         "sectors": sector_results,
         "failed_sectors": failed,
     }

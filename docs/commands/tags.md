@@ -230,6 +230,19 @@ The serial log carries the same events (`:mifare_trigger short`, `:mifare_trigge
 
 > The trigger is polled from the firmware's main loop, which the dictionary sweep blocks while it runs (seconds to minutes, depending on the card). A press **during** a sweep is therefore only seen once the sweep ends — the button cannot interrupt the sweep it is waiting for.
 
+**The results the board keeps (standalone).** In standalone mode nobody is listening to the serial port, so the result of the read would simply be lost. The firmware therefore keeps the **last 8 results in its own flash** (`mifare results`, no card needed): one flash write per card, and the oldest result is the one that gets overwritten. Each result keeps its **holes** with their reason (`nokey`, `readfail`, `removed`) — a sector that was never opened is declared, never assumed safe.
+
+```sh
+bombercat tags mifare results                # the table: uid, sectors read, gaps, uptime
+bombercat tags mifare results --json         # the same, machine-readable
+bombercat tags mifare dump --last --out card.json   # fetch the newest stored result
+bombercat tags mifare analyze card.json              # ... and report on it, offline
+```
+
+`mifare dump --last` reads **no card**: the board hands back the result it stored, and the host rebuilds the very same canonical dump it would have got with the card on the reader — gaps included. The board has no real-time clock, so the result's timestamp is its own uptime ("how long after the boot the card was read"); the `read_at` field of the dump is the **host's** clock, i.e. when the result was collected.
+
+That closes the loop the plan asks for in task 4.6: a card read in the field gets the **same honest report** as one read with the PC attached, because the gap list survives the round-trip.
+
 ---
 
 <a id="tags-mifare-check"></a>
@@ -345,6 +358,8 @@ Feed it a keyfile produced by [`mifare check --out`](#tags-mifare-check) (or han
 | `-k, --keys-file FILE` | `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. **Required for the host-driven dump** (`--mode host`, and `--mode auto` when a keyfile is given); not needed when the device dumps with the keys its own sweep recovered. |
 | `--mode auto\|device\|host` | Where the dump runs. `auto` (default) uses the **device's own dump** when no `--keys-file` is given — the board reads the card with the keys its sweep recovered, in **one round-trip** — and the host-driven dump otherwise; `device` forces the device dump; `host` forces the host-driven dump (one USB round-trip per sector). See [On-device dump](#tags-mifare-dump-on-device). |
 | `--sectors N` | Number of sectors to dump (default `16` = 1K). Max `32` (2K); 4K's 16-block sectors (32-39) aren't supported yet. |
+| `--last` | Read **no card**: fetch the result the board stored while it worked on its own (standalone mode) and rebuild the canonical dump from it, gaps included. `--index N` picks which stored result (0 = the newest). See [the results the board keeps](#tags-mifare). |
+| `--index N` | Which stored result `--last` fetches (0 = the newest). Ignored without `--last`. |
 | `--out FILE` | Write the dump as canonical JSON — see format below. |
 | `--mfd FILE` | Write a raw binary dump (1024 bytes for 1K), Proxmark/mfoc `hf mf restore`-compatible. Gaps are filled with zeros. |
 | `--eml FILE` | Write a hex-per-line dump (32 chars/line), Proxmark `hf mf eload`-compatible. Gaps are filled with zeros. |
@@ -359,6 +374,7 @@ bombercat tags mifare dump -k recovered.keys --out card.json --mfd card.mfd --em
 bombercat tags mifare dump -k recovered.keys --sectors 32 --json
 bombercat tags mifare dump -k recovered.keys --decode
 bombercat tags mifare dump --mode device --out card.json     # the board reads the card itself
+bombercat tags mifare dump --last --out card.json            # fetch the result the board stored on its own
 ```
 
 ```

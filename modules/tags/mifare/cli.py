@@ -53,6 +53,7 @@ from .display import _sector_display_lines, _print_access_bits, _print_block0
 from .device_sweep import parse_device_trigger
 from .dump import mifare_dump_cmd
 from .restore import mifare_restore_cmd
+from .results import mifare_results_cmd
 from .session import (
     _MIFARE_KEY_TYPE_OPTION,
     _MIFARE_TIMEOUT_OPTION,
@@ -457,6 +458,7 @@ def mifare_trigger_cmd(ctx, as_json, verbose, port, device_id):
 # to know about the group.
 mifare.add_command(mifare_check_cmd)
 mifare.add_command(mifare_dump_cmd)
+mifare.add_command(mifare_results_cmd)
 mifare.add_command(mifare_analyze_cmd)
 mifare.add_command(mifare_restore_cmd)
 mifare.add_command(mifare_clone_uid_cmd)

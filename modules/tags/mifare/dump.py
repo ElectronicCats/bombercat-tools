@@ -38,6 +38,12 @@ from ...utils.output import (
     print_warning,
 )
 from .block0 import parse_block0
+from .device_results import (
+    DeviceResultsError,
+    DeviceResultsUnsupported,
+    DeviceStoredResult,
+    run_device_stored_result,
+)
 from .device_sweep import (
     DeviceDumpError,
     DeviceDumpNoSweep,
@@ -141,6 +147,24 @@ def _run_device_dump(link, sectors, timeout, as_json, mode):
         raise SystemExit(1)
 
 
+def _run_stored_result(link, index: int) -> DeviceStoredResult:
+    """Fetch a result the board stored while working on its own.
+
+    The board re-emits it in the live dump's format, so the canonical dump
+    the host rebuilds is the same one it would have got with the card on the
+    reader — gaps included."""
+    try:
+        return run_device_stored_result(link, index)
+    except DeviceResultsUnsupported as e:
+        print_error(
+            f"the flashed firmware does not keep results ({e}) — update the " "firmware"
+        )
+        raise SystemExit(1)
+    except DeviceResultsError as e:
+        print_error(f"the stored result could not be read: {e}")
+        raise SystemExit(1)
+
+
 @click.command("dump")
 @click.option(
     "-k",
@@ -173,6 +197,23 @@ def _run_device_dump(link, sectors, timeout, as_json, mode):
     "its sweep recovered, in ONE round-trip) and the host-driven dump "
     "otherwise; 'device' forces the device dump; 'host' forces the "
     "host-driven dump (one USB round-trip per sector).",
+)
+@click.option(
+    "--last",
+    "last",
+    is_flag=True,
+    help="Do not read a card: fetch the result the BOARD stored while it worked "
+    "on its own (standalone mode). The dump comes back with the gaps it had, "
+    "so it can be analyzed offline. --index picks which stored result "
+    "(0 = the newest).",
+)
+@click.option(
+    "--index",
+    "index",
+    type=click.IntRange(0, 7),
+    default=0,
+    show_default=True,
+    help="Which stored result to fetch with --last (0 = the newest).",
 )
 @click.option(
     "--out",
@@ -224,6 +265,8 @@ def mifare_dump_cmd(
     keys_file,
     sectors,
     mode,
+    last,
+    index,
     out_file,
     mfd_file,
     eml_file,
@@ -241,6 +284,9 @@ def mifare_dump_cmd(
     card in a single batch pass. A sector with no usable key, or whose read
     fails, is recorded as a gap in `failed_sectors` — it never aborts the
     rest of the card. Ctrl-C dumps whatever was read so far.
+
+    With --last no card is read at all: the result the board stored while it
+    worked on its own (standalone mode) is fetched instead, gaps included.
     """
     if out_file:
         _refuse_overwrite(out_file, force)
@@ -250,6 +296,16 @@ def mifare_dump_cmd(
         _refuse_overwrite(eml_file, force)
 
     mode = (mode or "auto").lower()
+    if last and keys_file:
+        print_error(
+            "--last fetches a stored result; it cannot be combined with --keys-file"
+        )
+        raise SystemExit(1)
+    if last and mode == "host":
+        print_error(
+            "--last fetches a stored result; it cannot be combined with --mode host"
+        )
+        raise SystemExit(1)
     # The on-device dump uses the keys the DEVICE's sweep recovered, so it
     # needs no keyfile. The host-driven dump needs one: it is the only place
     # the keys come from.
@@ -277,13 +333,17 @@ def mifare_dump_cmd(
     failed: List[Dict[str, object]] = []
     interrupted = False
     uid: Optional[str] = None
+    stored_meta = None
 
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
         if not as_json:
-            print_info(
-                f"Dumping {target} — {sectors} sector(s) — Ctrl-C for partial "
-                "results"
-            )
+            if last:
+                print_info(f"Fetching the result the board stored @ {target}")
+            else:
+                print_info(
+                    f"Dumping {target} — {sectors} sector(s) — Ctrl-C for partial "
+                    "results"
+                )
         progress = (
             None
             if as_json
@@ -308,7 +368,18 @@ def mifare_dump_cmd(
                     if progress
                     else None
                 )
-                if use_device:
+                dump_result = None
+                if last:
+                    # No card is read: the board hands back the result it
+                    # stored while it worked on its own, holes included.
+                    stored = _run_stored_result(link, index)
+                    dump_result = stored.dump
+                    stored_meta = stored.meta
+                    if dump_result.total:
+                        sectors = dump_result.total
+                        if progress and task is not None:
+                            progress.update(task, total=sectors)
+                elif use_device:
                     # ONE round-trip: the device reads the card with the keys
                     # its sweep recovered and answers with every sector.
                     dump_result = _run_device_dump(
@@ -328,7 +399,7 @@ def mifare_dump_cmd(
                             )
                             raise SystemExit(1)
                         use_device = False
-                if use_device:
+                if dump_result is not None:
                     for s in range(sectors):
                         entry = dump_result.sectors.get(s)
                         blocks = dump_result.blocks_of(s)
@@ -361,6 +432,11 @@ def mifare_dump_cmd(
                         b0 = parse_block0(dump_result.card0)
                         if b0 is not None:
                             uid = b0.uid
+                    elif stored_meta is not None and stored_meta.uid:
+                        # A stored result whose block 0 was never read: the
+                        # UID the board reported at the time is still worth
+                        # keeping (it is what identifies the card).
+                        uid = stored_meta.uid
                 else:
                     for s in range(sectors):
                         key_a, key_b = table.get(s, (None, None))
@@ -407,10 +483,18 @@ def mifare_dump_cmd(
         "sectors_total": sectors,
         "read_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         # Where the keys came from: the keyfile, or the device's own sweep.
-        "source_keyfile": "device" if use_device else keys_file,
+        "source_keyfile": (
+            "device-standalone" if last else ("device" if use_device else keys_file)
+        ),
         "sectors": sector_results,
         "failed_sectors": failed,
     }
+    if stored_meta is not None:
+        # The board has no real-time clock: its timestamp is its own uptime
+        # (how long after the boot the card was read). The "read_at" above is
+        # the HOST's clock, i.e. when the result was collected.
+        dump["device_uptime_s"] = round(stored_meta.uptime_s, 3)
+        dump["device_seq"] = stored_meta.seq
 
     if out_file:
         try:
@@ -473,6 +557,11 @@ def mifare_dump_cmd(
         f"{len(sector_results)}/{sectors} sectors read"
         + (f" — uid {uid}" if uid else "")
     )
+    if last and stored_meta is not None:
+        print_info(
+            f"stored result #{stored_meta.index} (seq {stored_meta.seq}, read "
+            f"{stored_meta.uptime_s:.1f}s after the board booted)"
+        )
     if interrupted:
         print_warning("dump incomplete — interrupted before finishing")
 

@@ -31,6 +31,7 @@ from .device_results import (
     DeviceResultsError,
     DeviceResultsUnsupported,
     run_device_results,
+    run_device_results_clear,
 )
 from .session import _mifare_session
 
@@ -42,9 +43,15 @@ from .session import _mifare_session
     is_flag=True,
     help="Emit the listing as one JSON object.",
 )
+@click.option(
+    "--clear",
+    "clear",
+    is_flag=True,
+    help="Erase every stored result instead of listing them.",
+)
 @device_options
 @click.pass_context
-def mifare_results_cmd(ctx, as_json, verbose, port, device_id):
+def mifare_results_cmd(ctx, as_json, clear, verbose, port, device_id):
     """List the results the board stored while working on its own. No card needed.
 
     In standalone mode the board reads a card by itself — sweep, dump, emit —
@@ -56,9 +63,29 @@ def mifare_results_cmd(ctx, as_json, verbose, port, device_id):
     gaps are declared, never assumed safe). The board has no real-time
     clock, so the timestamp is its own uptime: "how long after the boot the
     card was read".
+
+    Pass --clear to wipe the stored results from the board's flash once they
+    have been collected.
     """
     level = _verbosity(ctx, verbose)
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if clear:
+            try:
+                run_device_results_clear(link)
+            except DeviceResultsUnsupported as e:
+                print_error(
+                    f"the flashed firmware does not keep results ({e}) — update "
+                    "the firmware"
+                )
+                raise SystemExit(1)
+            except DeviceResultsError as e:
+                print_error(f"clearing results failed: {e}")
+                raise SystemExit(1)
+            if as_json:
+                print(json.dumps({"cleared": True}))
+            else:
+                print_success(f"stored results erased @ {target}")
+            return
         try:
             results = run_device_results(link)
         except DeviceResultsUnsupported as e:

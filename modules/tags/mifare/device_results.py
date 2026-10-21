@@ -208,6 +208,21 @@ def run_device_results(link, timeout: float = 30.0) -> DeviceResults:
     return parse_device_results(response.data)
 
 
+def run_device_results_clear(link, timeout: float = 30.0) -> None:
+    """Erase every result the board stored on its own.
+
+    Raises `DeviceResultsUnsupported` when the flashed firmware has no
+    `mifare results` command, and `DeviceResultsError` for any other refusal
+    (e.g. the flash write failed).
+    """
+    try:
+        response = link.command("mifare results clear", read_timeout=timeout)
+    except DeviceError as e:
+        raise DeviceResultsError(str(e)) from e
+    if not response.ok:
+        raise _classify_error((response.message or "").strip())
+
+
 def run_device_stored_result(
     link, index: int = 0, timeout: float = 60.0
 ) -> DeviceStoredResult:

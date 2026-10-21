@@ -32,6 +32,7 @@ from modules.tags.mifare.device_results import (
     DeviceResultsUnsupported,
     parse_device_results,
     run_device_results,
+    run_device_results_clear,
     run_device_stored_result,
 )
 from modules.tags.mifare.dump import mifare_dump_cmd
@@ -59,6 +60,10 @@ class ResultsLink(FakeLink):
 
     def command(self, line: str, read_timeout=None) -> Response:
         stripped = line.strip()
+        if stripped == "mifare results clear":
+            self.sent.append(stripped)
+            self.listing = {"mifare_results_stat": "slots=8 used=0 seq=0"}
+            return ok(message="results cleared")
         if stripped.startswith("mifare results show"):
             self.sent.append(stripped)
             if not self.stored:
@@ -204,6 +209,28 @@ def test_a_missing_stored_result_says_so():
         run_device_stored_result(link)
 
 
+def test_clear_asks_the_board_to_erase():
+    link = ResultsLink(listing=_listing())
+    run_device_results_clear(link)
+    assert "mifare results clear" in link.sent
+
+
+def test_clear_on_an_old_firmware_is_unsupported():
+    link = FakeLink(
+        responses={"mifare results clear": err("unknown mifare subcommand")}
+    )
+    with pytest.raises(DeviceResultsUnsupported):
+        run_device_results_clear(link)
+
+
+def test_clear_reports_a_flash_failure():
+    link = FakeLink(
+        responses={"mifare results clear": err("could not erase the stored results")}
+    )
+    with pytest.raises(DeviceResultsError):
+        run_device_results_clear(link)
+
+
 # ── the CLI ──────────────────────────────────────────────────────────────────
 
 
@@ -236,6 +263,21 @@ def test_the_results_command_emits_json(runner, use_link):
     assert doc["used"] == 1
     assert doc["results"][0]["uid"] == "AABBCCDD"
     assert doc["results"][0]["failed"] == 1
+
+
+def test_the_results_command_clears_the_board(runner, use_link):
+    link = use_link(mifare_session, ResultsLink(listing=_listing()))
+    result = runner.invoke(mifare_results_cmd, ["--clear"])
+    assert result.exit_code == 0
+    assert "mifare results clear" in link.sent
+    assert "erased" in flat(result.stdout)
+
+
+def test_the_results_command_clear_emits_json(runner, use_link):
+    use_link(mifare_session, ResultsLink(listing=_listing()))
+    result = runner.invoke(mifare_results_cmd, ["--clear", "--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"cleared": True}
 
 
 def test_the_results_command_refuses_an_old_firmware(runner, use_link):

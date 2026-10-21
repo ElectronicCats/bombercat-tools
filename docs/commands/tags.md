@@ -243,6 +243,7 @@ bombercat tags mifare results                # the table: uid, sectors read, gap
 bombercat tags mifare results --json         # the same, machine-readable
 bombercat tags mifare dump --last --out card.json   # fetch the newest stored result
 bombercat tags mifare analyze card.json              # ... and report on it, offline
+bombercat tags mifare results --clear        # wipe the stored results once collected
 ```
 
 `mifare dump --last` reads **no card**: the board hands back the result it stored, and the host rebuilds the very same canonical dump it would have got with the card on the reader — gaps included. The board has no real-time clock, so the result's timestamp is its own uptime ("how long after the boot the card was read"); the `read_at` field of the dump is the **host's** clock, i.e. when the result was collected.

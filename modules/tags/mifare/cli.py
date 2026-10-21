@@ -256,12 +256,23 @@ def mifare_sector_cmd(
         _print_block0(b0)
 
 
-@mifare.command("keys")
+@mifare.group("keys", invoke_without_command=True, no_args_is_help=False)
 @click.option("--json", "as_json", is_flag=True, help="Emit one JSON object per key.")
 @device_options
 @click.pass_context
 def mifare_keys_cmd(ctx, as_json, verbose, port, device_id):
-    """List the firmware's built-in default keys. No card needed."""
+    """List the keys the sweep will try, or manage the persistent key-store.
+
+    With no sub-command this lists every key `mifare check` tries: the
+    firmware's compiled-in defaults (indices 0..2, not removable) plus any
+    custom keys stored in the board's flash (index 3+). The sub-commands
+    (add/remove/clear/autostore) manage the stored ones, which survive a
+    reset and feed both the sweep and the auto-probe. No card needed.
+    """
+    # The group runs its callback before any sub-command; only the bare
+    # `mifare keys` invocation should list.
+    if ctx.invoked_subcommand is not None:
+        return
     level = _verbosity(ctx, verbose)
     with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
         r = link.command("mifare keys")
@@ -285,14 +296,104 @@ def mifare_keys_cmd(ctx, as_json, verbose, port, device_id):
     if not keys:
         print_dim("no keys reported")
         return
-    table = Table(
-        title=f"MifareClassic default keys @ {target}", header_style="cyan bold"
-    )
+    table = Table(title=f"MifareClassic keys @ {target}", header_style="cyan bold")
     table.add_column("name", style="cyan")
     table.add_column("key")
     for name, hex_value in keys:
         table.add_row(name, hex_value)
     console.print(table)
+
+
+@mifare_keys_cmd.command("add")
+@click.argument("key", metavar="HEX12")
+@device_options
+@click.pass_context
+def mifare_keys_add_cmd(ctx, key, verbose, port, device_id):
+    """Store a custom KEY (6 bytes, 12 hex) in the board's flash.
+
+    The key survives a reset and is tried before the built-in dictionary
+    (custom-first). A key already in the dictionary or already stored is
+    rejected. No card needed.
+    """
+    err = _mifare_validate_hex(key, _MIFARE_KEY_HEX_LEN, "KEY")
+    if err:
+        print_error(err)
+        raise SystemExit(1)
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command(f"mifare keys add {key.upper()}")
+    if not r.ok:
+        print_error(f"add failed: {r.message}")
+        raise SystemExit(1)
+    print_success(r.message or f"added {key.upper()}")
+
+
+@mifare_keys_cmd.command("remove")
+@click.argument("target", metavar="HEX12|INDEX")
+@device_options
+@click.pass_context
+def mifare_keys_remove_cmd(ctx, target, verbose, port, device_id):
+    """Drop a stored key, by its 12-hex value or its index in `mifare keys`.
+
+    Indices 0..2 are the compiled-in defaults and cannot be removed; 3+ are
+    the stored keys. No card needed.
+    """
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (
+        target_name,
+        link,
+    ):
+        r = link.command(f"mifare keys remove {target.upper()}")
+    if not r.ok:
+        print_error(f"remove failed: {r.message}")
+        raise SystemExit(1)
+    print_success(r.message or f"removed {target}")
+
+
+@mifare_keys_cmd.command("clear")
+@device_options
+@click.pass_context
+def mifare_keys_clear_cmd(ctx, verbose, port, device_id):
+    """Drop every stored custom key (the compiled-in defaults stay). No card needed."""
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        r = link.command("mifare keys clear")
+    if not r.ok:
+        print_error(f"clear failed: {r.message}")
+        raise SystemExit(1)
+    print_success(r.message or "key store cleared")
+
+
+@mifare_keys_cmd.command("autostore")
+@click.argument("state", required=False, type=click.Choice(["on", "off"]))
+@click.option("--json", "as_json", is_flag=True, help="Emit one JSON object.")
+@device_options
+@click.pass_context
+def mifare_keys_autostore_cmd(ctx, state, as_json, verbose, port, device_id):
+    """Show or set auto-persist of recovered keys. Off by default. No card needed.
+
+    With it ON, a sweep stores the custom keys it confirmed (the ones NOT
+    already covered by a dictionary) in the board's flash — at most one write
+    per sweep — so a standalone board builds up its own key pool between
+    cards. It does NOT change how a sweep cracks a card, only what it keeps
+    afterwards. With no argument this shows the current setting.
+    """
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        command = "mifare keys autostore"
+        if state:
+            command += f" {state}"
+        r = link.command(command)
+    if not r.ok:
+        print_error(f"autostore failed: {r.message}")
+        raise SystemExit(1)
+    current = (r.message or "").strip()
+    if current.startswith("autostore "):
+        current = current[len("autostore ") :].strip()
+    if as_json:
+        print(json.dumps({"autostore": current}))
+        return
+    print_success(f"autostore @ {target}: {current}")
 
 
 @mifare.command("timing")

@@ -16,7 +16,11 @@ from modules.tags.mifare import session as mifare_session
 from modules.tags.mifare.check import mifare_check_cmd
 from modules.tags.mifare.cli import (
     mifare_auth_cmd,
+    mifare_keys_add_cmd,
+    mifare_keys_autostore_cmd,
+    mifare_keys_clear_cmd,
     mifare_keys_cmd,
+    mifare_keys_remove_cmd,
     mifare_read_cmd,
     mifare_sector_cmd,
     mifare_write_cmd,
@@ -227,6 +231,87 @@ def test_mifare_keys_json_emits_one_object_per_key(runner, use_link):
         {"name": "default_00", "key": "000000000000"},
         {"name": "default_a0a1a2", "key": "A0A1A2A3A4A5"},
     ]
+
+
+def test_mifare_keys_add_stores_a_custom_key(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys add AABBCCDDEEFF": ok("added AABBCCDDEEFF")}),
+    )
+    result = runner.invoke(mifare_keys_add_cmd, ["aabbccddeeff"])
+    assert result.exit_code == 0
+    assert "mifare keys add AABBCCDDEEFF" in link.sent
+    assert "added AABBCCDDEEFF" in flat(result.stdout)
+
+
+def test_mifare_keys_add_rejects_a_malformed_key(runner, use_link):
+    link = use_link(mifare_session, FakeLink())
+    result = runner.invoke(mifare_keys_add_cmd, ["ZZ"])
+    assert result.exit_code == 1
+    # Caught locally: nothing was sent to the board.
+    assert not any(line.startswith("mifare keys add") for line in link.sent)
+
+
+def test_mifare_keys_add_surfaces_a_firmware_refusal(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(
+            responses={
+                "mifare keys add FFFFFFFFFFFF": err(
+                    "key is already in the built-in dictionary"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifare_keys_add_cmd, ["FFFFFFFFFFFF"])
+    assert result.exit_code == 1
+    assert "already in the built-in dictionary" in flat(result.output)
+
+
+def test_mifare_keys_remove_by_index(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys remove 3": ok("removed AABBCCDDEEFF")}),
+    )
+    result = runner.invoke(mifare_keys_remove_cmd, ["3"])
+    assert result.exit_code == 0
+    assert "mifare keys remove 3" in link.sent
+
+
+def test_mifare_keys_clear_empties_the_store(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys clear": ok("key store cleared")}),
+    )
+    result = runner.invoke(mifare_keys_clear_cmd, [])
+    assert result.exit_code == 0
+    assert "mifare keys clear" in link.sent
+    assert "cleared" in flat(result.stdout)
+
+
+def test_mifare_keys_autostore_sets_the_flag(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys autostore on": ok("autostore on")}),
+    )
+    result = runner.invoke(mifare_keys_autostore_cmd, ["on"])
+    assert result.exit_code == 0
+    assert "mifare keys autostore on" in link.sent
+    assert "on" in flat(result.stdout)
+
+
+def test_mifare_keys_autostore_query_and_json(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys autostore": ok("autostore off")}),
+    )
+    result = runner.invoke(mifare_keys_autostore_cmd, ["--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"autostore": "off"}
+
+
+def test_mifare_keys_exposes_its_subcommands():
+    assert set(mifare_keys_cmd.commands) == {"add", "remove", "clear", "autostore"}
 
 
 def test_mifare_reports_a_board_that_will_not_handshake(runner, use_link):

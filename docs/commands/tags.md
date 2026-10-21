@@ -196,7 +196,11 @@ A published (pre-FW-1) image, still on legacy text:
 Tap a Mifare Classic card to let the firmware select it — `auth`, `read`, `write`, `sector`, `check`, `dump`, `restore` and `write-text` all wait for this automatically (default 5s, `-t/--timeout` to change it — `write-text` defaults to `15`) if no card is selected yet. The card then stays selected for ~10s of inactivity between commands before the firmware closes the session and re-arms discovery.
 
 ```sh
-bombercat tags mifare keys                                            # list built-in default keys, no card needed
+bombercat tags mifare keys                                            # list the keys the sweep tries (defaults + stored), no card needed
+bombercat tags mifare keys add A0A1A2A3A4A5                           # persist a custom key in the board's flash
+bombercat tags mifare keys remove 3                                   # drop a stored key by index (0..2 are defaults) or by its 12-hex value
+bombercat tags mifare keys clear                                      # drop every stored custom key
+bombercat tags mifare keys autostore on                              # after a sweep, auto-persist the custom keys it confirmed (off by default)
 bombercat tags mifare standalone --on                                 # the board runs the whole workflow by itself, no card needed
 bombercat tags mifare auth --block 4 --key-type A --key FFFFFFFFFFFF  # authenticate a sector
 bombercat tags mifare read --block 4                                  # read a block from the authenticated sector
@@ -208,7 +212,9 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 
 `auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call. `sector` also accepts `-k, --keys-file FILE` instead of `--key`/`--key-type` — a `sector:keyA:keyB` file from `mifare check --output-keys` (tries key A, falls back to key B, and shows the real keys in the trailer line instead of the zeros the card reads back).
 
-**Standalone mode** (`mifare standalone [--on|--off]`, no card needed) makes the board finish the job **by itself** when it detects a card: the dictionary sweep, then the dump of the sectors it cracked, then everything emitted over the serial port — so the board can be used in the field with no PC attached. The setting lives in the board's flash and survives a reset; the keys it uses are the ones in its key-store (`mifare keys`, persisted) plus its embedded default dictionary.
+**Standalone mode** (`mifare standalone [--on|--off]`, no card needed) makes the board finish the job **by itself** when it detects a card: the dictionary sweep, then the dump of the sectors it cracked, then everything emitted over the serial port — so the board can be used in the field with no PC attached. The setting lives in the board's flash and survives a reset; the keys it uses are the ones in its key-store (`mifare keys add/remove/clear`, persisted) plus its embedded default dictionary.
+
+**The key-store** (`mifare keys …`, no card needed) is the set of custom keys the board keeps in its own flash, tried **before** the built-in dictionary (custom-first) by both the sweep and the auto-probe. `mifare keys` lists everything (defaults at indices 0..2, stored keys at 3+); `add <hex12>` persists one (rejected if it is already a default or already stored); `remove <hex12|index>` and `clear` drop them; `autostore on|off` (**off by default**) makes a sweep auto-persist the custom keys it confirmed — the ones not already covered by a dictionary — at most one flash write per sweep. Autostore only changes what a sweep *keeps*, never how it cracks a card.
 
 **The field trigger (the button).** The BomberCat board has two push buttons: **SW1** is the board's *reset* (the RP2040's RUN pin — pressing it reboots the board), and **SW2** (labelled *GPIO* on the board) is the **user button**: RP2040 **GPIO17 = Arduino D5**, active LOW. It is the same button the MagSpoof sketch triggers with. It speaks two gestures:
 

@@ -285,6 +285,58 @@ Exit code: `0` scanned, `1` no card / scan failure / link error.
 
 ---
 
+<a id="emvy-probe-card"></a>
+### `emvy probe-card`
+
+> Probe a live card with the minimal terminal flow a real payment terminal runs — SELECT PPSE → SELECT AID → GPO → READ RECORD — printing each command APDU and its raw response. **Read-only.**
+
+| Option | Description |
+|---|---|
+| `--amount CENTS` | Transaction amount in cents, fed to the PDOL as tag `9F02` (default `0`). |
+| `--country HEX` | Terminal country code (hex BCD, e.g. `0484`), fed to the PDOL as `9F1A` (default `0484`). |
+| `--currency HEX` | Transaction currency code (hex BCD), fed to the PDOL as `5F2A` (default: the `--country` value). |
+| `-w`, `--wait S` | Seconds to wait for the card (default `60`). |
+
+```sh
+bombercat emvy probe-card
+bombercat emvy probe-card --amount 199 --country 0484
+```
+
+```
+ℹ Waiting for a card on /dev/ttyACM0 (up to 60s)...
+>> SELECT PPSE  00A404000E325041592E5359532E444446303100
+<< SELECT PPSE  6F1A840E325041592E5359532E4444463031...9000
+>> SELECT AID   00A4040007A000000003101000
+<< SELECT AID   6F3E8407A0000000031010A533...9000
+>> GPO          80A8000023832100000000000199...00
+<< GPO          77...9000
+>> RECORD sfi=1 00B2010C00
+<< RECORD sfi=1 70...9000
+probe-card @ /dev/ttyACM0
+
+  AID           A0000000031010
+  PDOL          9F66049F02069F03069F1A0295055F2A029A039C019F3704
+  GPO           77...9000
+  AIP           1980
+  AFL           08010100
+ℹ raw responses above — the output can contain the real PAN
+```
+
+Present the card once the command starts. Unlike a fixed-APDU scan, `probe-card` builds the **GPO command body from the PDOL the card itself announces** (tag `9F38` in the SELECT AID response): every requested tag gets a sensible default (TTQ, amount, country, currency, date, an unpredictable number, …), truncated or zero-padded to the length the card asked for. This is what makes a real card actually answer the GPO instead of declining it. It then reads every record named in the AFL (`94`) the GPO returns.
+
+It drives the same edge-triggered `WAIT → APDU: → RELEASE` passthrough as [`emvy apdu`](#emvy-apdu), so `RELEASE` **always** fires on exit (including Ctrl-C) and the card is never left engaged. **READ ONLY:** nothing is written to the card or stored — but the record output can contain the **real PAN**, so don't share it as-is. It's meant as a quick look at what a real card answers, e.g. to tune [`emvy emu card`](#emvy-emu-card).
+
+A declined GPO (e.g. `SW 6985` — the card won't cooperate with this PDOL/context) still exits `0`, with the status word reported:
+
+```
+⚠ the GPO was declined with SW 6985 (e.g. 6985 = the card does not cooperate
+  with this PDOL/context)
+```
+
+Exit code: `0` probed (a declined GPO still counts), `1` no card / link error / SELECT AID declined.
+
+---
+
 <a id="emvy-emu"></a>
 ## `emvy emu`
 
@@ -334,10 +386,11 @@ Present the tag to a reader once the command starts. Each `EMU:*` event is decod
 | `--pan` | PAN to serve in the record (hex BCD). |
 | `--exp` | Expiry to serve in the record (hex, `YYMMDD`). |
 | `--track2` | Track 2 to serve in the record (hex). |
+| `--cid {40,80,00}` | Cryptogram decision the emulated card returns (tag `9F27`), default `80`: `40` = TC (approve offline, sale completes), `80` = ARQC (terminal tries to go online), `00` = AAC (declined). |
 | `--raw` | Print every raw `EMU:*` line, unparsed. |
 | `-t`, `--timeout` | Seconds to bound the whole stream (default: `EMU:DONE`/Ctrl-C/180s auto-stop). |
 
-`--from-ram` and the `--aid`/`--pan`/`--exp`/`--track2` field set are mutually exclusive. With no options, a canned test Visa is served.
+`--from-ram` and the `--aid`/`--pan`/`--exp`/`--track2` field set are mutually exclusive. With no options, a canned test Visa is served. `--cid` combines with any of them.
 
 ```sh
 # Canned test Visa
@@ -362,6 +415,8 @@ EMU:RX 80A8000002830000                             # GET PROCESSING OPTIONS
 ```
 
 Present the emulated card to a terminal once the command starts. Terminal APDUs are decoded live (`SELECT-PPSE`/`SELECT-AID`/`GPO`/`READ-RECORD`/`GENERATE-AC`). **This is not a working card** — it never returns a valid cryptogram; the point is to profile or fuzz a terminal by seeing exactly what it asks for. Each hex field is validated before the session opens (empty = firmware default).
+
+`--cid` picks the decision the emulated card makes in GENERATE AC: a **TC** (`40`) or **AAC** (`00`) ends the sale without a valid cryptogram (approved offline / declined), while the default **ARQC** (`80`) asks the terminal to go online. It rides as a 5th `EMUEMV` field — CID-aware firmware honors it, older firmware ignores the extra field and always requests an ARQC.
 
 ---
 

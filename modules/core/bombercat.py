@@ -41,11 +41,18 @@ _READY_BANNER = "+OK bombercat ready"
 
 @dataclass
 class Response:
-    """One command's reply. `data` holds the `:key value` lines by key."""
+    """One command's reply. `data` holds the `:key value` lines by key.
+
+    `data_lines` keeps those same lines (as `"key value"`) in arrival order,
+    for replies where one key repeats across records and the dict would
+    clobber it — e.g. `mifare results show all`, which concatenates several
+    dumps whose `:mifare_dump_sN` keys collide. Most callers only need `data`.
+    """
 
     ok: bool
     message: str = ""
     data: Dict[str, str] = field(default_factory=dict)
+    data_lines: List[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return self.ok
@@ -188,6 +195,7 @@ class DeviceLink:
             raise DeviceError(f"serial error sending {line!r}: {e}")
 
         data: Dict[str, str] = {}
+        data_lines: List[str] = []
         while time.monotonic() < deadline:
             try:
                 raw = self._ser.readline(_MAX_LINE_BYTES)
@@ -206,14 +214,15 @@ class DeviceLink:
             if marker == ":":
                 key, _, value = text[1:].partition(" ")
                 data[key] = value
+                data_lines.append(text[1:])
             elif marker == "+":  # +OK [message]
                 if text == _READY_BANNER:
                     continue  # the boot banner, not this command's reply
                 _, _, msg = text.partition(" ")
-                return Response(ok=True, message=msg, data=data)
+                return Response(ok=True, message=msg, data=data, data_lines=data_lines)
             elif marker == "-":  # -ERR message
                 _, _, msg = text.partition(" ")
-                return Response(ok=False, message=msg, data=data)
+                return Response(ok=False, message=msg, data=data, data_lines=data_lines)
             # else: log noise, ignore
         raise DeviceError(f"timed out waiting for a reply to {line!r}")
 

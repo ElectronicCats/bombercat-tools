@@ -32,24 +32,26 @@ from modules.tags.mifare.block0 import parse_block0
 
 import mifare_card as mc
 
-# Where the firmware's twin modules live. By default: the sibling checkout
-# (../bombercat-firmware/MifareClassic). A CI job that checks out both repos
-# can point at it with BOMBERCAT_FIRMWARE_DIR.
-FIRMWARE_DIR = Path(
+# Where the firmware's twin modules live. They are shared BomberCatCore
+# modules now (core/src), not files of the MifareClassic sketch: they are
+# reusable primitives, so they belong to the library. By default: the sibling
+# checkout (../bombercat-firmware/core/src). A CI job that checks out both
+# repos can point at it with BOMBERCAT_CORE_DIR.
+CORE_SRC = Path(
     os.environ.get(
-        "BOMBERCAT_FIRMWARE_DIR",
+        "BOMBERCAT_CORE_DIR",
         str(
-            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "MifareClassic"
+            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "core" / "src"
         ),
     )
 )
 HARNESS = Path(__file__).parent / "parity" / "mifare_parity.cpp"
 
 pytestmark = pytest.mark.skipif(
-    not (FIRMWARE_DIR / "MifareAccessBits.cpp").exists()
-    or not (FIRMWARE_DIR / "MifareBlock0.cpp").exists()
+    not (CORE_SRC / "MifareAccessBits.cpp").exists()
+    or not (CORE_SRC / "MifareBlock0.cpp").exists()
     or not HARNESS.exists(),
-    reason="the MifareClassic firmware sources are not next to the tools checkout",
+    reason="the BomberCatCore sources are not next to the tools checkout",
 )
 
 
@@ -64,9 +66,9 @@ def harness(tmp_path_factory):
         "-std=c++17",
         "-O1",
         "-I",
-        str(FIRMWARE_DIR),
-        str(FIRMWARE_DIR / "MifareAccessBits.cpp"),
-        str(FIRMWARE_DIR / "MifareBlock0.cpp"),
+        str(CORE_SRC),
+        str(CORE_SRC / "MifareAccessBits.cpp"),
+        str(CORE_SRC / "MifareBlock0.cpp"),
         str(HARNESS),
         "-o",
         str(out),

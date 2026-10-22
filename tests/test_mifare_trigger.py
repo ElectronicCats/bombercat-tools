@@ -24,22 +24,24 @@ from pathlib import Path
 
 import pytest
 
-# Where the firmware's trigger module lives. By default: the sibling checkout
-# (../bombercat-firmware/MifareClassic). A CI job that checks out both repos
-# can point at it with BOMBERCAT_FIRMWARE_DIR.
-FIRMWARE_DIR = Path(
+# Where the firmware's trigger module lives. It is a shared BomberCatCore
+# module now (core/src), not a file of the MifareClassic sketch: it is
+# reusable logic, so it belongs to the library. By default: the sibling
+# checkout (../bombercat-firmware/core/src). A CI job that checks out both
+# repos can point at it with BOMBERCAT_CORE_DIR.
+CORE_SRC = Path(
     os.environ.get(
-        "BOMBERCAT_FIRMWARE_DIR",
+        "BOMBERCAT_CORE_DIR",
         str(
-            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "MifareClassic"
+            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "core" / "src"
         ),
     )
 )
 HARNESS = Path(__file__).parent / "parity" / "mifare_trigger.cpp"
 
 pytestmark = pytest.mark.skipif(
-    not (FIRMWARE_DIR / "MifareStandaloneTrigger.cpp").exists() or not HARNESS.exists(),
-    reason="the MifareClassic firmware sources are not next to the tools checkout",
+    not (CORE_SRC / "MifareStandaloneTrigger.cpp").exists() or not HARNESS.exists(),
+    reason="the BomberCatCore sources are not next to the tools checkout",
 )
 
 
@@ -182,8 +184,8 @@ def harness(tmp_path_factory):
         "-std=c++17",
         "-O1",
         "-I",
-        str(FIRMWARE_DIR),
-        str(FIRMWARE_DIR / "MifareStandaloneTrigger.cpp"),
+        str(CORE_SRC),
+        str(CORE_SRC / "MifareStandaloneTrigger.cpp"),
         str(HARNESS),
         "-o",
         str(out),

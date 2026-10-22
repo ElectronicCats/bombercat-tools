@@ -26,19 +26,23 @@ from pathlib import Path
 
 import pytest
 
-FIRMWARE_DIR = Path(
+# MifareResultStore now lives in BomberCatCore (core/src), shared by the
+# MifareClassic and MifareMqtt firmwares, so it is compiled from there rather
+# than from a single sketch. Its own env var keeps it independent of
+# BOMBERCAT_FIRMWARE_DIR, which test_mifare_parity.py points at MifareClassic.
+CORE_SRC = Path(
     os.environ.get(
-        "BOMBERCAT_FIRMWARE_DIR",
+        "BOMBERCAT_CORE_DIR",
         str(
-            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "MifareClassic"
+            Path(__file__).resolve().parents[2] / "bombercat-firmware" / "core" / "src"
         ),
     )
 )
 HARNESS = Path(__file__).parent / "parity" / "mifare_result_store.cpp"
 
 pytestmark = pytest.mark.skipif(
-    not (FIRMWARE_DIR / "MifareResultStore.cpp").exists() or not HARNESS.exists(),
-    reason="the MifareClassic firmware sources are not next to the tools checkout",
+    not (CORE_SRC / "MifareResultStore.cpp").exists() or not HARNESS.exists(),
+    reason="the BomberCatCore sources are not next to the tools checkout",
 )
 
 
@@ -155,8 +159,8 @@ def harness(tmp_path_factory):
         "-std=c++17",
         "-O1",
         "-I",
-        str(FIRMWARE_DIR),
-        str(FIRMWARE_DIR / "MifareResultStore.cpp"),
+        str(CORE_SRC),
+        str(CORE_SRC / "MifareResultStore.cpp"),
         str(HARNESS),
         "-o",
         str(out),

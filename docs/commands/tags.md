@@ -241,12 +241,15 @@ The serial log carries the same events (`:mifare_trigger short`, `:mifare_trigge
 ```sh
 bombercat tags mifare results                # the table: uid, sectors read, gaps, uptime
 bombercat tags mifare results --json         # the same, machine-readable
-bombercat tags mifare dump --last --out card.json   # fetch the newest stored result
+bombercat tags mifare dump --last --out card.json       # fetch the newest stored result
+bombercat tags mifare dump --last --all --out-dir dumps # fetch EVERY stored result, one JSON each
 bombercat tags mifare analyze card.json              # ... and report on it, offline
 bombercat tags mifare results --clear        # wipe the stored results once collected
 ```
 
 `mifare dump --last` reads **no card**: the board hands back the result it stored, and the host rebuilds the very same canonical dump it would have got with the card on the reader — gaps included. The board has no real-time clock, so the result's timestamp is its own uptime ("how long after the boot the card was read"); the `read_at` field of the dump is the **host's** clock, i.e. when the result was collected.
+
+`mifare dump --last --all` collects the **whole ring in one USB round-trip** (the firmware's `mifare results show all`) instead of looping `--index`: each result is rebuilt into the same canonical dump `--last` produces. With `--out-dir DIR` it writes one `mifare-<uid>-seq<N>.json` per result into `DIR`; otherwise it prints a summary table (or a JSON array with `--json`).
 
 That closes the loop the plan asks for in task 4.6: a card read in the field gets the **same honest report** as one read with the PC attached, because the gap list survives the round-trip.
 
@@ -367,6 +370,8 @@ Feed it a keyfile produced by [`mifare check --out`](#tags-mifare-check) (or han
 | `--sectors N` | Number of sectors to dump (default `16` = 1K). Max `32` (2K); 4K's 16-block sectors (32-39) aren't supported yet. |
 | `--last` | Read **no card**: fetch the result the board stored while it worked on its own (standalone mode) and rebuild the canonical dump from it, gaps included. `--index N` picks which stored result (0 = the newest). See [the results the board keeps](#tags-mifare). |
 | `--index N` | Which stored result `--last` fetches (0 = the newest). Ignored without `--last`. |
+| `--all` | With `--last`, fetch **every** stored result in one round-trip (the firmware's `mifare results show all`) instead of a single `--index`. Pair with `--out-dir` to write one JSON per result; otherwise a summary table is printed (or a JSON array with `--json`). Incompatible with `--out`/`--mfd`/`--eml` (single-file outputs). |
+| `--out-dir DIR` | With `--last --all`, the directory to write one canonical JSON per stored result into (created if needed), named `mifare-<uid>-seq<N>.json`. |
 | `--out FILE` | Write the dump as canonical JSON — see format below. |
 | `--mfd FILE` | Write a raw binary dump (1024 bytes for 1K), Proxmark/mfoc `hf mf restore`-compatible. Gaps are filled with zeros. |
 | `--eml FILE` | Write a hex-per-line dump (32 chars/line), Proxmark `hf mf eload`-compatible. Gaps are filled with zeros. |
@@ -382,6 +387,7 @@ bombercat tags mifare dump -k recovered.keys --sectors 32 --json
 bombercat tags mifare dump -k recovered.keys --decode
 bombercat tags mifare dump --mode device --out card.json     # the board reads the card itself
 bombercat tags mifare dump --last --out card.json            # fetch the result the board stored on its own
+bombercat tags mifare dump --last --all --out-dir dumps      # fetch every stored result, one JSON each
 ```
 
 ```

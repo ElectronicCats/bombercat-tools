@@ -158,6 +158,13 @@ def parse_emu_event(line: str) -> Optional[Dict[str, object]]:
     `EMU:START mode=emv`, `EMU:RX 00A4…`, `EMU:TX 9000`, `EMU:MSG-SENT …`,
     `EMU:DONE sent=3`. Returns None for a line that is not an `EMU:` event
     (e.g. a `# …` log), so a stream loop can skip it.
+
+    Field parsing is deliberately open-ended: every `key=value` token becomes a
+    field, so newer firmware can add trailing keys without breaking the host.
+    Concretely, `EMU:CARD` — the firmware's ack of an `EMUEMV:…` injection —
+    carries an optional 5th `cid=` field (the cryptogram decision: 40/80/00)
+    alongside `aid=/pan=/exp=/t2=`; both the 4-field (old firmware) and
+    5-field (new firmware) shapes parse to the same structure.
     """
     line = line.strip()
     if not line.upper().startswith("EMU:"):

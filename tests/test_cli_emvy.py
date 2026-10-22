@@ -28,6 +28,7 @@ from modules.emvy.cli import (
     info_cmd,
     mag_cmd,
     nfcinfo_cmd,
+    probe_card_cmd,
     read_cmd,
     reboot_cmd,
     tag_cmd,
@@ -62,6 +63,7 @@ class FakeEmvyLink:
         # own contract: send stop_cmd, then re-raise.
         self.interrupt_after = interrupt_after
         self.sent: List[str] = []
+        self.stream_kwargs: Dict[str, object] = {}
         self.opened = False
         self.closed = False
 
@@ -90,7 +92,10 @@ class FakeEmvyLink:
                 return list(self.script[key])
         return ["OK"]
 
-    def stream_until(self, sentinel, on_line=None, stop_cmd=None, timeout=None):
+    def stream_until(
+        self, sentinel, on_line=None, stop_cmd=None, timeout=None, **kwargs
+    ):
+        self.stream_kwargs = {"sentinel": sentinel, "stop_cmd": stop_cmd, **kwargs}
         lines: List[str] = []
         for i, text in enumerate(self.stream_lines):
             if self.interrupt_after is not None and i == self.interrupt_after:
@@ -686,6 +691,23 @@ def test_emu_ndef_stops_cleanly_on_ctrl_c(runner, use_link, use_emvy_link):
     assert "STOP" in fake.sent
 
 
+def test_emu_stream_passes_the_trigger_as_restart_cmd(runner, use_link, use_emvy_link):
+    """A mid-emulation MCU reset (USB re-enumeration) must not kill the
+    session: the CLI hands stream_until the trigger line as restart_cmd so the
+    link reopens the port and re-sends the emulation."""
+    fake = _gated(
+        FakeEmvyLink(
+            stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(emu_card_cmd, [])
+
+    assert result.exit_code == 0
+    assert fake.stream_kwargs.get("restart_cmd") == fake.sent[0]
+
+
 # ── emu card ─────────────────────────────────────────────────────────────────
 
 
@@ -700,7 +722,10 @@ def test_emu_card_bare_uses_the_canned_test_card(runner, use_link, use_emvy_link
     result = runner.invoke(emu_card_cmd, [])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV"
+    # Bare emulation with the default CID (80=ARQC): the firmware receives
+    # the CID as the 5th field — CID-aware firmware honors it, old firmware
+    # ignores it.
+    assert fake.sent[0] == "EMUEMV:||||80"
 
 
 def test_emu_card_from_ram(runner, use_link, use_emvy_link):
@@ -714,7 +739,7 @@ def test_emu_card_from_ram(runner, use_link, use_emvy_link):
     result = runner.invoke(emu_card_cmd, ["--from-ram"])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV:RAM"
+    assert fake.sent[0] == "EMUEMV:RAM|80"
 
 
 def test_emu_card_custom_fields(runner, use_link, use_emvy_link):
@@ -728,7 +753,39 @@ def test_emu_card_custom_fields(runner, use_link, use_emvy_link):
     result = runner.invoke(emu_card_cmd, ["--aid", "A0", "--pan", "4111"])
 
     assert result.exit_code == 0
-    assert fake.sent[0] == "EMUEMV:A0|4111||"
+    assert fake.sent[0] == "EMUEMV:A0|4111|||80"
+
+
+def test_emu_card_cid_is_sent_on_every_trigger_shape(runner, use_link, use_emvy_link):
+    """--cid reaches the firmware as the 5th EMUEMV field (or after RAM|),
+    whatever the card source — that field is what CID-aware firmware reads."""
+    cases = [
+        (["--cid", "40"], "EMUEMV:||||40"),
+        (["--cid", "00", "--from-ram"], "EMUEMV:RAM|00"),
+        (
+            ["--cid", "40", "--aid", "A0", "--pan", "4111", "--exp", "2512"],
+            "EMUEMV:A0|4111|2512||40",
+        ),
+    ]
+    for args, expected in cases:
+        fake = _gated(
+            FakeEmvyLink(
+                stream_lines=["EMU:START mode=emv", "EMU:DONE sent=0 reason=stop"]
+            ),
+            use_link,
+            use_emvy_link,
+        )
+        result = runner.invoke(emu_card_cmd, args)
+        assert result.exit_code == 0, flat(result.output)
+        assert fake.sent[0] == expected
+
+
+def test_emu_card_rejects_an_invalid_cid(runner):
+    # click.Choice validates before any port is touched.
+    result = runner.invoke(emu_card_cmd, ["--cid", "41"])
+
+    assert result.exit_code == 2
+    assert "not one of" in flat(result.output)
 
 
 def test_emu_card_from_ram_and_custom_fields_are_mutually_exclusive(runner):
@@ -788,3 +845,235 @@ def test_reboot_sends_reboot_and_warns_to_reconnect(runner, use_link, use_emvy_l
     assert fake.sent == ["REBOOT"]
     assert "re-enumerate" in out
     assert fake.closed
+
+
+# ── probe-card ───────────────────────────────────────────────────────────────
+#
+# Scripted card answers for the minimal terminal flow. The PPSE FCI carries
+# the Visa AID, the SELECT-AID FCI announces a PDOL with only deterministic
+# tags (no 9A date / 9F37 random), and the GPO answers a 77 template whose
+# AFL sends probe-card to READ RECORD sfi=1 rec=1.
+
+
+def _ppse_resp() -> str:
+    # 6F { 84 0E "2PAY.SYS.DDF01", A5 { BF0C { 61 { 4F <aid> } } } }
+    return (
+        "6F20"
+        "840E325041592E5359532E4444463031"
+        "A50E"
+        "BF0C0B"
+        "6109"
+        "4F07A0000000031010"
+        "9000"
+    )
+
+
+_PPSE_CMD = "00A404000E325041592E5359532E444446303100"
+# SELECT AID A0000000031010 (Le=00)
+_SELECT_AID_CMD = "00A4040007A000000003101000"
+# PDOL: 9F02/6 9F1A/2 95/5 5F2A/2 9C/1 9F35/1 — all deterministic values.
+_PDOL = "9F02069F1A0295055F2A029C019F3501"
+# 6F { 84 07 <aid>, A5 { 9F38 10 <pdol> } }
+_FCI_RESP = "6F1E" "8407A0000000031010" "A513" "9F3810" + _PDOL + "9000"
+# GPO body for amount=0, country=currency="0484": the tags above in PDOL order.
+_GPO_BODY = "000000000000" "0484" "0000000000" "0484" "00" "22"
+# Lc = 2 (83 <len>) + 17-byte body = 0x13; 83 len = 0x11.
+_GPO_CMD = "80A80000138311" + _GPO_BODY + "00"
+# GPO answer: AIP 1C00, AFL sfi=1 records 1..1; then the record itself.
+_GPO_RESP = "770A" "82021C00" "940408010100" "9000"
+_RECORD_CMD = "00B2010C00"
+_RECORD_RESP = "700A" "5A0841111111111111" "9000"
+
+
+def _probe_script(**overrides):
+    script = {
+        "WAIT 60000": ["READY:"],
+        f"APDU:{_PPSE_CMD}": [f"RESP:{_ppse_resp()}"],
+        f"APDU:{_SELECT_AID_CMD}": [f"RESP:{_FCI_RESP}"],
+        f"APDU:{_GPO_CMD}": [f"RESP:{_GPO_RESP}"],
+        f"APDU:{_RECORD_CMD}": [f"RESP:{_RECORD_RESP}"],
+    }
+    script.update(overrides)
+    return script
+
+
+def test_probe_card_runs_the_terminal_flow_and_prints_each_step(
+    runner, use_link, use_emvy_link
+):
+    fake = _gated(FakeEmvyLink(script=_probe_script()), use_link, use_emvy_link)
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0, out
+    # WAIT → PPSE → SELECT AID → GPO → READ RECORD, and RELEASE on exit.
+    assert fake.sent == [
+        "WAIT 60000",
+        f"APDU:{_PPSE_CMD}",
+        f"APDU:{_SELECT_AID_CMD}",
+        f"APDU:{_GPO_CMD}",
+        f"APDU:{_RECORD_CMD}",
+        "RELEASE",
+    ]
+    # Every APDU and its raw response are printed.
+    for blob in (
+        _PPSE_CMD,
+        _SELECT_AID_CMD,
+        _GPO_CMD,
+        _RECORD_CMD,
+        _ppse_resp(),
+        _FCI_RESP,
+        _GPO_RESP,
+        _RECORD_RESP,
+    ):
+        assert blob in out
+    # Summary: AID from the PPSE, PDOL, and the parsed AFL.
+    assert "A0000000031010" in out
+    assert _PDOL in out
+    assert "08010100" in out
+
+
+def test_probe_card_gpo_lc_counts_the_wrapper_not_the_le(
+    runner, use_link, use_emvy_link
+):
+    """Regression guard for a real-hardware bug: Lc must be 2+len(body) (the
+    83 <len> wrapper plus the values, not the trailing Le) — an off-by-one
+    makes cards answer 6985. The scripted GPO above only answers when the
+    exact command arrives, so a wrong Lc would time out here."""
+    fake = _gated(FakeEmvyLink(script=_probe_script()), use_link, use_emvy_link)
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 0, flat(result.output)
+    assert f"APDU:{_GPO_CMD}" in fake.sent
+    # body = 17 bytes → Lc 0x13, 83-length 0x11.
+    assert _GPO_CMD.startswith("80A80000138311")
+
+
+def test_probe_card_feeds_the_amount_country_and_currency(
+    runner, use_link, use_emvy_link
+):
+    # amount 1234 cents → 9F02 "000000001234"; country 0124 → 9F1A "0124";
+    # currency 0978 overrides 5F2A while 9F1A keeps the country.
+    body = "000000001234" "0124" "0000000000" "0978" "00" "22"
+    gpo = "80A80000138311" + body + "00"
+    fake = _gated(
+        FakeEmvyLink(script=_probe_script(**{f"APDU:{gpo}": [f"RESP:{_GPO_RESP}"]})),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(
+        probe_card_cmd, ["--amount", "1234", "--country", "0124", "--currency", "0978"]
+    )
+
+    assert result.exit_code == 0, flat(result.output)
+    assert f"APDU:{gpo}" in fake.sent
+
+
+def test_probe_card_gpo_decline_is_reported_not_fatal(runner, use_link, use_emvy_link):
+    # 6985: the card declines this PDOL/context. probe-card reports the SW,
+    # skips the records, and still exits 0 (the probe itself worked).
+    fake = _gated(
+        FakeEmvyLink(script=_probe_script(**{f"APDU:{_GPO_CMD}": ["RESP:6985"]})),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 0
+    assert "6985" in out
+    assert f"APDU:{_RECORD_CMD}" not in fake.sent
+    assert "RELEASE" in fake.sent
+
+
+def test_probe_card_reports_nocard(runner, use_link, use_emvy_link):
+    _gated(
+        FakeEmvyLink(script={"WAIT 60000": ["ERR:NOCARD"]}),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 1
+    assert "NOCARD" in flat(result.output)
+
+
+def test_probe_card_reports_a_declined_select_aid(runner, use_link, use_emvy_link):
+    fake = _gated(
+        FakeEmvyLink(
+            script=_probe_script(**{f"APDU:{_SELECT_AID_CMD}": ["RESP:6A82"]})
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+
+    assert result.exit_code == 1
+    out = flat(result.output)
+    assert "6A82" in out
+    assert f"APDU:{_GPO_CMD}" not in fake.sent
+
+
+def test_probe_card_rejects_a_negative_amount(runner):
+    result = runner.invoke(probe_card_cmd, ["--amount", "-5"])
+
+    assert result.exit_code == 1
+    assert "negative" in flat(result.output)
+
+
+def test_probe_card_rejects_bad_country_hex(runner):
+    result = runner.invoke(probe_card_cmd, ["--country", "ZZ"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)
+
+
+def test_probe_card_rejects_country_hex_with_whitespace(runner):
+    # bytes.fromhex() alone accepts "04 84" — validation must not, or the
+    # value would crash _build_gpo's fromhex() later with a traceback.
+    result = runner.invoke(probe_card_cmd, ["--country", "04 84"])
+
+    assert result.exit_code == 1
+    assert "not valid hex" in flat(result.output)
+
+
+def _tlv(tag_hex: str, value: bytes) -> bytes:
+    """Length-encoded TLV (long form when the value is ≥ 0x80 bytes)."""
+    n = len(value)
+    if n < 0x80:
+        ln = bytes([n])
+    else:
+        raw = n.to_bytes((n.bit_length() + 7) // 8, "big")
+        ln = bytes([0x80 | len(raw)]) + raw
+    return bytes.fromhex(tag_hex) + ln + value
+
+
+def test_probe_card_rejects_an_oversized_pdol_cleanly(runner, use_link, use_emvy_link):
+    # A bogus PDOL that builds a >255-byte GPO body must surface as a clean
+    # error (and RELEASE), not a ValueError traceback from bytes([...]).
+    big_pdol = bytes.fromhex("9F0206" * 43)  # 43 entries × 6 bytes = 258
+    fci = (
+        (
+            _tlv(
+                "6F",
+                _tlv("84", bytes.fromhex("A0000000031010"))
+                + _tlv("A5", _tlv("9F38", big_pdol)),
+            )
+            + b"\x90\x00"
+        )
+        .hex()
+        .upper()
+    )
+    fake = _gated(
+        FakeEmvyLink(
+            script=_probe_script(**{f"APDU:{_SELECT_AID_CMD}": [f"RESP:{fci}"]})
+        ),
+        use_link,
+        use_emvy_link,
+    )
+    result = runner.invoke(probe_card_cmd, [])
+    out = flat(result.output)
+
+    assert result.exit_code == 1
+    assert "PDOL" in out
+    assert "Traceback" not in out
+    assert "RELEASE" in fake.sent

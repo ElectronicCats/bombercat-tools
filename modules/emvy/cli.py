@@ -23,9 +23,12 @@
 # Distributed as-is; no warranty is given.
 
 import json
+import random
+import re
 import sys
+import time
 from contextlib import contextmanager
-from typing import Iterable, Iterator, Optional, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Tuple
 
 import click
 from rich.table import Table
@@ -59,6 +62,7 @@ from .parser import (
     parse_tag,
     raise_for_err,
 )
+from .tlv import parse_dol, tlv_find
 
 # The `fw_name` an EMVyBomberCat board reports over `info` (must match its
 # registry `id`, see core/firmwares.py). A board that answers the handshake but
@@ -691,6 +695,236 @@ def cardscan_cmd(ctx, as_json, verbose, port, device_id):
     print_info("use `emvy emu card --from-ram` to reemulate it")
 
 
+# ── probe-card ───────────────────────────────────────────────────────────────
+#
+# probe-card drives the same edge-triggered passthrough as `apdu` (WAIT →
+# APDU: → RELEASE) but runs a minimal terminal flow against the presented
+# card: SELECT PPSE → SELECT AID (the first 4F in the PPSE FCI) → GPO built
+# from the PDOL the card actually announces (9F38) → READ RECORD over the AFL
+# (94) the GPO returns. Read-only: nothing is stored, and RELEASE always
+# fires on exit so the card is never left engaged.
+
+# SELECT 2PAY.SYS.DDF01 (the PPSE), as every contactless terminal sends first.
+_PPSE_SELECT = "00A404000E325041592E5359532E444446303100"
+# Fallback AID when the PPSE FCI carries no 4F (a Visa credit/debit aid).
+_FALLBACK_AID = "A0000000031010"
+
+# Default values for the tags a PDOL commonly asks for, as hex strings. Each
+# is truncated or right-padded with zeros to the length the PDOL requests.
+# 9F66 is a qVSDC-style TTQ (contactless, no CVM), 9F35 a terminal type of
+# "attended, offline-only".
+_PDOL_TTQ = "32804000"
+_PDOL_TERMINAL_TYPE = "22"
+
+
+def _build_gpo(pdol: bytes, amount_cents: int, country: str, currency: str) -> bytes:
+    """Build the GET PROCESSING OPTIONS command from the PDOL the card
+    announced: every requested tag gets a value (default below), the body is
+    wrapped as ``83 <len> <values>``, and Lc counts that wrapper plus the
+    values — not the trailing Le. An off-by-one in Lc here is exactly what
+    makes real cards answer 6985, so it is spelled out."""
+    values = {
+        0x9F66: _PDOL_TTQ,
+        0x9F02: f"{amount_cents:012d}",  # amount, authorised
+        0x9F03: "0" * 12,  # amount, other
+        0x9F1A: country,  # terminal country
+        0x95: "0" * 10,  # TVR
+        0x5F2A: currency,  # transaction currency
+        0x9A: time.strftime("%y%m%d"),  # transaction date
+        0x9C: "00",  # transaction type: purchase
+        0x9F37: f"{random.getrandbits(32):08X}",  # unpredictable number
+        0x9F35: _PDOL_TERMINAL_TYPE,
+    }
+    body = bytearray()
+    for tag, ln in parse_dol(pdol):
+        v = values.get(tag, "")
+        body.extend(bytes.fromhex(v[: ln * 2].ljust(ln * 2, "0")))
+    if 2 + len(body) > 0xFF:
+        # Lc and the 83-length are single bytes — a body this size means the
+        # card announced a bogus PDOL, not that we should emit a broken APDU.
+        raise EmvyError(
+            f"the card's PDOL builds a {len(body)}-byte GPO body "
+            f"({pdol.hex().upper()}) — larger than one APDU carries; "
+            "the card data looks bogus"
+        )
+    return (
+        bytes([0x80, 0xA8, 0x00, 0x00, 2 + len(body), 0x83, len(body)])
+        + bytes(body)
+        + b"\x00"
+    )
+
+
+def _probe_card_flow(
+    elink, amount_cents: int, country: str, currency: str
+) -> Dict[str, object]:
+    """SELECT PPSE → SELECT AID → GPO (PDOL-aware) → READ RECORD over the AFL.
+
+    Prints each command APDU and its response as it goes. Returns the raw
+    responses keyed by step (``ppse``/``aid``/``fci``/``pdol``/``gpo``/
+    ``aip``/``afl``/``records``/``sw``); when the GPO is declined the flow
+    stops there and ``sw`` carries the status word. Raises EmvyError on a
+    link failure, a declined SELECT AID, or a PDOL that cannot fit a command
+    APDU.
+    """
+    out: Dict[str, object] = {}
+
+    def apdu(cmd: bytes, what: str) -> bytes:
+        console.print(f"[cyan]>> {what:<12}[/cyan] [dim]{cmd.hex().upper()}[/dim]")
+        resp = parse_apdu_resp(elink.exchange(f"APDU:{cmd.hex().upper()}"))
+        console.print(f"[green]<< {what:<12}[/green] [dim]{resp.hex().upper()}[/dim]")
+        return resp
+
+    r = apdu(bytes.fromhex(_PPSE_SELECT), "SELECT PPSE")
+    out["ppse"] = r
+    aid = tlv_find(r[:-2], 0x4F) or bytes.fromhex(_FALLBACK_AID)
+    out["aid"] = aid
+
+    sel = bytes([0x00, 0xA4, 0x04, 0x00, len(aid)]) + aid + b"\x00"
+    r = apdu(sel, "SELECT AID")
+    out["fci"] = r
+    if r[-2:] != b"\x90\x00":
+        raise EmvyError(
+            f"SELECT AID {aid.hex().upper()}: SW {r[-2:].hex().upper()} "
+            "(AID not available?)"
+        )
+
+    pdol = tlv_find(r[:-2], 0x9F38) or b""
+    out["pdol"] = pdol
+    r = apdu(_build_gpo(pdol, amount_cents, country, currency), "GPO")
+    out["gpo"] = r
+    if r[-2:] != b"\x90\x00":
+        out["sw"] = r[-2:]
+        return out  # e.g. 6985: the card declines this PDOL/context
+
+    body = r[:-2]
+    out["aip"] = tlv_find(body, 0x82)
+    afl = tlv_find(body, 0x94)
+    out["afl"] = afl
+    records: List[Tuple[str, str]] = []
+    if afl:
+        for e in range(0, len(afl) - 3, 4):
+            # AFL byte 1 is the SFI pre-shifted (SFI << 3); P2 of READ RECORD
+            # is the SFI shifted back into place, plus the record-number P1.
+            sfi, r1, r2 = afl[e] >> 3, afl[e + 1], afl[e + 2]
+            for rec in range(r1, r2 + 1):
+                cmd = bytes([0x00, 0xB2, rec, (sfi << 3) | 4, 0x00])
+                rr = apdu(cmd, f"RECORD sfi={sfi}")
+                records.append((cmd.hex().upper(), rr.hex().upper()))
+    out["records"] = records
+    return out
+
+
+@emvy.command("probe-card")
+@click.option(
+    "--amount",
+    "amount_cents",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Transaction amount in cents, fed to the PDOL as tag 9F02.",
+)
+@click.option(
+    "--country",
+    default="0484",
+    show_default=True,
+    help="Terminal country code (hex BCD, e.g. 0484), fed to the PDOL as 9F1A.",
+)
+@click.option(
+    "--currency",
+    help="Transaction currency code (hex BCD; default: the --country value), "
+    "fed to the PDOL as 5F2A.",
+)
+@click.option(
+    "-w",
+    "--wait",
+    "wait_s",
+    type=int,
+    default=60,
+    show_default=True,
+    help="Seconds to wait for the card.",
+)
+@device_options
+@click.pass_context
+def probe_card_cmd(
+    ctx, amount_cents, country, currency, wait_s, verbose, port, device_id
+):
+    """Probe a live card with a minimal terminal flow (read-only).
+
+    After WAIT engages the card, runs the flow a payment terminal would —
+    SELECT PPSE, SELECT AID (from the PPSE answer), GPO with a command body
+    built from the PDOL the card itself announces (9F38), then READ RECORD
+    over the AFL the GPO returns — printing each APDU and its raw response.
+    The point is a quick look at what a real card answers, e.g. to tune
+    `emu card`. READ ONLY: nothing is written to the card or stored, but the
+    output can contain the real PAN — don't share it as-is. RELEASE always
+    fires on exit, including Ctrl-C.
+
+    Exit code: 0 probed (GPO declined still exits 0 — the SW is reported), 1
+    no card / link error / SELECT AID declined.
+    """
+    if amount_cents < 0:
+        print_error("--amount cannot be negative")
+        raise SystemExit(1)
+    for label, value in (("--country", country), ("--currency", currency or country)):
+        # bytes.fromhex() alone is too lax here: it ignores whitespace, so
+        # "04 84" would validate and then crash _build_gpo's fromhex later.
+        if not value or len(value) % 2 or not re.fullmatch(r"[0-9A-Fa-f]+", value):
+            print_error(f"{label}: not valid hex: {value!r}")
+            raise SystemExit(1)
+    currency = currency or country
+
+    level = _verbosity(ctx, verbose)
+    with _emvy_operative_session(port, device_id, trace=make_tracer(level)) as (
+        target,
+        elink,
+    ):
+        print_info(f"Waiting for a card on {target} (up to {wait_s:g}s)...")
+        try:
+            lines = elink.exchange(
+                f"WAIT {wait_s * 1000}", timeout=wait_s + _WAIT_MARGIN_S
+            )
+            raise_for_err(lines)
+        except EmvyError as e:
+            print_error(f"probe-card failed: {e}")
+            raise SystemExit(1)
+
+        try:
+            out = _probe_card_flow(elink, amount_cents, country, currency)
+        except EmvyError as e:
+            print_error(f"probe-card failed: {e}")
+            raise SystemExit(1)
+        finally:
+            try:
+                elink.exchange("RELEASE")
+            except EmvyError:
+                pass  # best-effort: the link may already be gone
+
+    console.print(f"[cyan bold]probe-card[/cyan bold] [dim]@ {target}[/dim]")
+    console.print("")
+    aid = out["aid"]
+    _print_field("AID", aid.hex().upper() if isinstance(aid, bytes) else str(aid))
+    pdol = out.get("pdol")
+    if pdol:
+        _print_field("PDOL", pdol.hex().upper())
+    _print_field("GPO", out["gpo"].hex().upper())
+    aip = out.get("aip")
+    if aip:
+        _print_field("AIP", aip.hex().upper())
+    afl = out.get("afl")
+    if afl:
+        _print_field("AFL", afl.hex().upper())
+    for cmd, resp in out.get("records", []):
+        console.print(f"[cyan]>> RECORD[/cyan]     [dim]{cmd}[/dim]")
+        console.print(f"[green]<< RECORD[/green]     [dim]{resp}[/dim]")
+    sw = out.get("sw")
+    if sw:
+        print_warning(
+            f"the GPO was declined with SW {sw.hex().upper()} (e.g. 6985 = the card "
+            "does not cooperate with this PDOL/context)"
+        )
+    print_info("raw responses above — the output can contain the real PAN")
+
+
 # ── emu (streaming: ndef / card) ─────────────────────────────────────────────
 #
 # EMU:<hex>/EMUEMV[...] are asynchronous (D5): the firmware starts emulating
@@ -745,7 +979,12 @@ def _emu_stream(elink, trigger: str, *, timeout: Optional[float], as_raw: bool) 
     event live until `EMU:DONE`, `--timeout`, or Ctrl-C (which sends `STOP`
     first, per `EmvyLink.stream_until`, then returns cleanly instead of
     propagating — Ctrl-C ending a long-running emulation is the expected,
-    not exceptional, way to stop it)."""
+    not exceptional, way to stop it).
+
+    The trigger doubles as `stream_until`'s `restart_cmd`: if the MCU resets
+    mid-emulation (USB re-enumerates, e.g. after a link error) the port is
+    reopened and the emulation re-sent so the session survives, with each
+    attempt reported as a `# RECONNECT …` line."""
     elink.send(trigger)
     try:
         elink.stream_until(
@@ -753,6 +992,7 @@ def _emu_stream(elink, trigger: str, *, timeout: Optional[float], as_raw: bool) 
             on_line=lambda line: _render_emu_line(line, as_raw),
             stop_cmd="STOP",
             timeout=timeout,
+            restart_cmd=trigger,
         )
     except KeyboardInterrupt:
         print_warning("stopped")
@@ -811,6 +1051,17 @@ def emu_ndef_cmd(ctx, hex_ndef, as_raw, timeout, verbose, port, device_id):
 @click.option("--exp", default="", help="Expiry to serve in the record (hex, YYMMDD).")
 @click.option("--track2", default="", help="Track 2 to serve in the record (hex).")
 @click.option(
+    "--cid",
+    type=click.Choice(["40", "80", "00"]),
+    default="80",
+    show_default=True,
+    help="Cryptogram decision (tag 9F27) the emulated card returns: 40=TC "
+    "(approve offline, the sale completes), 80=ARQC (the terminal tries to go "
+    "online), 00=AAC (declined). Sent to the firmware as a 5th EMUEMV field — "
+    "CID-aware firmware honors it; older firmware ignores the extra field and "
+    "always requests an ARQC.",
+)
+@click.option(
     "--raw", "as_raw", is_flag=True, help="Print every raw EMU:* line, unparsed."
 )
 @click.option(
@@ -825,17 +1076,31 @@ def emu_ndef_cmd(ctx, hex_ndef, as_raw, timeout, verbose, port, device_id):
 @device_options
 @click.pass_context
 def emu_card_cmd(
-    ctx, from_ram, aid, pan, exp, track2, as_raw, timeout, verbose, port, device_id
+    ctx,
+    from_ram,
+    aid,
+    pan,
+    exp,
+    track2,
+    cid,
+    as_raw,
+    timeout,
+    verbose,
+    port,
+    device_id,
 ):
     """Emulate an EMV card for a payment terminal (EMUEMV).
 
     With no options, serves a canned test Visa. --from-ram reemulates the
     card `emvy cardscan` last read; --aid/--pan/--exp/--track2 (all hex,
     empty = firmware default) inject a specific captured card instead — the
-    two are mutually exclusive. Streams every terminal APDU live (decoded:
-    SELECT-PPSE/SELECT-AID/GPO/READ-RECORD/GENERATE-AC) until EMU:DONE,
-    --timeout, or Ctrl-C. This is not a working card — it never returns a
-    valid cryptogram — the point is to see what a terminal asks for.
+    two are mutually exclusive. --cid picks the cryptogram decision the
+    emulated card makes (TC completes the sale offline, ARQC sends the
+    terminal online, AAC declines) — the cryptogram itself is still not
+    valid, but a TC/AAC decision ends the sale without one. Streams every
+    terminal APDU live (decoded: SELECT-PPSE/SELECT-AID/GPO/READ-RECORD/
+    GENERATE-AC) until EMU:DONE, --timeout, or Ctrl-C, surviving an MCU
+    reset mid-run (the emulation is re-sent automatically).
     """
     custom_fields = any((aid, pan, exp, track2))
     if from_ram and custom_fields:
@@ -853,11 +1118,11 @@ def emu_card_cmd(
             raise SystemExit(1)
 
     if from_ram:
-        trigger = "EMUEMV:RAM"
+        trigger = f"EMUEMV:RAM|{cid}"
     elif custom_fields:
-        trigger = f"EMUEMV:{aid}|{pan}|{exp}|{track2}"
+        trigger = f"EMUEMV:{aid}|{pan}|{exp}|{track2}|{cid}"
     else:
-        trigger = "EMUEMV"
+        trigger = f"EMUEMV:||||{cid}"
 
     level = _verbosity(ctx, verbose)
     with _emvy_operative_session(port, device_id, trace=make_tracer(level)) as (

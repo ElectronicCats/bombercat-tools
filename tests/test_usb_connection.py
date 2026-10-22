@@ -6,6 +6,10 @@
 # opened here: this layer is USB-only by design, since opening a port can reset
 # the MCU.
 
+import os
+import sys
+import types
+
 import pytest
 
 from conftest import make_port
@@ -242,6 +246,60 @@ def test_open_serial_bounds_writes_so_a_wedged_board_cannot_hang_the_cli(
     assert captured["baudrate"] == usb.DEFAULT_BAUDRATE
     assert captured["timeout"] == usb.DEFAULT_TIMEOUT
     assert captured["write_timeout"] == usb.DEFAULT_WRITE_TIMEOUT
+
+
+def test_open_serial_takes_posix_exclusive_lock(monkeypatch):
+    """On POSIX the fd is locked with TIOCEXCL so a second process opening the
+    same tty fails instead of silently sharing the port (interleaved bytes)."""
+    calls = []
+
+    class _FdSerial:
+        def fileno(self):
+            return 42
+
+    fake_fcntl = types.SimpleNamespace(
+        ioctl=lambda fd, req, arg: calls.append((fd, req, arg))
+    )
+    fake_termios = types.SimpleNamespace(TIOCEXCL=0x540C)
+    monkeypatch.setattr(usb.serial, "Serial", lambda **kw: _FdSerial())
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    monkeypatch.setitem(sys.modules, "termios", fake_termios)
+
+    ser = open_serial("/dev/ttyACM0")
+
+    assert calls == [(42, 0x540C, 0)]
+    assert ser.fileno() == 42
+
+
+def test_open_serial_survives_a_lock_failure(monkeypatch):
+    """A board/mock without a usable fileno must not break the open — the lock
+    is a best-effort guard, not a hard requirement."""
+    fake_fcntl = types.SimpleNamespace(
+        ioctl=lambda fd, req, arg: (_ for _ in ()).throw(OSError("not a tty"))
+    )
+    fake_termios = types.SimpleNamespace(TIOCEXCL=0x540C)
+    monkeypatch.setattr(
+        usb.serial, "Serial", lambda **kw: types.SimpleNamespace(fileno=lambda: 3)
+    )
+    monkeypatch.setitem(sys.modules, "fcntl", fake_fcntl)
+    monkeypatch.setitem(sys.modules, "termios", fake_termios)
+
+    assert open_serial("/dev/ttyACM0") is not None
+
+
+def test_open_serial_skips_the_lock_off_posix(monkeypatch):
+    """Windows has no TIOCEXCL: the lock is skipped entirely (no fcntl import)."""
+    monkeypatch.setattr(os, "name", "nt")
+    monkeypatch.setattr(
+        usb.serial,
+        "Serial",
+        lambda **kw: types.SimpleNamespace(
+            fileno=lambda: (_ for _ in ()).throw(AssertionError("fileno called"))
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "fcntl", None)  # import would raise
+
+    assert open_serial("COM3") is not None
 
 
 # ── env-var USB id override ──────────────────────────────────────────────────

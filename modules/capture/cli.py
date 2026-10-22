@@ -16,7 +16,6 @@ import time
 from typing import Optional
 
 import click
-import serial
 
 from ..core.bombercat import DeviceError, DeviceLink
 from ..core.pipes import UnixPipe, WindowsPipe, Wireshark, find_wireshark_path

@@ -35,10 +35,7 @@ from .firmwares import (
     resolve_status_port,
 )
 from ..device.cli import device as _device
-from ..nfcgate.cli import (
-    relay as _relay,
-    status_cmd as _status,
-)
+from ..nfcgate.cli import relay as _relay
 from ..capture.cli import capture as _capture
 from ..emvy.cli import emvy as _emvy
 from ..firmware.cli import flash as _flash

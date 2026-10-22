@@ -241,7 +241,22 @@ def open_serial(
     ``write_timeout`` bounds blocking writes so a wedged firmware (one that stops
     servicing its USB-OUT endpoint) surfaces as a clean error instead of hanging
     the CLI indefinitely.
+
+    On POSIX the port is also opened with ``TIOCEXCL`` so a second process
+    trying to open the same tty fails instead of silently sharing it: two
+    readers on one CDC port interleave bytes and both see corrupt output (the
+    classic "command sent, nothing sensible back" symptom). Best-effort —
+    platforms without fcntl/ioctl (Windows, mocks) skip it.
     """
-    return serial.Serial(
+    ser = serial.Serial(
         port=port, baudrate=baudrate, timeout=timeout, write_timeout=write_timeout
     )
+    if os.name == "posix":
+        try:
+            import fcntl
+            import termios
+
+            fcntl.ioctl(ser.fileno(), termios.TIOCEXCL, 0)
+        except Exception:
+            pass
+    return ser

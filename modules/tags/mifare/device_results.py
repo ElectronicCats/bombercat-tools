@@ -46,6 +46,9 @@ _UNKNOWN_MARKER = "unknown mifare subcommand"
 # The firmware's wording when the ring is empty.
 _NO_RESULT_MARKER = "no such stored result"
 
+# The firmware's wording when `show all` finds nothing stored.
+_NO_RESULTS_MARKER = "no stored results"
+
 
 class DeviceResultsError(RuntimeError):
     """The device refused or failed to answer with its stored results."""
@@ -252,3 +255,56 @@ def run_device_stored_result(
             "the board answered without a stored dump — the result is gone"
         )
     return DeviceStoredResult(meta=meta, dump=dump)
+
+
+def run_device_stored_results_all(
+    link, timeout: float = 120.0
+) -> List[DeviceStoredResult]:
+    """Fetch EVERY stored result in one round-trip (`mifare results show all`).
+
+    The firmware concatenates each result's `show <n>` output — its
+    `:mifare_resultN` metadata line followed by the live-dump lines — newest
+    first. Those dump lines (`:mifare_dump_sN`, `:mifare_dump_stat`,
+    `:mifare_card0`) repeat per result and so collide in the reply's `data`
+    dict; `data_lines` keeps them in order, so the stream is segmented on each
+    `:mifare_resultN` boundary and every segment is handed to the SAME parsers
+    `show <n>` uses. Returns the results newest first (an empty list when the
+    board has stored none).
+    """
+    try:
+        response = link.command("mifare results show all", read_timeout=timeout)
+    except DeviceError as e:
+        raise DeviceResultsError(str(e)) from e
+    if not response.ok:
+        message = (response.message or "").strip()
+        if _NO_RESULTS_MARKER in message.lower():
+            return []
+        raise _classify_error(message)
+
+    # Split the flat line stream into one dict per result, each starting at its
+    # `mifare_resultN` metadata line, so parse_device_results/parse_device_dump
+    # see exactly what they see for a single `show <n>`.
+    segments: List[Dict[str, str]] = []
+    current: Optional[Dict[str, str]] = None
+    for line in response.data_lines:
+        key, _, value = line.partition(" ")
+        if _RESULT_RE.match(key):
+            current = {}
+            segments.append(current)
+        if current is not None:
+            current[key] = value
+
+    out: List[DeviceStoredResult] = []
+    for seg in segments:
+        meta_results = parse_device_results(seg).results
+        dump = parse_device_dump(seg)
+        if not dump.sectors and not dump.total:
+            # A metadata line with no dump behind it — skip the empty shell
+            # rather than emit a result that is gone.
+            continue
+        out.append(
+            DeviceStoredResult(
+                meta=meta_results[0] if meta_results else None, dump=dump
+            )
+        )
+    return out

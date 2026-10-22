@@ -9,6 +9,7 @@
 # docs/CLI_IMPROVEMENTS_MifareDump.md §1, §5.
 
 import json
+import os
 from datetime import datetime, timezone
 from contextlib import nullcontext
 from typing import Dict, List, Optional
@@ -43,6 +44,7 @@ from .device_results import (
     DeviceResultsUnsupported,
     DeviceStoredResult,
     run_device_stored_result,
+    run_device_stored_results_all,
 )
 from .device_sweep import (
     DeviceDumpError,
@@ -165,6 +167,129 @@ def _run_stored_result(link, index: int) -> DeviceStoredResult:
         raise SystemExit(1)
 
 
+def _run_stored_results_all(link) -> List[DeviceStoredResult]:
+    """Fetch every stored result in one round-trip (`mifare results show all`)."""
+    try:
+        return run_device_stored_results_all(link)
+    except DeviceResultsUnsupported as e:
+        print_error(
+            f"the flashed firmware does not keep results ({e}) — update the firmware"
+        )
+        raise SystemExit(1)
+    except DeviceResultsError as e:
+        print_error(f"the stored results could not be read: {e}")
+        raise SystemExit(1)
+
+
+def _stored_dump_dict(stored: DeviceStoredResult) -> Dict[str, object]:
+    """Canonical dump dict for one stored result — the exact shape a single
+    `--last` dump produces, so `mifare analyze` reads it the same way."""
+    dump_result = stored.dump
+    meta = stored.meta
+    sectors = dump_result.total
+    sector_results: List[Dict[str, object]] = []
+    failed: List[Dict[str, object]] = []
+    for s in range(sectors):
+        entry = dump_result.sectors.get(s)
+        blocks = dump_result.blocks_of(s)
+        if blocks:
+            sector_results.append(
+                {"sector": s, "opened_with": entry.key_type or "A", "blocks": blocks}
+            )
+        else:
+            failed.append({"sector": s, "reason": _dump_reason(entry)})
+    uid: Optional[str] = None
+    if dump_result.card0:
+        b0 = parse_block0(dump_result.card0)
+        if b0 is not None:
+            uid = b0.uid
+    if uid is None and meta is not None and meta.uid:
+        uid = meta.uid
+    dump: Dict[str, object] = {
+        "uid": uid,
+        "size": _dump_size_label(sectors),
+        "sectors_read": len(sector_results),
+        "sectors_total": sectors,
+        "read_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_keyfile": "device-standalone",
+        "sectors": sector_results,
+        "failed_sectors": failed,
+    }
+    if meta is not None:
+        dump["device_uptime_s"] = round(meta.uptime_s, 3)
+        dump["device_seq"] = meta.seq
+    return dump
+
+
+def _dump_all_stored(ctx, verbose, port, device_id, out_dir, force, as_json):
+    """`--last --all`: fetch every stored result in one round-trip, then write
+    one canonical JSON per result (--out-dir), print them as a JSON array
+    (--json), or show a summary table."""
+    level = _verbosity(ctx, verbose)
+    with _mifare_session(port, device_id, trace=make_tracer(level)) as (target, link):
+        if not as_json:
+            print_info(f"Fetching every result the board stored @ {target}")
+        stored = _run_stored_results_all(link)
+
+    if not stored:
+        if as_json:
+            print(json.dumps([]))
+        else:
+            print_info(
+                f"no stored results @ {target} — the board has not read a card "
+                "on its own yet"
+            )
+        return
+
+    dumps = [_stored_dump_dict(s) for s in stored]
+
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        for i, d in enumerate(dumps):
+            uid = (d.get("uid") or "").strip()
+            seq = d.get("device_seq")
+            name = f"mifare-{uid}" if uid else f"mifare-result{i}"
+            if seq is not None:
+                name += f"-seq{seq}"
+            path = os.path.join(out_dir, f"{name}.json")
+            _refuse_overwrite(path, force)
+            try:
+                _write_dump_json(path, d)
+            except OSError as e:
+                print_error(f"could not write {path}: {e}")
+                raise SystemExit(1)
+            if not as_json:
+                print_info(f"wrote {path}")
+
+    if as_json:
+        print(json.dumps(dumps))
+        return
+
+    console.print("")
+    table = Table(title=f"stored results @ {target}", header_style="cyan bold")
+    table.add_column("#", justify="right")
+    table.add_column("uid")
+    table.add_column("sectors", justify="right")
+    table.add_column("gaps", justify="right")
+    table.add_column("uptime", justify="right")
+    for i, d in enumerate(dumps):
+        read = d["sectors_read"]
+        total = d["sectors_total"]
+        uptime = d.get("device_uptime_s")
+        table.add_row(
+            str(i),
+            str(d.get("uid") or "—"),
+            f"{read}/{total}",
+            str(len(d["failed_sectors"])),
+            f"{uptime:.1f}s" if uptime is not None else "—",
+        )
+    console.print(table)
+    if not out_dir:
+        print_info(
+            "pass --out-dir DIR to save each as canonical JSON for `mifare analyze`"
+        )
+
+
 @click.command("dump")
 @click.option(
     "-k",
@@ -214,6 +339,24 @@ def _run_stored_result(link, index: int) -> DeviceStoredResult:
     default=0,
     show_default=True,
     help="Which stored result to fetch with --last (0 = the newest).",
+)
+@click.option(
+    "--all",
+    "fetch_all",
+    is_flag=True,
+    help="With --last, fetch EVERY stored result in one round-trip "
+    "(`mifare results show all`) instead of a single --index. Use --out-dir "
+    "to write one canonical JSON per result; otherwise a summary is printed "
+    "(or a JSON array with --json).",
+)
+@click.option(
+    "--out-dir",
+    "out_dir",
+    type=click.Path(file_okay=False, writable=True),
+    default=None,
+    metavar="DIR",
+    help="With --last --all, the directory to write one canonical JSON per "
+    "stored result into (created if needed). Files are named by uid/seq.",
 )
 @click.option(
     "--out",
@@ -267,6 +410,8 @@ def mifare_dump_cmd(
     mode,
     last,
     index,
+    fetch_all,
+    out_dir,
     out_file,
     mfd_file,
     eml_file,
@@ -296,6 +441,20 @@ def mifare_dump_cmd(
         _refuse_overwrite(eml_file, force)
 
     mode = (mode or "auto").lower()
+    if fetch_all and not last:
+        print_error("--all fetches stored results; it needs --last")
+        raise SystemExit(1)
+    if fetch_all and (out_file or mfd_file or eml_file):
+        print_error(
+            "--all writes one file per result; use --out-dir, not " "--out/--mfd/--eml"
+        )
+        raise SystemExit(1)
+    if out_dir and not fetch_all:
+        print_error("--out-dir only applies to --last --all")
+        raise SystemExit(1)
+    if fetch_all:
+        _dump_all_stored(ctx, verbose, port, device_id, out_dir, force, as_json)
+        return
     if last and keys_file:
         print_error(
             "--last fetches a stored result; it cannot be combined with --keys-file"

@@ -20,7 +20,6 @@ Complete reference for every `bombercat` command and subcommand: purpose, flags,
   - [`magspoof`](commands/magspoof.md)
   - [`emvy`](commands/emvy.md)
   - [`proto`](commands/proto.md)
-  - [`testserver`](commands/testserver.md)
   - [`completion`](commands/completion.md)
   - [`setup-env`](commands/setup-env.md)
 - [Environment variables](#environment-variables)
@@ -217,7 +216,7 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`device`](commands/device.md) | Discover and inspect BomberCat devices over USB-serial. | `device list`, `device info`, `identify` |
 | [`status`](commands/status.md) | Report which firmware is flashed and what it can do. | `status` |
 | [`flash`](commands/flash.md) | Download and flash a BomberCat firmware image. | `flash`, `flash --list` |
-| [`relay`](commands/relay.md) | NFCGate relay: configure it, run it, and watch the APDU relay. | `config wifi/nfcgate/show`, `run`, `stop`, `status`, `monitor` |
+| [`relay`](commands/relay.md) | NFCGate relay: configure it, run it, and watch the APDU relay. | `config wifi/nfcgate/show`, `run`, `stop`, `status`, `monitor`, `server run` (local nfcgate-server, no VPS) |
 | [`capture`](commands/capture.md) | Capture relayed APDUs to pcap (live Wireshark and/or a file). | `capture start`, `capture stop` |
 | [`tags`](commands/tags.md) | NFC tag detection over the DetectTags firmware's PN7150 reader. | `read`, `watch`, `scan`, `info` |
 | [`tags mifare`](commands/tags.md#tags-mifare) | Mifare Classic auth/read/write/dump over the MifareClassic firmware, plus offline dump analysis. | `auth`, `read`, `write`, `sector`, `keys`, `check`, `dump`, `analyze`, `restore`, `clone-uid`, `code`, `write-text` |
@@ -225,7 +224,6 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | [`magspoof`](commands/magspoof.md) | Magstripe emulation: play, show, watch, NFC, and multi-card store. | `play`, `show`, `watch`, `info`, `nfc *`, `card *` |
 | [`emvy`](commands/emvy.md) | EMVyBomberCat swiss-army: EMV read, APDU passthrough, tag/magstripe/NDEF/EMV-card emulation (auto-flashable, then gated by firmware identity). | `info`, `read`, `apdu`, `tag`, `mag`, `cardscan`, `emu *`, `nfcinfo`, `reboot` |
 | [`proto`](commands/proto.md) | Nanopb protobuf sources for the NFCGate relay. | `proto gen` |
-| [`testserver`](commands/testserver.md) | Local nfcgate-server for relay testing (no hardware/RF). | `run`, `verify`, `smoke` |
 | [`completion`](commands/completion.md) | Install shell tab completion for bombercat. | `completion install` |
 | [`setup-env`](commands/setup-env.md) | Install the udev rules and join the `dialout`/`plugdev` groups (Linux). | `sudo bombercat setup-env` |
 
@@ -240,9 +238,8 @@ Each command group has its own detailed reference page under `docs/commands/`:
 | `BOMBERCAT_FIRMWARE_REPO` | [`flash`](commands/flash.md) | GitHub repo to pull firmware releases from (default `ElectronicCats/bombercat-firmware`). Point it at a fork to test against its releases. |
 | `BOMBERCAT_FIRMWARE_CACHE` | [`flash`](commands/flash.md) | Where downloaded images live (default `~/.bombercat/firmware`). |
 | `GITHUB_TOKEN` | [`flash`](commands/flash.md) | Sent as a bearer token to the GitHub API, raising the 60 req/h unauthenticated limit. Optional. |
-| `BOMBERCAT_SMOKE_VENV` | `testserver smoke` | Path to the throwaway protobuf venv (default `tools/.venv-smoke`). |
-| `SERVER_REPO` | `testserver/fetch_server.sh` | Use an existing server clone / mirror instead of cloning. |
-| `PORT` | `testserver/run.sh` | Host port for the server (set for you by `testserver run -p`). |
+| `SERVER_REPO` | `testserver/fetch_server.sh` (dev script) | Use an existing server clone / mirror instead of cloning. |
+| `PORT` | `testserver/run.sh` (dev script) | Host port for the Docker test server. `bombercat relay server run` takes `-p` instead. |
 
 ## Exit codes
 
@@ -284,6 +281,7 @@ Before this file was split into `docs/commands/*.md`, every command lived here a
 | <a id="relay-stop"></a>`#relay-stop` | [`relay stop`](commands/relay.md#relay-stop) |
 | <a id="relay-status"></a>`#relay-status` | [`relay status`](commands/relay.md#relay-status) |
 | <a id="relay-monitor"></a>`#relay-monitor` | [`relay monitor`](commands/relay.md#relay-monitor) |
+| <a id="relay-server-run"></a>`#relay-server-run` | [`relay server run`](commands/relay.md#relay-server-run) |
 | <a id="capture"></a>`#capture` | [`capture`](commands/capture.md) |
 | <a id="capture-start"></a>`#capture-start` | [`capture start`](commands/capture.md#capture-start) |
 | <a id="capture-stop"></a>`#capture-stop` | [`capture stop`](commands/capture.md#capture-stop) |
@@ -305,12 +303,12 @@ Before this file was split into `docs/commands/*.md`, every command lived here a
 | <a id="readers-watch"></a>`#readers-watch` | [`readers watch`](commands/readers.md#readers-watch) |
 | <a id="readers-scan"></a>`#readers-scan` | [`readers scan`](commands/readers.md#readers-scan) |
 | <a id="readers-info"></a>`#readers-info` | [`readers info`](commands/readers.md#readers-info) |
-| <a id="dev-tooling"></a>`#dev-tooling` | [`proto`](commands/proto.md) and [`testserver`](commands/testserver.md) |
+| <a id="dev-tooling"></a>`#dev-tooling` | [`proto`](commands/proto.md) (the test server is now [`relay server run`](commands/relay.md#relay-server-run)) |
 | <a id="proto"></a>`#proto` | [`proto`](commands/proto.md) |
 | <a id="proto-gen"></a>`#proto-gen` | [`proto gen`](commands/proto.md#proto-gen) |
-| <a id="testserver"></a>`#testserver` | [`testserver`](commands/testserver.md) |
-| <a id="testserver-run"></a>`#testserver-run` | [`testserver run`](commands/testserver.md#testserver-run) |
-| <a id="testserver-smoke"></a>`#testserver-smoke` | [`testserver smoke`](commands/testserver.md#testserver-smoke) |
+| <a id="testserver"></a>`#testserver` | [`relay server run`](commands/relay.md#relay-server-run) (was `testserver`) |
+| <a id="testserver-run"></a>`#testserver-run` | [`relay server run`](commands/relay.md#relay-server-run) (was `testserver run`) |
+| <a id="testserver-smoke"></a>`#testserver-smoke` | dev script [`testserver/relay_smoketest.py`](../testserver/README.md#smoke-test-no-hardware) (was `testserver smoke`) |
 | <a id="completion"></a>`#completion` | [`completion`](commands/completion.md) |
 | <a id="completion-install"></a>`#completion-install` | [`completion install`](commands/completion.md#completion-install) |
 

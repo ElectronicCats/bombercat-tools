@@ -1,8 +1,16 @@
-# Local nfcgate-server (relay testing)
+# Local nfcgate-server (relay testing, dev tools)
+
+> **Just need a server to relay through?** Run `bombercat relay server run`.
+> It is embedded in the CLI and ships in every package, with no Docker, clone
+> or protobuf needed — see [`relay server run`](../docs/commands/relay.md#relay-server-run).
+> This directory holds the **dev** fixture and checks behind it, and is not
+> packaged.
 
 A throwaway `nfcgate-server` for developing and testing the BomberCat relay
 without the Android app. It wraps the pinned server (`../../server`,
-`ElectronicCats/nfcgate-server@fc9103d`) in Docker.
+`ElectronicCats/nfcgate-server@fc9103d`) in Docker. The smoke test and the
+latency verifier below work against it, against `bombercat relay server run`,
+or against a VPS.
 
 The server just relays length-prefixed frames between the two clients that share
 a 1-byte session number — see the wire format in
@@ -14,12 +22,12 @@ The server is a dev-only fixture, so it is **not** committed or a submodule — 
 is cloned on demand into `../../server` (which is gitignored):
 
 ```bash
-tools/testserver/fetch_server.sh            # clones ElectronicCats/nfcgate-server@fc9103d
-SERVER_REPO=/path/to/clone tools/testserver/fetch_server.sh   # offline / mirror
+testserver/fetch_server.sh            # clones ElectronicCats/nfcgate-server@fc9103d
+SERVER_REPO=/path/to/clone testserver/fetch_server.sh   # offline / mirror
 ```
 
-You can skip this: `bombercat testserver run` and `bombercat testserver smoke`
-detect the missing clone and offer to fetch it for you.
+`run.sh`, `relay_smoketest.py` and `verify_patch.py` all need it: the first
+builds the image from it, and the other two import its `*_pb2.py`.
 
 ## The latency patch
 
@@ -42,7 +50,7 @@ after cloning and `run.sh` re-asserts it before every build (the Dockerfile
 image). It is idempotent — an already-patched clone is left alone.
 
 ```bash
-tools/testserver/apply_patch.sh    # only if you want to check/repair by hand
+testserver/apply_patch.sh    # only if you want to check/repair by hand
 ```
 
 To measure a phase against its pristine baseline you now need the *unpatched*
@@ -50,8 +58,8 @@ upstream commit, since the pinned fork commit is patched at the source:
 
 ```bash
 rm -rf server
-SERVER_COMMIT=4d32cc1 BOMBERCAT_SKIP_LATENCY_PATCH=1 tools/testserver/fetch_server.sh
-BOMBERCAT_SKIP_LATENCY_PATCH=1 tools/testserver/run.sh
+SERVER_COMMIT=4d32cc1 BOMBERCAT_SKIP_LATENCY_PATCH=1 testserver/fetch_server.sh
+BOMBERCAT_SKIP_LATENCY_PATCH=1 testserver/run.sh
 ```
 
 > If the clone was edited by hand the patch stops applying and `run.sh` aborts
@@ -62,8 +70,8 @@ BOMBERCAT_SKIP_LATENCY_PATCH=1 tools/testserver/run.sh
 ## Run the server
 
 ```bash
-tools/testserver/run.sh              # builds the image, listens on :5566
-PORT=6000 tools/testserver/run.sh    # different host port
+testserver/run.sh              # builds the image, listens on :5566
+PORT=6000 testserver/run.sh    # different host port
 ```
 
 The `log` plugin is loaded, so every relayed frame is decoded and printed, e.g.:
@@ -78,7 +86,7 @@ The `log` plugin is loaded, so every relayed frame is decoded and printed, e.g.:
 
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
-pip install -r tools/testserver/requirements.txt   # protobuf==3.20.3
+pip install -r testserver/requirements.txt   # protobuf==3.20.3
 cd server && python server.py log                   # listens on 0.0.0.0:5566
 ```
 
@@ -91,16 +99,13 @@ cd server && python server.py log                   # listens on 0.0.0.0:5566
 With the server running, in another terminal:
 
 ```bash
-bombercat testserver smoke [host] [port]           # recommended
+# once: the pinned protobuf runtime in a venv of its own (PEP 668 keeps it out
+# of the system Python)
+python3 -m venv .venv-smoke && .venv-smoke/bin/pip install -r testserver/requirements.txt
 
-# or directly — needs protobuf==3.20.3 available (reuse the venv above)
-python tools/testserver/relay_smoketest.py [host] [port]
+.venv-smoke/bin/python testserver/relay_smoketest.py [host] [port]   # default 127.0.0.1 5566
+.venv-smoke/bin/python testserver/verify_patch.py    [host] [port]   # is the latency fix live?
 ```
-
-The `bombercat` wrapper bootstraps `tools/.venv-smoke/` with the pinned protobuf
-runtime the first time it runs, so the interpreter running the CLI (usually the
-system Python, which PEP 668 makes read-only) needs nothing installed. Override
-its location with `BOMBERCAT_SMOKE_VENV=/path/to/venv`.
 
 It opens two TCP clients on the same session, has a "reader" push a SELECT PPSE
 APDU and a "card" push the response, and asserts each peer receives the identical

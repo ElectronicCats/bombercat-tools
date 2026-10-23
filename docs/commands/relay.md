@@ -9,6 +9,10 @@
 One board reads a physical card (`reader`), the other emulates it to a terminal (`card`). Both share the same `--server` and `--session`.
 
 ```sh
+# 0. No nfcgate-server of your own (no VPS)? Run one on this machine, in
+#    another terminal, and use its LAN address as --server below
+bombercat relay server run
+
 # 1. Discover devices
 bombercat device list
 
@@ -65,7 +69,7 @@ In the NFCGate app, point it at the same `nfcgate-server`, set the same session,
 
 ## Subcommands
 
-The relay commands live under `bombercat relay …`. They need a board flashed with the **NFCGate** firmware, and check for it before doing anything else. A board running something else is offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
+The relay commands live under `bombercat relay …`. All but [`relay server`](#relay-server-run) need a board flashed with the **NFCGate** firmware, and check for it before doing anything else. A board running something else is offered a fix, or a clean error if declined ([Auto-flash](../reference.md#auto-flash)):
 
 ```
 ✗ `relay` needs NFCGate; this board is running DetectTags.
@@ -74,7 +78,7 @@ The relay commands live under `bombercat relay …`. They need a board flashed w
 
 The old root spellings (`config`, `run`, `stop`, `monitor`) still work for one release as hidden aliases that warn and forward here.
 
-All subcommands take the [device selectors](../reference.md#device-selection).
+All subcommands except `relay server` take the [device selectors](../reference.md#device-selection).
 
 ---
 
@@ -246,9 +250,60 @@ reader: tarjeta activada
 
 ---
 
+### `relay server run`
+
+> Run an nfcgate-server here until Ctrl-C; peers on your LAN connect to it.
+
+The relay peers (two BomberCats, or a BomberCat and the NFCGate app) never talk to each other directly: they meet at an **nfcgate-server**. If you have no VPS running one, this command turns the machine you are on into that server. It needs no board, no Docker and no internet — the server is embedded in the CLI and uses only the Python standard library, so it works the same from the `.deb`, the Arch package, the macOS `.pkg`, the Windows installer or a source checkout.
+
+| Option | Description |
+|---|---|
+| `-p, --port INTEGER` | TCP port to listen on, on every interface (default `5566`, the nfcgate default). |
+| `-q, --quiet` | Don't print every relayed frame (see below). |
+
+```sh
+bombercat relay server run            # listen on :5566
+bombercat relay server run -p 6000    # another port — point the peers at it
+bombercat relay server run -q         # connections only, no per-frame log
+```
+
+```
+✓ nfcgate-server listening on port 5566 — Ctrl-C to stop
+ℹ point both relay peers at this machine's LAN address, e.g.:
+  bombercat relay config nfcgate --server 192.168.1.5:5566 --session 1 --role reader
+17:06:05.550  192.168.1.21:38236  connected
+17:06:05.554  192.168.1.21:38236  joined session 42
+17:06:05.755  192.168.1.22:51544  OP_PSH R: (initial) 00a404000e325041592e5359532e444446303100
+17:06:05.755  192.168.1.21:38236  OP_PSH C: (initial) 6f23840e325041592e5359532e4444463031a5119000
+…
+server stopped
+```
+
+Each relayed frame is decoded as `OP_<opcode> <R|C>: [(initial)] <APDU hex>`, where `R` comes from the reader side and `C` from the card side. A frame that does not decode is printed as hex.
+
+**Requirements:** none beyond the CLI itself, plus:
+
+| Requirement | Why | Check |
+|---|---|---|
+| The port is free (default `5566`) | the server listens on it | `ss -ltn \| grep 5566` (Linux/macOS: `lsof -i :5566`) |
+| The peers can reach this machine | they connect over the LAN/WiFi | from another device: `nc -vz <this-host-LAN-IP> 5566` |
+| Inbound TCP allowed on that port | host firewalls drop it by default | Linux: `sudo ufw allow 5566/tcp` or `sudo firewall-cmd --add-port=5566/tcp`; Windows/macOS: accept the firewall prompt on the first run |
+
+**Good to know:**
+
+- The suggested `--server` address is this machine's LAN address. Point the peers at that, **not** `127.0.0.1`: for a BomberCat, `127.0.0.1` is the board itself.
+- It listens on **every interface** (`0.0.0.0`), as it has to for boards on WiFi to reach it. Anyone on the same network can join a session, so run it on networks you trust. Like the upstream server, it does no authentication and no TLS.
+- Peers only see the frames of their own session (`--session`). A frame never goes back to the peer that sent it.
+- Printing every frame happens on the relay's lock-step hot path. Use `-q` when you are timing transactions rather than reading them.
+- It is the [ElectronicCats/nfcgate-server](https://github.com/ElectronicCats/nfcgate-server) relay (Apache-2.0) with its latency fixes (TCP_NODELAY, one write per frame) built in. A port already in use, or one below 1024, gets an explanation and a fix instead of a traceback.
+- Need the relay up **permanently**, or reachable from outside your LAN? See [Deployment](../deployment.md) for running `nfcgate-server` on a VPS.
+- Contributors: the Docker fixture, the relay smoke test and the latency-patch verifier are dev scripts under [`testserver/`](../../testserver/README.md). They work against this server too.
+
+---
+
 ### Notes
 
-- Requires **NFCGate** firmware (confirm with [`bombercat status`](../commands/status.md)).
+- Requires **NFCGate** firmware (confirm with [`bombercat status`](../commands/status.md)), except `relay server run`.
 - See [Device selection: `-d` / `-p`](../reference.md#device-selection) for selector rules.
 - The previous `bombercat status` (relay state) is now `bombercat relay status`.
 - The old root spellings (`config`, `run`, `stop`, `monitor`) still work for one release as hidden aliases that warn and forward here.
@@ -259,6 +314,7 @@ reader: tarjeta activada
 
 | Step | Single board | Two boards |
 |---|---|---|
+| Server (no VPS) | `bombercat relay server run` | same — one server for both |
 | Discover | `bombercat device list` | `bombercat device list` |
 | WiFi | `bombercat relay config wifi --ssid … --pass …` | add `-d 1`, `-d 2` |
 | nfcgate | `bombercat relay config nfcgate --server … --session … --role …` | opposite roles, same session |
@@ -267,7 +323,7 @@ reader: tarjeta activada
 | Capture | `bombercat capture start -ws` | capture each side |
 | Stop | `bombercat relay stop` | `bombercat relay stop -d 1 && bombercat relay stop -d 2` |
 
-For a bench with no RF at all, use `bombercat testserver smoke` to exercise the relay path against the local server (see [`testserver smoke`](../commands/testserver.md#testserver-smoke)).
+For a bench with no RF at all, the dev script `testserver/relay_smoketest.py` exercises the relay path against a running server (see [`testserver/README.md`](../../testserver/README.md#smoke-test-no-hardware)).
 
 ---
 

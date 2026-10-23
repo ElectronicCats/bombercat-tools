@@ -1,7 +1,7 @@
 # Run the server on a dedicated VPS
 
-`bombercat testserver run` is meant for a **local, ephemeral** server in Docker
-(see [`testserver/README.md`](../testserver/README.md)). To keep the relay up
+`bombercat relay server run` is meant for a **local, ephemeral** server on your
+own machine (see [`relay server run`](commands/relay.md#relay-server-run)). To keep the relay up
 **permanently** you run `nfcgate-server` on a machine of its own — a VPS, or a
 box on your LAN — and point both BomberCats at it. The server is just a TCP
 relay: clients join a 1-byte **session** and it forwards every length-prefixed
@@ -26,14 +26,22 @@ sudo ufw allow 5566/tcp
 curl -fsSL https://get.docker.com | sudo sh
 sudo git clone https://github.com/ElectronicCats/nfcgate-server.git /opt/nfcgate-server
 cd /opt/nfcgate-server && sudo git checkout fc9103d
-# from your machine:  scp tools/testserver/Dockerfile USER@VPS_IP:/opt/nfcgate-server/
+# from your machine:  scp testserver/Dockerfile USER@VPS_IP:/opt/nfcgate-server/
 sudo docker build -f Dockerfile -t nfcgate-server .
 sudo docker run -d --restart unless-stopped --name nfcgate-server \
   -p 5566:5566 --entrypoint python nfcgate-server server.py
 
-# from your machine
-bombercat testserver verify VPS_IP 5566     # -> RESULT: PATCH ACTIVE
-bombercat testserver smoke  VPS_IP 5566     # -> RELAY SMOKE TEST PASSED
+# from your machine, in a bombercat-tools checkout (one-time setup below)
+.venv-smoke/bin/python testserver/verify_patch.py   VPS_IP 5566  # -> RESULT: PATCH ACTIVE
+.venv-smoke/bin/python testserver/relay_smoketest.py VPS_IP 5566  # -> RELAY SMOKE TEST PASSED
+```
+
+The two checks are dev scripts from a source checkout. They build real frames
+with the server's protobuf modules, so set them up once:
+
+```bash
+testserver/fetch_server.sh            # the pinned server clone (its *_pb2.py)
+python3 -m venv .venv-smoke && .venv-smoke/bin/pip install -r testserver/requirements.txt
 ```
 
 - [A. The latency patch](#a-the-latency-patch--already-in-the-pinned-commit)
@@ -57,7 +65,7 @@ hand:** the fork's pinned `fc9103d` already contains it, so it arrives with the
 clone in step B.3. The same changes stay versioned in this repo:
 
 ```
-tools/testserver/latency-fixes.patch
+testserver/latency-fixes.patch
 ```
 
 It touches only `server.py`, in two places:
@@ -67,7 +75,7 @@ It touches only `server.py`, in two places:
 | **E** | `TCP_NODELAY` + coalesced write (header+payload in **one** TCP segment) so Nagle/delayed-ACK doesn't stall every server→board relay | ~13.5 s → ~5 s |
 | **H** | per-frame logging moved off the hot path (adds `-v/--verbose`, quiet by default) | ~50–150 ms |
 
-Locally `bombercat testserver run` asserts it for you; on the VPS it comes with
+Locally `bombercat relay server run` has it built in; on the VPS it comes with
 the clone. Either way, **verify** it is live — that is section E. You only apply
 the patch by hand on a pristine `nfcgate/server@4d32cc1` checkout, or to bring an
 older clone up to date.
@@ -104,12 +112,12 @@ older clone up to date.
    in the fork. From **your machine** (a second local terminal):
 
    ```bash
-   scp tools/testserver/Dockerfile USER@VPS_IP:/opt/nfcgate-server/Dockerfile
+   scp testserver/Dockerfile USER@VPS_IP:/opt/nfcgate-server/Dockerfile
    ```
 
    > Bringing an **older** clone up to date instead of re-cloning? Either
    > `sudo git fetch origin && sudo git checkout fc9103d`, or copy the patch over
-   > (`scp tools/testserver/latency-fixes.patch USER@VPS_IP:/tmp/`) and run
+   > (`scp testserver/latency-fixes.patch USER@VPS_IP:/tmp/`) and run
    > `sudo git apply /tmp/latency-fixes.patch` from `/opt/nfcgate-server`. If
    > `git apply` fails it's almost always because the checkout isn't at `4d32cc1`
    > (`git -C /opt/nfcgate-server rev-parse --short HEAD`) or the patch is already
@@ -132,7 +140,7 @@ older clone up to date.
    > `server.py log`, loading the `log` plugin. That plugin protobuf-decodes and
    > hex-prints **every relayed frame** inside `PluginHandler.filter()`, on the
    > same lock-step hot path Phase H just cleaned up. It is deliberate for the
-   > local fixture (it is how `testserver run` shows you APDUs) and wrong for a
+   > local fixture (it is how the Docker dev fixture shows you APDUs) and wrong for a
    > production relay. Overriding the entrypoint is what actually gets you
    > **no plugins = fast mode**.
 
@@ -237,7 +245,7 @@ sudo docker exec nfcgate-server grep -c TCP_NODELAY /srv/server.py   # Docker: m
 systemctl show nfcgate-server -p ExecStart                           # systemd: which file runs?
 
 # 3. On the wire, from your machine, no hardware needed (conclusive):
-bombercat testserver verify VPS_IP 5566        # -> RESULT: PATCH ACTIVE
+.venv-smoke/bin/python testserver/verify_patch.py VPS_IP 5566   # -> RESULT: PATCH ACTIVE
 ```
 
 Check 2 is the one people skip and the one that bites: with Docker a stale image
@@ -258,7 +266,7 @@ bombercat relay config show
 Both boards share the **same `--server` and `--session`** (1–255); only `--role`
 differs (`reader` + `card`). Then `bombercat relay run` / `relay status` / `relay monitor` on each,
 exactly as in the [end-to-end guide](usage.md). Smoke-test the server with
-`bombercat testserver smoke VPS_IP 5566` (relays correctly?) alongside the
+`.venv-smoke/bin/python testserver/relay_smoketest.py VPS_IP 5566` (relays correctly?) alongside the
 `verify` above (fast?).
 
 > **Distance is latency you can't optimize away.** EMV is strict lock-step —
@@ -290,7 +298,7 @@ sudo docker run -d --restart unless-stopped --name nfcgate-server \
 sudo systemctl restart nfcgate-server
 ```
 
-Re-run section E check 3 (`bombercat testserver verify`) afterwards: it is the
+Re-run section E check 3 (`testserver/verify_patch.py`) afterwards: it is the
 one check that cannot be fooled by a stale image. Everyday operations:
 
 ```bash
@@ -300,7 +308,7 @@ sudo docker stop|start nfcgate-server /  sudo systemctl stop|start nfcgate-serve
 
 Whenever you change the pinned commit here, update
 [`firmware/core/proto/UPSTREAM.md`](../../firmware/core/proto/UPSTREAM.md) and
-`SERVER_COMMIT` in [`tools/testserver/fetch_server.sh`](../testserver/fetch_server.sh)
+`SERVER_COMMIT` in [`testserver/fetch_server.sh`](../testserver/fetch_server.sh)
 so local and VPS stay on the same code.
 
 <a id="h-troubleshooting"></a>
@@ -311,11 +319,11 @@ so local and VPS stay on the same code.
 | `bombercat relay run` never reaches `relaying` | Port not reachable (`nc -vz VPS_IP 5566`, section D); board's WiFi can't route to the server; `--session` differs between boards. Confirm what was persisted with `bombercat relay config show`. |
 | Server is up but nothing relays | The two boards must share one session and take **opposite** roles (`reader` + `card`). |
 | protobuf traceback on the server | protobuf 4+ is installed; pin `3.20.3` (*"Descriptors cannot be created directly"*). |
-| **Works, but ~13 s per transaction** | The classic missing-Phase-E signature. Run `bombercat testserver verify VPS_IP 5566`; if it says `PATCH MISSING`, the running code is unpatched — with Docker, **rebuild** (section G), a restart won't do it. |
+| **Works, but ~13 s per transaction** | The classic missing-Phase-E signature. Run `testserver/verify_patch.py VPS_IP 5566`; if it says `PATCH MISSING`, the running code is unpatched — with Docker, **rebuild** (section G), a restart won't do it. |
 | `grep TCP_NODELAY` finds it but it's still slow | You're looking at the file, not the process. Ask inside the container — section E, check 2. |
 | Noticeably slower than ~4.5 s **with** the patch live | Distance (`ping VPS_IP` from the boards' network, section F), or you left the server running with `log` / `-v` from a debugging session (section B.5). |
 
-See also: [`testserver/README.md`](../testserver/README.md) for the local,
-ephemeral fixture this guide's permanent deployment is based on, and
-[`docs/commands/testserver.md`](commands/testserver.md) for the CLI commands
-(`run`/`verify`/`smoke`) used throughout.
+See also: [`relay server run`](commands/relay.md#relay-server-run) for the local,
+ephemeral server, and [`testserver/README.md`](../testserver/README.md) for the
+Docker fixture this guide's permanent deployment is based on and the
+`verify_patch.py`/`relay_smoketest.py` checks used throughout.

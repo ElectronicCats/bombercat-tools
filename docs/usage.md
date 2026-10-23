@@ -42,7 +42,7 @@ Each command group now includes a **Quick Start** section with the relevant work
 | **Flash firmware** | [`flash`](commands/flash.md) | [Flash workflow](commands/flash.md#quick-start) |
 | **Discover devices** | [`device`](commands/device.md) | [Device discovery](commands/device.md#quick-start) |
 | **Check firmware** | [`status`](commands/status.md) | [Firmware check](commands/status.md#quick-start) |
-| **Local test server** | [`testserver`](commands/testserver.md) | [Test server](commands/testserver.md#quick-start) |
+| **Local relay server (no VPS)** | [`relay server run`](commands/relay.md#relay-server-run) | [Relay server](commands/relay.md#relay-server-run) |
 
 ---
 
@@ -56,11 +56,11 @@ Each command group now includes a **Quick Start** section with the relevant work
   See [`flash`](commands/flash.md). For wiring, the board profile, or to build the firmware from source, see [`firmware/NFCGate/README.md`](../../firmware/NFCGate/README.md).
   - The PN7150 pins are the BomberCat defaults; no extra wiring is needed.
   - The firmware must boot into the control REPL, i.e. `RELAY_AUTOSTART = 0` (the default). With `RELAY_AUTOSTART = 1` and a non-empty SSID the board blocks on WiFi bring-up before the REPL starts and the CLI can't reach it.
-- A reachable `nfcgate-server`. For a bench setup, run the local one:
+- A reachable `nfcgate-server`. No VPS? Run one on this machine (embedded in the CLI, nothing else to install):
   ```sh
-  bombercat testserver run           # Docker, host :5566
+  bombercat relay server run         # listens on :5566, prints the LAN address to use
   ```
-  Both peers point at this host:port. (Real deployments use any reachable `nfcgate-server` — the app's default public server, or your own.)
+  Both peers point at this host's LAN address and port, not `127.0.0.1`. (Real deployments use any reachable `nfcgate-server` — the app's default public server, or your own.)
 - The two boards usually share one host over USB. List and address them by ID:
   ```sh
   bombercat device list

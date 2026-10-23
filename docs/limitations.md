@@ -27,7 +27,8 @@ POSIX-only APIs, so support thins out elsewhere:
 | `capture start -ws` (live Wireshark) | tested | FIFO path, untested | needs `pywin32`, untested |
 | `completion install` | bash/zsh/fish | bash/zsh/fish | not offered |
 | `proto gen` | tested | should work | needs `bash` (WSL / Git Bash) |
-| `testserver run` | tested | needs Docker Desktop | needs `bash` + Docker |
+| `relay server run` | tested | should work | should work (accept the firewall prompt) |
+| `testserver/run.sh` (Docker dev fixture) | tested | needs Docker Desktop | needs `bash` + Docker |
 | `tools/tests/` unit tests (`pytest`) | tested | should work | FIFO/`pywin32` tests skip themselves |
 | `tools/tests/` host tests | tested | should work | `serialctl_hosttest.py` needs `os.openpty()` |
 | `testserver/codec_hosttest` | tested | needs `g++` | needs `bash` + `g++` |
@@ -37,12 +38,8 @@ Concretely, the non-Linux gaps are:
 - `bombercat completion` is only registered on Linux/macOS
   ([modules/core/cli.py](../modules/core/cli.py)); on Windows it is absent from
   `--help` and refuses to install.
-- `proto gen` and `testserver run` are wrappers that run `bash gen_proto.sh` /
-  `bash testserver/run.sh`, so they need a POSIX shell.
-- `testserver run` needs Docker **and** a user who can reach its socket. The
-  preflight diagnoses `docker`-group membership through the `grp` module, which
-  only exists on Unix; elsewhere it can only report "unknown" and give a generic
-  hint.
+- `proto gen` is a wrapper that runs `bash gen_proto.sh`, so it needs a POSIX
+  shell. So do the dev scripts under `testserver/`.
 - The Wireshark launcher knows install paths for Windows/Linux/Darwin only; any
   other OS gets *"We don't support this OS yet"*.
 - Serial access on Linux needs the `dialout` group, and the firmware flasher
@@ -67,9 +64,10 @@ Concretely, the non-Linux gaps are:
   ([capture.md](commands/capture.md#classic-pcap-vs-pcapng)).
 - `tools/tests/capture_hosttest.py` checks the dissection only when `tshark` is
   installed; without it that half of the test is skipped.
-- `testserver smoke` needs the classic protobuf 3.x runtime. If the interpreter
-  running the CLI lacks it, a throwaway venv is bootstrapped in
-  `tools/.venv-smoke` (same idea as `.venv-proto` for `proto gen`).
+- The dev scripts `testserver/relay_smoketest.py` and `verify_patch.py` need
+  the classic protobuf 3.x runtime (`testserver/requirements.txt`) in a venv
+  of their own. `relay server run` needs nothing: its frame log decodes the
+  protobuf by hand.
 
 <a id="devices-and-serial"></a>
 ## Devices and serial

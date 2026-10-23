@@ -277,9 +277,10 @@ python3 bombercat.py --help
 ```
 
 In that mode the command is `python3 bombercat.py …` unless you set up the
-[`bombercat` alias](reference.md#invocation). The dev-only commands `proto` and
-`testserver` are available from a source checkout, and hidden from `--help` in
-every packaged build.
+[`bombercat` alias](reference.md#invocation). The dev-only command `proto` is
+available from a source checkout, and hidden from `--help` in every packaged
+build. The local relay server (`bombercat relay server run`) is in every
+install.
 
 ---
 

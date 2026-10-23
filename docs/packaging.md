@@ -127,10 +127,16 @@ make clean      # remove build/dist/pkg_root and every built artifact
   `.../bombercat/`). It can collide with another project's `site-packages`
   entry. Fixing it for real means renaming `modules/` — a large refactor
   every test imports through — left as a conscious tradeoff for now.
-- **`proto` and `testserver` are dev-only commands.** They need
-  `gen_proto.sh`/`testserver/`/`firmware/` from a source checkout and are
-  hidden from `--help` in every packaged build. Set `BOMBERCAT_DEV=1` to force
-  them on (only useful if you also have the checkout around).
+- **`proto` is a dev-only command.** It needs `gen_proto.sh`/`firmware/` from
+  a source checkout and is hidden from `--help` in every packaged build. Set
+  `BOMBERCAT_DEV=1` to force it on (only useful if you also have the checkout
+  around).
+- **The local nfcgate-server ships in every package.** `bombercat relay server
+  run` is embedded in `modules/nfcgate/server.py` and uses only the standard
+  library, so `modules/` carries it: no Docker, extra files or vendored
+  dependency. The `verify-install` jobs of the `.deb` and Arch workflows start
+  it and check that it accepts a connection. The Docker fixture under
+  `testserver/` stays a dev script and is not packaged.
 - **`bombercat flash` needs network access** (it downloads the UF2 image from
   the firmware repo's releases) and a mounted `RPI-RP2` mass-storage volume.
   No packaging format changes either requirement.

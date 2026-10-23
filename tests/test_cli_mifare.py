@@ -16,7 +16,11 @@ from modules.tags.mifare import session as mifare_session
 from modules.tags.mifare.check import mifare_check_cmd
 from modules.tags.mifare.cli import (
     mifare_auth_cmd,
+    mifare_keys_add_cmd,
+    mifare_keys_autostore_cmd,
+    mifare_keys_clear_cmd,
     mifare_keys_cmd,
+    mifare_keys_remove_cmd,
     mifare_read_cmd,
     mifare_sector_cmd,
     mifare_write_cmd,
@@ -32,6 +36,12 @@ _MIFARE_KEYS_LINE = ok(
     mifare_key1="default_00 000000000000",
     mifare_key2="default_a0a1a2 A0A1A2A3A4A5",
 )
+
+
+def _auths(fake):
+    """Count the `mifare auth` lines a check sweep actually issued — the same
+    view as the Fase 1 `stats.attempts` counter."""
+    return sum(1 for line in fake.sent if line.startswith("mifare auth"))
 
 
 def test_mifare_auth_succeeds_when_a_session_is_already_open(runner, use_link):
@@ -223,6 +233,87 @@ def test_mifare_keys_json_emits_one_object_per_key(runner, use_link):
     ]
 
 
+def test_mifare_keys_add_stores_a_custom_key(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys add AABBCCDDEEFF": ok("added AABBCCDDEEFF")}),
+    )
+    result = runner.invoke(mifare_keys_add_cmd, ["aabbccddeeff"])
+    assert result.exit_code == 0
+    assert "mifare keys add AABBCCDDEEFF" in link.sent
+    assert "added AABBCCDDEEFF" in flat(result.stdout)
+
+
+def test_mifare_keys_add_rejects_a_malformed_key(runner, use_link):
+    link = use_link(mifare_session, FakeLink())
+    result = runner.invoke(mifare_keys_add_cmd, ["ZZ"])
+    assert result.exit_code == 1
+    # Caught locally: nothing was sent to the board.
+    assert not any(line.startswith("mifare keys add") for line in link.sent)
+
+
+def test_mifare_keys_add_surfaces_a_firmware_refusal(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(
+            responses={
+                "mifare keys add FFFFFFFFFFFF": err(
+                    "key is already in the built-in dictionary"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifare_keys_add_cmd, ["FFFFFFFFFFFF"])
+    assert result.exit_code == 1
+    assert "already in the built-in dictionary" in flat(result.output)
+
+
+def test_mifare_keys_remove_by_index(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys remove 3": ok("removed AABBCCDDEEFF")}),
+    )
+    result = runner.invoke(mifare_keys_remove_cmd, ["3"])
+    assert result.exit_code == 0
+    assert "mifare keys remove 3" in link.sent
+
+
+def test_mifare_keys_clear_empties_the_store(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys clear": ok("key store cleared")}),
+    )
+    result = runner.invoke(mifare_keys_clear_cmd, [])
+    assert result.exit_code == 0
+    assert "mifare keys clear" in link.sent
+    assert "cleared" in flat(result.stdout)
+
+
+def test_mifare_keys_autostore_sets_the_flag(runner, use_link):
+    link = use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys autostore on": ok("autostore on")}),
+    )
+    result = runner.invoke(mifare_keys_autostore_cmd, ["on"])
+    assert result.exit_code == 0
+    assert "mifare keys autostore on" in link.sent
+    assert "on" in flat(result.stdout)
+
+
+def test_mifare_keys_autostore_query_and_json(runner, use_link):
+    use_link(
+        mifare_session,
+        FakeLink(responses={"mifare keys autostore": ok("autostore off")}),
+    )
+    result = runner.invoke(mifare_keys_autostore_cmd, ["--json"])
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {"autostore": "off"}
+
+
+def test_mifare_keys_exposes_its_subcommands():
+    assert set(mifare_keys_cmd.commands) == {"add", "remove", "clear", "autostore"}
+
+
 def test_mifare_reports_a_board_that_will_not_handshake(runner, use_link):
     link = use_link(mifare_session, FakeLink(ping_ok=False))
     result = runner.invoke(mifare_keys_cmd, [])
@@ -261,6 +352,7 @@ def test_mifare_check_continues_past_a_failed_key_and_finds_the_real_one(
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "A0A1A2A3A4A5", "key_b": None}],
         "recovered": 1,
@@ -367,6 +459,7 @@ def test_mifare_check_key_type_a_never_tries_b(runner, use_link, tmp_path):
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": None}],
         "recovered": 1,
@@ -408,6 +501,7 @@ def test_mifare_check_recovers_key_b_via_trailer_read(runner, use_link, tmp_path
     payload = json.loads(result.stdout)
 
     assert result.exit_code == 0
+    assert payload.pop("stats")["attempts"] == _auths(fake)  # Fase 1 stat, additive
     assert payload == {
         "sectors": [{"sector": 0, "key_a": "FFFFFFFFFFFF", "key_b": "B0B1B2B3B4B5"}],
         "recovered": 2,
@@ -518,6 +612,40 @@ def test_mifare_check_trailer_read_not_attempted_for_key_type_a(
 # ── group wiring ─────────────────────────────────────────────────────────────
 
 
+def test_mifare_timing_reports_the_boards_own_counters(runner, use_link):
+    # The board measures itself; the CLI just shows what it says. The
+    # detection counters are what tell "the card left" from "the re-select
+    # did not get the card back".
+    link = use_link(
+        mifare_session,
+        FakeLink(
+            {
+                "mifare timing": ok(
+                    mifare_timing="attempts=79 reselects=78 reselect_fails=1 "
+                    "auth_ms=1231 reselect_ms=6177 reset_ms=5085 "
+                    "detect_ms=1092 det_calls=80 det_ok=79 det_timeout=1 "
+                    "det_disc=0 det_sel=0 det_deact=0 det_err=0 rst_fail=0"
+                )
+            }
+        ),
+    )
+    result = runner.invoke(mifarecli.mifare_timing_cmd, ["--json"])
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert doc["timing"]["attempts"] == 79
+    assert doc["timing"]["det_timeout"] == 1
+    assert doc["timing"]["rst_fail"] == 0
+    assert "mifare timing" in link.sent
+
+
+def test_mifare_timing_can_zero_the_counters_first(runner, use_link):
+    link = use_link(mifare_session, FakeLink())
+    result = runner.invoke(mifarecli.mifare_timing_cmd, ["--reset", "--json"])
+    assert result.exit_code == 0
+    assert "mifare timing reset" in link.sent
+    assert "mifare timing" in link.sent
+
+
 def test_mifare_group_exposes_all_subcommands():
     assert set(mifarecli.mifare.commands) == {
         "auth",
@@ -525,9 +653,15 @@ def test_mifare_group_exposes_all_subcommands():
         "write",
         "sector",
         "keys",
+        "standalone",
+        "results",
+        "trigger",
+        "timing",
         "check",
         "dump",
+        "analyze",
         "restore",
+        "clone-uid",
         "code",
         "write-text",
     }

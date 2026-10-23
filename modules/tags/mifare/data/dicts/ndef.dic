@@ -1,0 +1,13 @@
+# ndef.dic — NFC Forum / NDEF public keys (Fase 2, familia "ndef")
+#
+# Cards formatted for NDEF (NFC Forum Type MIFARE Classic tag operation) use a
+# well-known public key on their NDEF sectors, so tags stay readable by any
+# phone. Common on transit stubs, marketing tags and re-flashed blank cards.
+#
+# Provenance: NFC Forum "Type MIFARE Classic Tag Operation" / AN1305; the
+# D3F7... value is the published NDEF-write key mirrored in every open
+# default-key set. Key values are facts, not copyrightable. See dicts/README.md.
+#
+# Format: one 12-hex key per line; `#` comments and blanks ignored (load_keys).
+
+D3F7D3F7D3F7

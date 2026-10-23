@@ -155,6 +155,26 @@ def test_mismatch_off_a_non_nfcgate_firmware_has_no_config_warning():
     assert "config show" not in str(exc.value)
 
 
+def test_a_busy_board_is_never_flashed():
+    # The board answered the handshake but not `info`: it is mid-sweep, not
+    # running a different firmware. Flashing it would be wrong (and the flash
+    # resets it — which is what the user saw as "the device disconnected").
+    flash = FakeFlash()
+    busy = DetectionResult(
+        firmware=UNKNOWN, confidence=USB, port=PORT, usb_present=True, busy=True
+    )
+    with pytest.raises(DeviceError, match="busy"):
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.ALWAYS,
+            detect_fn=lambda *a, **k: busy,
+            flash_fn=flash,
+        )
+    assert flash.calls == []
+
+
 def test_usb_confidence_requires_confirmation_even_under_always_policy():
     detect = FakeDetect(detection(UNKNOWN, USB), detection(DETECTTAGS, HANDSHAKE))
     flash = FakeFlash()
@@ -168,6 +188,7 @@ def test_usb_confidence_requires_confirmation_even_under_always_policy():
         detect_fn=detect,
         flash_fn=flash,
         confirm_fn=lambda q: asked.append(q) or True,
+        detect_retries=0,  # test the USB decision itself, not the boot-race retry
     )
 
     assert asked, "ALWAYS alone must not be enough for a USB-only identification"
@@ -187,8 +208,85 @@ def test_usb_confidence_declining_confirmation_does_not_flash():
             detect_fn=lambda *a, **k: detection(UNKNOWN, USB),
             flash_fn=flash,
             confirm_fn=lambda q: False,
+            detect_retries=0,  # test the USB decision itself, not the boot-race retry
         )
     assert flash.calls == []
+
+
+# ── Boot-race retry on the initial detection ─────────────────────────────────
+
+
+def test_transient_usb_is_retried_until_the_board_names_itself():
+    # A just-flashed board reads USB/UNKNOWN for a beat while setup() brings the
+    # PN7150 up, then answers the handshake with the right firmware. The initial
+    # detection must wait it out and NOT mistake it for a wrong/absent firmware.
+    detect = FakeDetect(
+        detection(UNKNOWN, USB),
+        detection(UNKNOWN, USB),
+        detection(DETECTTAGS, HANDSHAKE),
+    )
+    flash = FakeFlash()
+
+    outcome = ef.ensure_firmware(
+        PORT,
+        True,
+        REQ,
+        policy=ef.AutoFlashPolicy.ALWAYS,
+        detect_fn=detect,
+        flash_fn=flash,
+        detect_retries=3,
+        detect_delay=0,
+    )
+
+    assert flash.calls == []
+    assert outcome.flashed is False
+    assert outcome.detection.firmware is DETECTTAGS
+
+
+def test_persistent_usb_after_retries_still_falls_through_to_the_flash_path():
+    # If it never resolves (genuinely unidentifiable firmware), the retries are
+    # exhausted and the normal USB-confidence flow takes over.
+    detect = FakeDetect(detection(UNKNOWN, USB))  # USB on every probe
+    flash = FakeFlash()
+
+    outcome = ef.ensure_firmware(
+        PORT,
+        True,
+        REQ,
+        policy=ef.AutoFlashPolicy.ALWAYS,
+        detect_fn=detect,
+        flash_fn=flash,
+        confirm_fn=lambda q: True,
+        detect_retries=2,
+        detect_delay=0,
+        verify_retries=0,  # isolate the initial phase's probe count
+        verify_delay=0,
+    )
+
+    # 1 first probe + 2 initial retries (all USB) + 1 post-flash re-verify.
+    assert detect.calls == 4
+    assert flash.calls == [(REQ, PORT)]
+    assert outcome.flashed is True
+
+
+def test_a_named_firmware_is_not_retried():
+    # A board that already named itself (even the wrong firmware) is a definite
+    # answer — no boot-race retry, so the flash offer comes without delay.
+    detect = FakeDetect(detection(NFCGATE, HANDSHAKE))
+    flash = FakeFlash()
+
+    with pytest.raises(FirmwareMismatch):
+        ef.ensure_firmware(
+            PORT,
+            True,
+            REQ,
+            policy=ef.AutoFlashPolicy.NEVER,
+            detect_fn=detect,
+            flash_fn=flash,
+            detect_retries=5,
+            detect_delay=999,  # would hang if a HANDSHAKE were ever retried
+        )
+    assert detect.calls == 1
 
 
 # ── Consent policy (D-3.4/D-3.5) ─────────────────────────────────────────────

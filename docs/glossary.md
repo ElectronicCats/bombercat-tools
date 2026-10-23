@@ -84,7 +84,7 @@ without buffering the whole run.
 
 The relay backend two BomberCat peers (or a BomberCat and the NFCGate Android
 app) connect to over WiFi/TCP to exchange relayed APDUs. Run locally for
-testing with [`testserver`](commands/testserver.md); the control plane never
+use with [`relay server run`](commands/relay.md#relay-server-run); the control plane never
 touches it directly — only `relay run` does, on the board.
 
 <a id="pn7150"></a>

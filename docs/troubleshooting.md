@@ -20,7 +20,7 @@ you should never see a Python traceback. If you do, that's a bug worth reporting
 - [`magspoof`: every command answers `-ERR unknown command`](#magspoof-unknown-command)
 - [`magspoof nfc visa`/`nfc read`: tap wait times out with no error](#magspoof-nfc-tap-timeout)
 - [`magspoof show`: "chip required — swipe may be refused"](#magspoof-chip-required-warning)
-- [`testserver` errors](#testserver-issues)
+- [`relay server run` errors](#relay-server-issues)
 
 ---
 
@@ -257,7 +257,7 @@ The device is **not** wedged — the REPL stayed live, so keep diagnosing:
 
 - **WiFi**: wrong SSID/password? `bombercat relay config show` and re-run `relay config wifi`.
 - **Server reachable?** From the same network: `nc -vz <host> <port>`. Is the
-  `nfcgate-server` actually listening? For a bench server, `bombercat testserver run`.
+  `nfcgate-server` actually listening? No VPS? Run one: `bombercat relay server run`.
 - **PN7150 / NFC bring-up**: `bombercat relay monitor` shows where it's stuck.
 - If `run` was **rejected** outright (`✗ relay rejected 'run': …`), the config is
   incomplete (e.g. empty SSID) or it's already running — check `config show` /
@@ -428,48 +428,31 @@ which rewrites the Service Code to waive chip/PIN so a swipe is accepted —
 stated security requirements. [`card require-sc`](commands/magspoof.md#magspoof-card-require-sc)
 reverses it if you need the original requirement back.
 
+<a id="relay-server-issues"></a>
+## `relay server run` errors
+
+- **Port N is already in use by another program** — another nfcgate-server (a
+  `relay server run` in another terminal, the Docker dev fixture, a VPS tunnel…)
+  or anything else holds the port. Stop it (`ss -ltnp | grep <port>` shows who),
+  or listen elsewhere with `bombercat relay server run -p <port>` and point both
+  peers at that port.
+- **Not allowed to listen on port N** — ports below 1024 need privileges. Use
+  the default `5566`, or any port ≥ 1024.
+- **The server is up but a peer never connects** (no `connected` line):
+  - The peer targets the wrong address. Use the LAN address `relay server run`
+    prints, never `127.0.0.1`: for a BomberCat that is the board itself.
+  - The peer is on another network (guest WiFi, client isolation, mobile data).
+    Both peers must reach this machine: `nc -vz <LAN-IP> <port>` from another
+    device on the same WiFi.
+  - The host firewall drops inbound TCP. Linux: `sudo ufw allow 5566/tcp` or
+    `sudo firewall-cmd --add-port=5566/tcp`. Windows/macOS: allow Python /
+    `bombercat` when the firewall asks on the first run, or add a rule for the
+    port.
+- **Both peers connect but nothing is relayed** — they are not in the same
+  session. Each `joined session N` line shows the session byte; both peers need
+  the same `--session` (and opposite roles).
+
 <a id="testserver-issues"></a>
-## `testserver` errors
-
-- **`testserver run`**: needs Docker on `PATH` **and** the server fetched once
-  (`tools/testserver/fetch_server.sh`) — the clone at `<repo>/server` is the
-  Docker *build context*, not just a dependency of `smoke`. Full list in the
-  [testserver run](commands/testserver.md#testserver-run).
-  The CLI pre-checks all of it *before* building and prints a framed panel with
-  the numbered commands that fix it, so you should never see a raw `docker
-  build` error. What each panel means:
-  - **The nfcgate-server sources are missing** — the server was never fetched.
-    On a terminal the CLI offers to run `tools/testserver/fetch_server.sh` for
-    you; answer `n` to do it yourself. The clone at `<repo>/server` is the
-    Docker *build context*, not just a dependency of `smoke`.
-  - **Docker is not installed, or not on your PATH** — install Docker Engine,
-    or run the server without Docker (see
-    [`testserver/README.md`](../testserver/README.md)).
-  - **Docker refused the connection: permission denied on its socket** — the
-    panel tells you which of the three cases you are in, because the fix
-    differs: not in the `docker` group (`sudo usermod -aG docker "$USER"`), a
-    member but in a session that predates it (`newgrp docker` — membership is
-    only applied at login), or the group is already active and the socket
-    refuses anyway (unusual ownership, or rootless Docker).
-    If `newgrp` is not installed (it comes from `shadow-utils`, `login` on
-    Debian/Ubuntu — trimmed installs and container images often lack it), the
-    panel offers `sg docker -c "$SHELL"` instead, and when that is missing too
-    it says so and points at the only remaining options: log out and back in
-    (or reboot), install the package, or run this once under `sudo -E` (the
-    panel prints the exact command, with absolute paths, since `sudo` resets
-    `PATH`).
-  - **The Docker daemon is not running** — `sudo systemctl start docker`, or
-    launch Docker Desktop on macOS/Windows.
-  - **Host port N is already in use** — the panel distinguishes a test server
-    you left running (`docker rm -f bombercat-nfcgate-server-run`) from any
-    other program holding the port (`testserver run -p <port>`).
-  - `bash is not installed` — the CLI launches the server through
-    `tools/testserver/run.sh`, so it needs a shell to do it.
-
-  Running `tools/testserver/run.sh` directly gets the same checks in terse
-  form, without the panels.
-- **`testserver smoke`**: needs the server fetched once
-  (`tools/testserver/fetch_server.sh`) and the `protobuf==3.20.3` runtime. The CLI
-  bootstraps a throwaway venv (`tools/.venv-smoke`, override with
-  `BOMBERCAT_SMOKE_VENV`) if its own interpreter lacks protobuf. See
-  [`testserver/README.md`](../testserver/README.md).
+The former `bombercat testserver` command is now `bombercat relay server run`.
+Its Docker fixture and smoke/verify scripts are dev tools: see
+[`testserver/README.md`](../testserver/README.md).

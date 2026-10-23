@@ -1,0 +1,26 @@
+# transport.dic — factory / transport default keys (Fase 2, familia "transport")
+#
+# The keys a MIFARE Classic card ships with before an issuer personalises it.
+# These are the highest-probability candidates on any card and by far the most
+# common finding in the field (an unpersonalised sector = an exposed sector).
+#
+# Provenance: universally published factory defaults, present in every open
+# MIFARE default-key set (libnfc, mfoc/mfcuk, Proxmark3 `mfc_default_keys.dic`,
+# Flipper `mf_classic_dict.nfc`). Key values are facts, not copyrightable; the
+# projects they are mirrored from are GPL/BSD. See dicts/README.md.
+#
+# Format: one 12-hex key per line; `#` comments and blanks ignored (load_keys).
+
+FFFFFFFFFFFF
+000000000000
+A0A1A2A3A4A5
+B0B1B2B3B4B5
+4D3A99C351DD
+1A982C7E459A
+AABBCCDDEEFF
+714C5C886E97
+587EE5F9350F
+A0478CC39091
+533CB6C723F6
+8FD0A4F256E9
+D3F7D3F7D3F7

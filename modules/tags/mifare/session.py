@@ -28,6 +28,14 @@ from .common import _sector_first_block
 _MIFARE_PROBE_RE = re.compile(r"^:mifare\s")
 _MIFARE_TAP_TIMEOUT = 15.0
 
+# The firmware's on-detection auto-probe streams one line per sector it
+# resolves (:mifare_check_sN) BEFORE it emits the session-open signal — the
+# signal comes last so the host drains the sweep output on a clean stream.
+# Those lines are also the proof that the card WAS seen and the sweep is
+# running, which is what tells the host to stop counting the tap timeout and
+# wait for the sweep instead.
+_MIFARE_SWEEP_LINE_RE = re.compile(r"^:mifare_check_s\d+\b")
+
 
 def _mifare_session(port: Optional[str], device_id: Optional[int] = None, trace=None):
     """Open a verified link for the `tags mifare` commands, naming the
@@ -46,13 +54,25 @@ def _mifare_session(port: Optional[str], device_id: Optional[int] = None, trace=
     )
 
 
-def _wait_for_mifare_card(link, timeout: float) -> bool:
+def _wait_for_mifare_card(link, timeout: float, sweep_timeout: Optional[float] = None):
     """Block until the firmware's auto-probe ':mifare' event appears — proof
-    it has opened the interactive session — or `timeout` seconds pass."""
+    it has opened the interactive session — or `timeout` seconds pass.
+
+    The firmware opens that session only AFTER its on-detection auto-probe has
+    swept every sector, and that sweep lasts as long as the card needs: ~11 s
+    measured on a 1K card with default keys, and minutes on a card whose
+    sectors nothing opens. `timeout` therefore only bounds "did the user tap
+    at all"; once the sweep's own per-sector lines start arriving (the proof
+    that the card was seen), the wait extends to `sweep_timeout` so a slow
+    sweep is not mistaken for a missing card.
+    """
     deadline = time.monotonic() + timeout
+    sweep_deadline = time.monotonic() + (sweep_timeout or timeout)
     for line in link.stream(yield_empty=True):
         if line and _MIFARE_PROBE_RE.match(line):
             return True
+        if line and _MIFARE_SWEEP_LINE_RE.match(line):
+            deadline = sweep_deadline
         if time.monotonic() > deadline:
             return False
     return False

@@ -191,12 +191,17 @@ A published (pre-FW-1) image, still on legacy text:
 
 ### `tags mifare`
 
-> Mifare Classic auth/read/write/sector/check/dump/restore/code/write-text commands. Requires the **MifareClassic** firmware (not DetectTags — confirm with [`bombercat status`](../commands/status.md)).
+> Mifare Classic auth/read/write/sector/check/dump/analyze/restore/code/write-text commands. Requires the **MifareClassic** firmware (not DetectTags — confirm with [`bombercat status`](../commands/status.md)). `analyze` is the exception — it runs fully offline on a saved dump and needs no firmware or card.
 
 Tap a Mifare Classic card to let the firmware select it — `auth`, `read`, `write`, `sector`, `check`, `dump`, `restore` and `write-text` all wait for this automatically (default 5s, `-t/--timeout` to change it — `write-text` defaults to `15`) if no card is selected yet. The card then stays selected for ~10s of inactivity between commands before the firmware closes the session and re-arms discovery.
 
 ```sh
-bombercat tags mifare keys                                            # list built-in default keys, no card needed
+bombercat tags mifare keys                                            # list the keys the sweep tries (defaults + stored), no card needed
+bombercat tags mifare keys add A0A1A2A3A4A5                           # persist a custom key in the board's flash
+bombercat tags mifare keys remove 3                                   # drop a stored key by index (0..2 are defaults) or by its 12-hex value
+bombercat tags mifare keys clear                                      # drop every stored custom key
+bombercat tags mifare keys autostore on                              # after a sweep, auto-persist the custom keys it confirmed (off by default)
+bombercat tags mifare standalone --on                                 # the board runs the whole workflow by itself, no card needed
 bombercat tags mifare auth --block 4 --key-type A --key FFFFFFFFFFFF  # authenticate a sector
 bombercat tags mifare read --block 4                                  # read a block from the authenticated sector
 bombercat tags mifare write --block 4 --data 00112233445566778899AABBCCDDEEFF
@@ -206,6 +211,47 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 ```
 
 `auth`/`read`/`write`/`sector` take `--block`/`--sector` (numeric), `--key`/`--key-type` where relevant (12 hex chars, `A` or `B`), and `--json` on the ones that return data. `read` and `write` need a sector already authenticated by `auth`; `sector` does auth + read of every block in one self-contained call. `sector` also accepts `-k, --keys-file FILE` instead of `--key`/`--key-type` — a `sector:keyA:keyB` file from `mifare check --output-keys` (tries key A, falls back to key B, and shows the real keys in the trailer line instead of the zeros the card reads back).
+
+**Standalone mode** (`mifare standalone [--on|--off]`, no card needed) makes the board finish the job **by itself** when it detects a card: the dictionary sweep, then the dump of the sectors it cracked, then everything emitted over the serial port — so the board can be used in the field with no PC attached. The setting lives in the board's flash and survives a reset; the keys it uses are the ones in its key-store (`mifare keys add/remove/clear`, persisted) plus its embedded default dictionary.
+
+**The key-store** (`mifare keys …`, no card needed) is the set of custom keys the board keeps in its own flash, tried **before** the built-in dictionary (custom-first) by both the sweep and the auto-probe. `mifare keys` lists everything (defaults at indices 0..2, stored keys at 3+); `add <hex12>` persists one (rejected if it is already a default or already stored); `remove <hex12|index>` and `clear` drop them; `autostore on|off` (**off by default**) makes a sweep auto-persist the custom keys it confirmed — the ones not already covered by a dictionary — at most one flash write per sweep. Autostore only changes what a sweep *keeps*, never how it cracks a card.
+
+**The field trigger (the button).** The BomberCat board has two push buttons: **SW1** is the board's *reset* (the RP2040's RUN pin — pressing it reboots the board), and **SW2** (labelled *GPIO* on the board) is the **user button**: RP2040 **GPIO17 = Arduino D5**, active LOW. It is the same button the MagSpoof sketch triggers with. It speaks two gestures:
+
+| gesture | what it does |
+|---|---|
+| **short press** | run the standalone chain for the card in the field: the sectors the sweep cracked are read and emitted over serial. With no card in the field it **arms** the run, and the next card that is tapped runs it. |
+| **long press** (≥ 1.2 s) | toggle the **persistent standalone mode** — the chain then runs on *every* detection. The flag is stored in the board's flash (same record as the key-store) and survives a reset; `mifare standalone --on/--off` sets the very same flag from the CLI. |
+
+The board's LED (LED1, GPIO27 = `LED_BUILTIN`) says what happened: **one blink** = a short press was taken, **two blinks** = the standalone mode was armed, **three blinks** = it was disarmed (or the action failed). The board's own LED is also what the CLI's `identify` blinks, so the two never fight over the pin.
+
+`mifare trigger` (no card needed) shows the state of that trigger — the button's pin, the long-press threshold, whether a one-shot is armed, whether the persistent mode is on, and how many presses the board has seen:
+
+```sh
+bombercat tags mifare trigger            # the table
+bombercat tags mifare trigger --json     # the same, machine-readable
+```
+
+The serial log carries the same events (`:mifare_trigger short`, `:mifare_trigger armed`, `:mifare_trigger run`, `:mifare_trigger standalone on|off`), so a field operator with a serial console sees them too.
+
+> The trigger is polled from the firmware's main loop, which the dictionary sweep blocks while it runs (seconds to minutes, depending on the card). A press **during** a sweep is therefore only seen once the sweep ends — the button cannot interrupt the sweep it is waiting for.
+
+**The results the board keeps (standalone).** In standalone mode nobody is listening to the serial port, so the result of the read would simply be lost. The firmware therefore keeps the **last 8 results in its own flash** (`mifare results`, no card needed): one flash write per card, and the oldest result is the one that gets overwritten. Each result keeps its **holes** with their reason (`nokey`, `readfail`, `removed`) — a sector that was never opened is declared, never assumed safe.
+
+```sh
+bombercat tags mifare results                # the table: uid, sectors read, gaps, uptime
+bombercat tags mifare results --json         # the same, machine-readable
+bombercat tags mifare dump --last --out card.json       # fetch the newest stored result
+bombercat tags mifare dump --last --all --out-dir dumps # fetch EVERY stored result, one JSON each
+bombercat tags mifare analyze card.json              # ... and report on it, offline
+bombercat tags mifare results --clear        # wipe the stored results once collected
+```
+
+`mifare dump --last` reads **no card**: the board hands back the result it stored, and the host rebuilds the very same canonical dump it would have got with the card on the reader — gaps included. The board has no real-time clock, so the result's timestamp is its own uptime ("how long after the boot the card was read"); the `read_at` field of the dump is the **host's** clock, i.e. when the result was collected.
+
+`mifare dump --last --all` collects the **whole ring in one USB round-trip** (the firmware's `mifare results show all`) instead of looping `--index`: each result is rebuilt into the same canonical dump `--last` produces. With `--out-dir DIR` it writes one `mifare-<uid>-seq<N>.json` per result into `DIR`; otherwise it prints a summary table (or a JSON array with `--json`).
+
+That closes the loop the plan asks for in task 4.6: a card read in the field gets the **same honest report** as one read with the PC attached, because the gap list survives the round-trip.
 
 ---
 
@@ -219,18 +265,28 @@ bombercat tags mifare write-text "carnet: 12345" --sector 1 -k card.keys  # enco
 | Option | Description |
 |---|---|
 | `--keys FILE` | Key dictionary (`.keys`/`.dic`/`.md`), repeatable. Defaults to the bundled dictionary (2477 known keys); passing `--keys` **replaces** the bundled one — include it explicitly alongside your own file if you want both. |
+| `--dict NAMES` | Named key families to add **on top** of the base dictionary, comma-separated and repeatable (e.g. `--dict mad,transport`). Known: `transport`, `mad`, `ndef`, `locks`, or `all`. Their higher-probability keys are tried before the base dictionary; MAD keys are tried first on the MAD sectors (0/16). See `--list-dicts`. |
+| `--dict-file FILE` | Extra `.dic`/`.keys` file to add as candidates (repeatable), at the lowest/generic priority. Unlike `--keys`, this **adds** to the base dictionary instead of replacing it. |
+| `--list-dicts` | List the registered named key families and exit (no device needed). |
+| `--uid-derived NAMES` | Also try keys derived from the card UID by a **public** diversification scheme, comma-separated and repeatable. Known: `mizip` (MiZip / MIFARE Mini), or `all`. Off by default; needs the UID (read from block 0). Secret-key (AES/HMAC) schemes are out of scope and refuse. See `--list-uid-schemes`. |
+| `--uid-max N` | Cap UID-derived candidates tried per sector (`0` = no cap). Bounds the extra authentications over the slow I²C link. |
+| `--list-uid-schemes` | List the registered UID-derived key schemes and exit (no device needed). |
 | `--sectors N` | Number of sectors to check (default `16` = 1K). Max `32`; 4K's 16-block sectors (32–39) aren't supported yet. |
 | `--key-type A\|B\|both` | Which key slot(s) to try (default `both`). |
+| `--mode auto\|device\|host` | Where the sweep runs. `auto` (default) uses the **device's own sweep** when both sides can try the same candidates (an explicit `--keys` list of ≤ 64 keys) and the host-driven sweep otherwise; `device` forces the device sweep (one round-trip, the firmware's embedded dictionary + key-store); `host` forces the host sweep (the full bundled dictionary, one USB round-trip per candidate). See [On-device sweep](#tags-mifare-check-on-device). |
 | `--json` | Emit one JSON object on stdout instead of the table. |
 | `--out FILE` | Write the recovered keys as a keyfile (one 12-hex key per line, mfoc/proxmark-compatible). |
-| `-o, --output-keys FILE` | Write the recovered keys as one `sector:keyA:keyB` line per sector — the format [`mifare sector --keys-file`](#tags-mifare), [`mifare dump -k`](#tags-mifare-dump), [`mifare code -k`](#tags-mifare-code) and [`mifare write-text -k`](#tags-mifare-write-text) all read. A key type not recovered is left blank. |
+| `-o, --output-keys FILE` | Write the recovered keys as one `sector:keyA:keyB` line per sector — the format [`mifare sector --keys-file`](#tags-mifare), [`mifare dump -k`](#tags-mifare-dump), [`mifare analyze -k`](#tags-mifare-analyze), [`mifare code -k`](#tags-mifare-code) and [`mifare write-text -k`](#tags-mifare-write-text) all read. A key type not recovered is left blank. |
 | `--force` | Overwrite `--out`/`--output-keys` if it already exists. |
 | `-t, --timeout SEC` | Seconds to wait for a card tap if none is selected yet (default `5`). |
 
 ```sh
 bombercat tags mifare check
 bombercat tags mifare check --sectors 16 --key-type A --out recovered.keys
-bombercat tags mifare check -o card.keys           # sector:keyA:keyB file for sector/dump/code/write-text
+bombercat tags mifare check -o card.keys           # sector:keyA:keyB file for sector/dump/analyze/code/write-text
+bombercat tags mifare check --dict mad,transport   # add named families on top of the base dictionary
+bombercat tags mifare check --uid-derived mizip    # + try public UID-derived keys (MiZip/MIFARE Mini)
+bombercat tags mifare check --list-dicts           # inspect the named families, no device needed
 bombercat tags mifare check --keys mine.dic --json
 ```
 
@@ -252,9 +308,51 @@ A cell with no key in the dictionary shows `[unknown]` instead. `--json` emits o
 
 Known keys are tried first on later sectors — real cards commonly reuse the same key across sectors, so once one is recovered the sweep tries it before the rest of the dictionary. A progress bar tracks sectors completed; **Ctrl-C prints whatever was recovered so far** instead of losing it. Exit code is `0` only if every requested `(sector, key type)` was recovered — `1` if anything came back `unknown` or the sweep was interrupted.
 
+**Named dictionaries (`--dict`) and UID-derived keys (`--uid-derived`).** Both only add *more known/public keys* to the candidate pool — they never break Crypto-1. `--dict` layers registered families (MAD, transport, NDEF, lock-vendor defaults) ahead of the base dictionary, ordered by probability, with sector-biased families (MAD → sectors 0/16) tried first where they belong; add your own with `--dict-file <file>`. `--uid-derived` recomputes the keys a **public** diversification algorithm fully specifies for the card's UID (currently `mizip`, ported verbatim from proxmark3's public MiZip calculator) and injects them right after the reuse candidates. Schemes that would need a secret master key (AES/HMAC) are registered only so the CLI can name the boundary and **refuse** — the master key is never guessed, and `all` never sweeps a secret scheme. Because both feed the same known-first-then-early-cut pipeline, turning them on is cheap: on a card that reuses keys, the extra candidates are only ever paid for on the sectors no reuse or default opened (see the performance note below).
+
+Per-sector candidate order is: **confirmed keys (reuse) → UID-derived → named families → base dictionary → `--dict-file`**, de-duplicated. With no `--dict`/`--dict-file`/`--uid-derived`, the sweep is byte-for-byte the pre-Fase-2 behaviour.
+
 **Trailer-read key-B recovery.** When the dictionary opens a sector's key A but not its key B, `check` then reads that sector's trailer with key A. On cards whose access bits leave key B *readable with key A* (the common transport/default configuration — NXP MF1S50yyX Table 8, trailer configs `000`/`001`), key B is stored in the trailer in cleartext and comes back for free — reported as `sector N key B recovered via trailer read` and folded into the table, `--json`, `--out` and `-o`/`--output-keys` output like any dictionary hit. This is **not** the Crypto-1 *nested* attack: the onboard PN7150 performs Crypto-1 inside the chip and never surfaces an encrypted nonce, so no host-side cryptographic recovery is possible on this hardware. It is a plain authenticated read of a key the card is configured to hand over. Key A itself never reads back under any access condition, so only key B is recoverable this way.
 
 Worst case (a card using no known key) means trying the full dictionary against every sector/key-type — with the bundled 2477-key list and `both` key types over 16 sectors that's tens of thousands of auth round-trips, which can take minutes; the progress bar and Ctrl-C partial results make that tolerable for a one-off check.
+
+<a id="tags-mifare-check-on-device"></a>
+**On-device sweep (`--mode`).** The MifareClassic firmware can run the dictionary sweep **itself**: one `mifare check` command returns the consolidated result (a `:mifare_check_sN <keyA|-> <keyB|->` line per sector plus its own counters) instead of one `mifare auth` round-trip per candidate key. The number of authentications against the card is the same — what disappears is the USB round-trip and the host-side parse of every single key.
+
+| Mode | Who sweeps | Candidate universe |
+|---|---|---|
+| `auto` (default) | the device **only** when both sides can try the same candidates — an explicit `--keys` list of ≤ 64 keys — otherwise the host | identical to what the host would have tried |
+| `device` | the device, always | the firmware's embedded dictionary (32 keys) + the keys stored in the device (`mifare keys`), or the explicit `--keys` list |
+| `host` | the host | the full bundled dictionary (2477 keys) + `--dict` families + `--uid-derived` schemes |
+
+The default keeps the host sweep on purpose: the device's table is smaller, and silently narrowing the coverage would turn a key the host recovers into a false `unknown`. `auto` therefore only moves the sweep to the device when the candidate set is provably the same on both sides. `--mode device` is the field mode: the device sweeps with the keys **you** curated into it (`bombercat tags mifare keys add …`, persisted in the board's flash), which is also what the standalone, PC-less flow uses.
+
+```sh
+bombercat tags mifare check --keys mine.dic          # auto: the device sweeps (same candidates)
+bombercat tags mifare check --mode device             # the device's own dictionary + key-store
+bombercat tags mifare check --mode host --dict all    # the host sweeps the full dictionary
+```
+
+A firmware without the on-device sweep (an older build) is detected and the host-driven sweep takes over automatically in `auto` mode; `--mode device` fails loudly instead. Options the device cannot express — `--dict`, `--dict-file`, `--uid-derived` — are refused in `device` mode with a pointer to `--mode host`. The device always sweeps Key A **and** Key B, so `--key-type` only filters the *report* there, and the counters shown are the device's own.
+
+**When the board is busy or gone.** Two things can happen mid-sweep, and the CLI handles both:
+
+- **The board answers `ping` but not `info`** — it is running a long operation (the firmware's own auto-probe sweep blocks its REPL for as long as the card needs — ~11 s on a 1K card with default keys). The CLI waits for the board instead of concluding that a different firmware is flashed, and it never offers to flash a board that is merely busy.
+- **The board disappears** (it rebooted: a reboot re-enumerates the USB CDC and kills the open port). The sweep is idempotent, so the CLI re-opens the port, waits for the board to come back and runs the sweep again. If the board does not come back, the error says so plainly instead of surfacing a raw serial error.
+
+The tap prompt is also honest about what the board is waiting for: while the firmware waits for the card to **leave the field** (its removal probe), tapping does nothing — the card has to go away for a moment. The board reports that state, and the CLI says so.
+
+**Performance note.** The dominant cost is any *unknown* sector, which must sweep the whole candidate pool once. Everything else opens early: a confirmed key is tried first on the remaining sectors (reuse), and the search cuts as soon as a sector's key types are found. This is why `--dict`/`--uid-derived` stay cheap even though they enlarge the pool — the added candidates are only ever fully paid for on sectors that nothing else opened. On the representative 1K test card (key-type A, one private-key sector), the auth count moves from **2514** (baseline) to **2525** with `--dict all` and **2527** with `--dict all --uid-derived mizip` — a naive per-sector sweep of the same enlarged pool would be ≈ 39 000. This is pinned as a regression test (`tests/test_mifare_phase5.py`).
+
+**Where the time goes (measured on the board).** The board reports its own wall-clock split in the sweep's stat line, so the two sweep modes can be compared without a stopwatch. On the reference 1K card (79 authentications, 32/32 recovered):
+
+| | host | on-device |
+|---|---|---|
+| per authentication | 16 ms | 16 ms |
+| per re-select | 78 ms (65 ms reader re-arm + 14 ms re-detection) | 78 ms |
+| total sweep | 7.4 s (one USB round-trip per key) | **0.0 s** |
+
+The on-device sweep issues the *same* authentications, so it was never slower per key — but the firmware **already sweeps the card when it detects it** (the on-detection auto-probe), so `mifare check` used to sweep the same card a second time. It now **answers from that sweep** (`cached=1` in the stat line, "the device reused its own sweep" in the report): the same result, zero extra authentications. `mifare check --fresh` forces a re-sweep, and an explicit `--keys` always sweeps (a different dictionary).
 
 ---
 
@@ -267,8 +365,13 @@ Feed it a keyfile produced by [`mifare check --out`](#tags-mifare-check) (or han
 
 | Option | Description |
 |---|---|
-| `-k, --keys-file FILE` | **Required.** `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. |
+| `-k, --keys-file FILE` | `sector:keyA:keyB` file (see `mifare check --out`). A sector missing, or blank for both keys, dumps as a gap. **Required for the host-driven dump** (`--mode host`, and `--mode auto` when a keyfile is given); not needed when the device dumps with the keys its own sweep recovered. |
+| `--mode auto\|device\|host` | Where the dump runs. `auto` (default) uses the **device's own dump** when no `--keys-file` is given — the board reads the card with the keys its sweep recovered, in **one round-trip** — and the host-driven dump otherwise; `device` forces the device dump; `host` forces the host-driven dump (one USB round-trip per sector). See [On-device dump](#tags-mifare-dump-on-device). |
 | `--sectors N` | Number of sectors to dump (default `16` = 1K). Max `32` (2K); 4K's 16-block sectors (32-39) aren't supported yet. |
+| `--last` | Read **no card**: fetch the result the board stored while it worked on its own (standalone mode) and rebuild the canonical dump from it, gaps included. `--index N` picks which stored result (0 = the newest). See [the results the board keeps](#tags-mifare). |
+| `--index N` | Which stored result `--last` fetches (0 = the newest). Ignored without `--last`. |
+| `--all` | With `--last`, fetch **every** stored result in one round-trip (the firmware's `mifare results show all`) instead of a single `--index`. Pair with `--out-dir` to write one JSON per result; otherwise a summary table is printed (or a JSON array with `--json`). Incompatible with `--out`/`--mfd`/`--eml` (single-file outputs). |
+| `--out-dir DIR` | With `--last --all`, the directory to write one canonical JSON per stored result into (created if needed), named `mifare-<uid>-seq<N>.json`. |
 | `--out FILE` | Write the dump as canonical JSON — see format below. |
 | `--mfd FILE` | Write a raw binary dump (1024 bytes for 1K), Proxmark/mfoc `hf mf restore`-compatible. Gaps are filled with zeros. |
 | `--eml FILE` | Write a hex-per-line dump (32 chars/line), Proxmark `hf mf eload`-compatible. Gaps are filled with zeros. |
@@ -282,6 +385,9 @@ bombercat tags mifare dump -k recovered.keys --out card.json
 bombercat tags mifare dump -k recovered.keys --out card.json --mfd card.mfd --eml card.eml
 bombercat tags mifare dump -k recovered.keys --sectors 32 --json
 bombercat tags mifare dump -k recovered.keys --decode
+bombercat tags mifare dump --mode device --out card.json     # the board reads the card itself
+bombercat tags mifare dump --last --out card.json            # fetch the result the board stored on its own
+bombercat tags mifare dump --last --all --out-dir dumps      # fetch every stored result, one JSON each
 ```
 
 ```
@@ -345,6 +451,97 @@ Key A never reads back from the card (it's always zeros in the raw trailer), so 
 **`--mfd`/`--eml` are not canonical** — they can't tell "not read" from real zeros and can't carry the recovered keys, so a gap is silently zero-filled in both. Prefer `--out` when you need to know what was actually read, or to round-trip into [`mifare restore`](#tags-mifare-restore).
 
 Exit code is `0` only if every requested sector was read and the run wasn't interrupted — `1` for any gap or a Ctrl-C partial, in both table and `--json` mode (same convention as `check`).
+
+<a id="tags-mifare-dump-on-device"></a>
+**On-device dump (`--mode`).** The MifareClassic firmware can read the card and dump it **itself**: one `mifare dump` command returns every sector (`a :mifare_dump_sN <hex128|-> <A|B|-> [reason]` line per sector, plus the counters and the block 0 it read) instead of one `mifare sector` USB round-trip per sector. The board reads each sector with the key **its own sweep** recovered, and substitutes that key into the trailer exactly as the host-driven dump does — so both dumps carry the same bytes.
+
+| mode | when | keys used |
+|---|---|---|
+| `auto` (default) | the device, when no `--keys-file` is given | the keys the device's sweep recovered |
+| `auto` | the host, when a `--keys-file` is given | the keyfile |
+| `device` | the device, always | the keys the device's sweep recovered |
+| `host` | the host, always | the keyfile |
+
+The default splits on the keyfile on purpose: the device's key set is the one **its** sweep found, and a keyfile may hold keys that open sectors the device's sweep never opened — narrowing that silently would turn a readable sector into a false gap. With no keyfile there is nothing to narrow, so the device does the whole job in one round-trip. A firmware without `mifare dump` falls back to the host-driven dump in `auto` mode (with a note) and fails loudly in `device` mode.
+
+```sh
+bombercat tags mifare dump --mode device --out card.json   # the board reads the card
+bombercat tags mifare dump --mode host -k card.keys --out card.json
+```
+
+---
+
+<a id="tags-mifare-analyze"></a>
+### `tags mifare analyze`
+
+> Turn a [`mifare dump`](#tags-mifare-dump) JSON into an interpretable security report. **100% offline** — no card, no board, no firmware: it only reads what a dump already holds and explains it. The report sibling of `dump`/`restore`.
+
+`analyze` never breaks Crypto-1 and never guesses a key. It reads a canonical `mifare dump --out` file and reports: the **MAD** (which application owns each sector, sector 0 plus MAD2 in sector 16), **value blocks** (the ±value/complement/address layout, told apart from data), **weak keys** (which sectors opened with a default/known key vs. a custom one), **insecure access bits** (readable key B, unprotected data blocks, bits that fail their own inverse), and — always — the **gaps**: sectors that were never opened, declared as not evaluable rather than assumed secure. Use it to justify migrating off MIFARE Classic.
+
+| Option | Description |
+|---|---|
+| `DUMP_FILE` | **Required (positional).** A canonical `mifare dump --out` JSON to analyze. |
+| `-k, --keys-file FILE` | A `sector:keyA:keyB` file (from [`mifare check --output-keys`](#tags-mifare-check)). When given it is **authoritative** for which keys were recovered — it tells a genuine all-zero key apart from a sector whose key was never found. |
+| `--dict NAMES` | Named key families counted as *known/weak* when classifying keys, comma-separated and repeatable. Same families as [`mifare check --dict`](#tags-mifare-check) (`transport`, `mad`, `ndef`, `locks`, or `all`) — a key that is a public family key is a weakness, not a custom key. |
+| `--dict-file FILE` | Extra key dictionary file counted as *known/weak* (repeatable). The bundled default dictionary is always included. |
+| `--json` | Emit the full report as JSON on stdout instead of the tables. |
+
+```sh
+bombercat tags mifare analyze card.json                       # offline report from a dump
+bombercat tags mifare analyze card.json -k recovered.keys     # classify recovered keys precisely
+bombercat tags mifare analyze card.json --dict locks --json   # count lock-vendor keys as weak, machine-readable
+```
+
+```
+ℹ MIFARE Classic dump analysis — uid DECAFBAD (1K)
+   sectors            15 analyzed / 16 total
+
+MAD (application directory)
+  crc                12  (CRC ok)
+  sector 1           AID 0004
+  sector 4           AID 1234
+
+Sectors
+┏━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━┓
+┃ S ┃ Opened ┃ Key A                 ┃ Key B                 ┃ Notes                ┃
+┡━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━┩
+│ 0 │ A weak │ A0A1A2A3A4A5 default  │ …           default   │ MAD1 directory       │
+│ 4 │ A weak │ FFFFFFFFFFFF default  │ …           default   │ value block @16 = 1000 │
+└───┴────────┴───────────────────────┴───────────────────────┴──────────────────────┘
+
+Gaps (not evaluable)
+  sector 15          not present in dump (never read)
+⚠ gaps were never opened — no security claim is made about them
+
+Summary
+  weak-key sectors   0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14
+  custom-key sectors none
+  gap sectors        15
+```
+
+`--keys-file` makes the classification precise: without it, keys come from the dump's trailer bytes, where the all-zero read-back a card gives for a hidden key is treated as "not recovered". A sector that never opened is always listed under **Gaps** and never contributes a security claim — the report cannot conclude a sector is "secure" just because it could not be read. `analyze` exits `0` unless the dump file itself can't be read (it's a report tool, not a pass/fail verdict).
+
+**`--json`** emits the full report — `uid`, `size`, `mad`/`mad2`, a per-sector array (`key_a`/`key_a_class`, `value_blocks`, `access.issues`, …), a `gaps` list, and a `summary` (weak/custom/insecure/gap sector lists, value-block count) — with a stable schema for downstream tooling.
+
+---
+
+<a id="tags-mifare-workflow"></a>
+### End-to-end workflow: `check` → `dump` → `analyze`
+
+The three commands chain through two stable file contracts — the `sector:keyA:keyB` keyfile and the canonical dump JSON — so a full "recover keys, extract, report" pass is:
+
+```sh
+# 1. recover keys and write the per-sector keyfile
+bombercat tags mifare check -o card.keys
+
+# 2. dump the whole card using those keys, to canonical JSON
+bombercat tags mifare dump -k card.keys --out card.json
+
+# 3. report on the dump, offline, with the keyfile for precise classification
+bombercat tags mifare analyze card.json -k card.keys
+```
+
+Steps 1–2 need the **MifareClassic** firmware and the card on the reader; step 3 needs neither — it runs anywhere from the saved `card.json`. A sector `check` cannot open stays blank in `card.keys`, becomes a gap in `card.json`, and is reported as *not evaluable* by `analyze` — honest end to end, never filled in or assumed secure. `check --out card.dic` additionally writes a flat mfoc/proxmark keyfile if you want to feed the keys to other tooling.
 
 ---
 
@@ -422,6 +619,40 @@ worst case bricking it). Continue?  [y/N]:
 ```
 
 A sector's dump entry with an all-zero key A/B (what a card reads back when the real key wasn't substituted in — see [`mifare dump`](#tags-mifare-dump)) has no usable write key and is reported as `no write key in dump trailer`. A trailer's access bits that fail their own inverse check are refused with `trailer not written: invalid access bits (would risk locking the sector)`, leaving the card's existing trailer alone; a *valid* but self-locking layout (all three write conditions permanently closed) is still written, with a `warning` field (and a printed `⚠` line in table mode) since it may be intentional as part of a faithful clone. Ctrl-C stops the run and reports whatever was written so far. Exit code is `0` only if every targeted sector wrote clean and the run wasn't interrupted — `1` for any failure or a Ctrl-C partial (same convention as `check`/`dump`).
+
+---
+
+<a id="tags-mifare-clone-uid"></a>
+### `tags mifare clone-uid`
+
+> Verify whether **this hardware** (PN7150) can rewrite a Mifare Classic UID — block 0 — and, when asked, write a UID and read it back to confirm a real 1:1 clone. Plan Fase 6; full hardware investigation in [`docs/MIFARE_IMPROVEMENTS_Phase6.md`](../MIFARE_IMPROVEMENTS_Phase6.md).
+
+> ⚠️ **Authorized use only.** Only probe/clone cards you own or have explicit permission to test.
+
+It authenticates sector 0, reads block 0 and runs a **non-destructive writability probe** (writes the current block 0 back unchanged) to classify the card:
+
+- **gen2 / CUID (direct-write)** — block 0 is writable with a normal auth + write. The PN7150 does exactly this, so the UID **can** be rewritten. Pass `--uid` (or `--from-dump`) and the command writes it, then reads block 0 back and compares byte-for-byte.
+- **genuine / locked** — block 0 is factory-OTP. Rewriting the UID would need the **gen1a backdoor** (a 7-bit CRC-less unlock frame), which the PN7150's NCI reader stack **cannot emit** — reported, never attempted.
+
+With no `--uid`/`--from-dump` the run is **read-only** (the card is not changed).
+
+| Option | Meaning |
+|--------|---------|
+| `--uid HEX8` | 4-byte UID to write, then verify by read-back. Omit for a read-only capability probe. |
+| `--from-dump FILE` | Take the source UID from a canonical [`mifare dump --out`](#tags-mifare-dump) JSON's block 0 (mutually exclusive with `--uid`). |
+| `--key HEX12` / `--key-type A\|B` | Key to authenticate sector 0 (default `FFFFFFFFFFFF`, key A). |
+| `-k, --keys-file FILE` | Take sector 0's key from a `sector:keyA:keyB` file instead. |
+| `--sak HH` / `--atqa HHHH` | Override SAK/ATQA in the written block 0 (default: keep the card's current values). The BCC is always recomputed for the new UID. |
+| `--yes` | Skip the confirmation before a UID write (scripted use). |
+| `--json` | Emit the verdict as JSON. |
+
+```bash
+bombercat tags mifare clone-uid                              # read-only: is the UID rewritable here?
+bombercat tags mifare clone-uid --uid A1B2C3D4 --yes         # write + verify a 1:1 clone (gen2/CUID only)
+bombercat tags mifare clone-uid --from-dump source.json --yes
+```
+
+Exit code is `0` when a UID rewrite works here (probe shows block 0 writable, or a write verified by read-back) and `1` otherwise (not writable, not verified, or an auth/read/write error) — so a script can gate on "is a 1:1 UID clone possible on this card?".
 
 ---
 

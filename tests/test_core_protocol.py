@@ -12,7 +12,7 @@ import serial
 
 from conftest import FakeSerial
 from modules.core import bombercat as core
-from modules.core.bombercat import DeviceError, DeviceLink, Response
+from modules.core.bombercat import DeviceError, DeviceLink, Response, link_lost
 
 
 @pytest.fixture(autouse=True)
@@ -111,6 +111,21 @@ def test_command_drops_stale_input_before_writing(linked):
     assert link.ping()
 
 
+def test_the_boot_banner_is_not_taken_for_a_reply(linked):
+    """The readiness line looks like a reply but never is one.
+
+    A board that reboots re-announces itself ("+OK bombercat ready") while
+    the host is already waiting for the answer to its command — taking that
+    for the reply silently loses the real one.
+    """
+    link, ser = linked({"info": [":fw 1.2.0.0", "+OK"]})
+    ser.feed("+OK bombercat ready")
+    r = link.command("info")
+
+    assert r.ok
+    assert r.data["fw"] == "1.2.0.0"
+
+
 # ── Failure modes ────────────────────────────────────────────────────────────
 
 
@@ -139,8 +154,19 @@ def test_serial_error_while_sending_is_wrapped(linked):
 
 def test_serial_error_while_reading_is_wrapped(linked):
     link, _ = linked(read_error=serial.SerialException("unplugged"))
-    with pytest.raises(DeviceError, match="serial error reading"):
+    with pytest.raises(DeviceError, match="disconnected"):
         link.command("ping")
+
+
+def test_a_read_failure_names_the_cause_and_the_recovery(linked):
+    # The board rebooting mid-command must read as "it went away", not as a
+    # bare serial error: the caller can re-open the port and retry.
+    link, _ = linked(read_error=serial.SerialException("unplugged"))
+    with pytest.raises(DeviceError) as exc:
+        link.command("ping")
+    assert "unplugged" in str(exc.value)
+    assert "re-plug" in str(exc.value)
+    assert link_lost(str(exc.value))
 
 
 # ── ping / lifecycle ─────────────────────────────────────────────────────────

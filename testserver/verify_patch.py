@@ -23,16 +23,16 @@ So we join two clients to one session, relay a frame, and look at what the
 receiving peer's first recv() actually returns and how long the rest took.
 
 Usage:
-    python tools/testserver/verify_patch.py [host] [port] [-n rounds] [--json]
+    python testserver/verify_patch.py [host] [port] [-n rounds] [--json]
 
-`--json` swaps the plain-text report for one JSON object per line, which is what
-`bombercat testserver verify` consumes to draw its Rich report. The measurement
-and the wording of every verdict live here either way; the CLI only styles them.
+`--json` swaps the plain-text report for one JSON object per line, for tools
+that want to render or record the result themselves. The measurement and the
+wording of every verdict live here either way.
 
 Exit codes: 0 patch active, 1 patch missing, 2 could not measure.
 
 Needs the classic protobuf runtime (protobuf==3.20.3), same as relay_smoketest;
-`bombercat testserver verify` bootstraps it for you.
+see testserver/README.md for the one-time venv.
 """
 import argparse
 import json
@@ -52,15 +52,13 @@ sys.path.insert(0, os.path.join(_REPO, "server"))
 try:
     from plugins import c2c_pb2, c2s_pb2  # noqa: E402
 except ImportError as e:
-    # `bombercat testserver verify` runs this through preflight.check_server_sources,
-    # which explains and offers to fetch the clone; standalone execution (the
-    # usage this file documents at the top) has no such guard.
+    # The frames are built with the clone's own protobuf modules, so without the
+    # clone there is nothing to measure with.
     sys.exit(
         f"{e}\n\n"
         "The nfcgate-server sources are missing (expected them at "
         f"{os.path.join(_REPO, 'server', 'plugins')}).\n"
-        "Fetch them once with: testserver/fetch_server.sh\n"
-        "(or run this through `bombercat testserver verify`, which does that for you)"
+        "Fetch them once with: testserver/fetch_server.sh"
     )
 
 # A frame arriving whole in the first recv() means one TCP segment: coalesced
@@ -96,7 +94,7 @@ STALL_HIDDEN = (
     "relays per transaction."
 )
 SPLIT_FIX = [
-    "Apply tools/testserver/latency-fixes.patch on the server "
+    "Apply testserver/latency-fixes.patch on the server "
     "(docs/SERVIDOR_DEDICADO_NFCGATE.md section 2.2).",
     "With Docker you must REBUILD the image and recreate the container — a "
     "restart reuses the server.py baked in at build time.",
@@ -207,9 +205,9 @@ def relay_once(src, dst, blob, session):
 class Reporter:
     """Where the run's progress goes: JSON lines for the CLI, or plain text.
 
-    Text mode is what you get running this script by hand; JSON mode is what
-    `bombercat testserver verify` reads line by line so it can draw a live
-    progress bar and Rich panels without re-deriving any of the wording.
+    Text mode is what you get running this script by hand; JSON mode streams
+    one event per line so a caller can draw live progress without re-deriving
+    any of the wording.
     """
 
     WIDTH = 74

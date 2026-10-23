@@ -2,9 +2,11 @@
 
 # Electronic Cats
 # `bombercat relay config|run|stop|status|monitor` — configure and drive the
-# NFCGate relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6).
+# NFCGate relay over the control protocol (docs/NFCGATE_PLAN.md Fase 6) — and
+# `bombercat relay server run`, a local nfcgate-server for users without a VPS.
 # Distributed as-is; no warranty is given.
 
+import errno
 import time
 from typing import List, Optional, Tuple
 
@@ -17,12 +19,16 @@ from ..utils.cli_options import target_options
 from ..utils.detection_cli import device_session
 from ..utils.output import (
     console,
+    fmt_command,
     print_error,
+    print_error_panel,
+    print_example,
     print_info,
     print_success,
     print_warning,
     safe_print,
 )
+from .server import DEFAULT_PORT, RelayServer, lan_address
 
 
 def _device_session(port: Optional[str], device_id: Optional[int] = None):
@@ -259,6 +265,7 @@ def run_cmd(port, device_id):
             " — the bring-up is slow or stuck (the device is still responsive).\n"
             "  • keep watching:  bombercat status   /   bombercat relay monitor\n"
             "  • is the nfcgate-server listening?  (nc -vz <host> <port>)\n"
+            "    no server of your own? run one here:  bombercat relay server run\n"
             "  • is the PN7150 responding?  watch:  bombercat relay monitor\n"
             "  • confirm host/port with:  bombercat relay config show"
         )
@@ -341,6 +348,88 @@ def monitor_cmd(port, device_id):
                 print_warning(f"could not restore log level: {e}")
 
 
+# ── server: a local nfcgate-server ────────────────────────────────────────────
+# The relay peers (BomberCats, the NFCGate app) meet at an nfcgate-server. Users
+# without a VPS run one here: it is embedded (modules/nfcgate/server.py) and
+# needs only the standard library, so every package can offer it.
+
+
+@click.group("server")
+def server():
+    """Run a local nfcgate-server for the relay (no VPS needed)."""
+
+
+def _explain_bind_error(e: OSError, port: int) -> None:
+    title = "Cannot start the relay server"
+    if e.errno == errno.EADDRINUSE:
+        print_error_panel(
+            title,
+            f"Port {port} is already in use by another program.",
+            "Another nfcgate-server (or anything else) is listening on it.",
+            fix=[
+                f"{fmt_command(f'bombercat relay server run -p {port + 1}')}\n"
+                "     listen on a free port instead — and point the peers at it",
+                f"{fmt_command(f'ss -ltnp | grep {port}')}\n"
+                "     or find what holds the port and stop it",
+            ],
+        )
+    elif e.errno == errno.EACCES:
+        print_error_panel(
+            title,
+            f"Not allowed to listen on port {port}.",
+            "Ports below 1024 are reserved for privileged processes.",
+            fix=[
+                f"{fmt_command(f'bombercat relay server run -p {DEFAULT_PORT}')}\n"
+                "     use an unprivileged port (>= 1024)",
+            ],
+        )
+    else:
+        print_error(f"could not listen on port {port}: {e}")
+
+
+@server.command("run")
+@click.option(
+    "-p",
+    "--port",
+    default=DEFAULT_PORT,
+    show_default=True,
+    type=click.IntRange(1, 65535),
+    help="TCP port to listen on (every interface).",
+)
+@click.option(
+    "-q",
+    "--quiet",
+    is_flag=True,
+    help="Don't print every relayed frame (shaves latency off each hop).",
+)
+def server_run(port, quiet):
+    """Run an nfcgate-server here until Ctrl-C; peers on your LAN connect to it."""
+    try:
+        srv = RelayServer(
+            ("0.0.0.0", port),
+            log_frames=not quiet,
+            # soft_wrap: an APDU's hex stays on one line, even piped to a file.
+            out=lambda line: console.print(
+                line, markup=False, highlight=False, soft_wrap=True
+            ),
+        )
+    except OSError as e:
+        _explain_bind_error(e, port)
+        raise SystemExit(1)
+
+    with srv:
+        print_success(f"nfcgate-server listening on port {port} — Ctrl-C to stop")
+        print_info("point both relay peers at this machine's LAN address, e.g.:")
+        print_example(
+            f"bombercat relay config nfcgate --server {lan_address()}:{port} "
+            "--session 1 --role reader"
+        )
+        try:
+            srv.serve_forever()
+        except KeyboardInterrupt:
+            console.print("\n[dim]server stopped[/dim]")
+
+
 # ── relay group ───────────────────────────────────────────────────────────────
 # The NFCGate relay commands, regrouped under `bombercat relay …` so the root
 # `status` can be repurposed to report the flashed firmware (docs/
@@ -353,7 +442,8 @@ def relay():
     """NFCGate relay: configure it, run it, and watch the APDU relay.
 
     Requires a board flashed with the NFCGate firmware — check with
-    `bombercat status`.
+    `bombercat status`. `relay server run` needs no board: it is the
+    nfcgate-server the peers connect to.
     """
 
 
@@ -362,3 +452,4 @@ relay.add_command(run_cmd)
 relay.add_command(stop_cmd)
 relay.add_command(status_cmd)
 relay.add_command(monitor_cmd)
+relay.add_command(server)

@@ -75,7 +75,6 @@ def test_header_warns_when_running_as_root(capsys, monkeypatch):
         "relay",
         "capture",
         "proto",
-        "testserver",
     ],
 )
 def test_every_command_is_registered(monkeypatch, name):
@@ -88,16 +87,16 @@ def test_every_command_is_registered(monkeypatch, name):
 
 
 def test_dev_commands_are_hidden_outside_a_checkout(monkeypatch):
-    """A packaged install has no gen_proto.sh / testserver/ to drive."""
+    """A packaged install has no gen_proto.sh to drive, but keeps the relay
+    server: it is embedded, not a dev tool."""
     monkeypatch.setattr(root, "_dev_checkout", lambda: False)
     monkeypatch.delitem(cli.commands, "proto", raising=False)
-    monkeypatch.delitem(cli.commands, "testserver", raising=False)
     monkeypatch.setattr(sys, "argv", ["bombercat", "--help"])
     with pytest.raises(SystemExit):
         main_cli()
 
     assert "proto" not in cli.commands
-    assert "testserver" not in cli.commands
+    assert "server" in cli.commands["relay"].commands
 
 
 def test_dev_checkout_follows_gen_proto_sh(monkeypatch, tmp_path):
@@ -121,7 +120,14 @@ def test_relay_group_holds_the_nfcgate_subcommands(monkeypatch):
         main_cli()
 
     relay = cli.commands["relay"]
-    assert set(relay.commands) == {"config", "run", "stop", "status", "monitor"}
+    assert set(relay.commands) == {
+        "config",
+        "run",
+        "stop",
+        "status",
+        "monitor",
+        "server",
+    }
 
 
 @pytest.mark.parametrize("name", ["config", "run", "stop", "monitor"])

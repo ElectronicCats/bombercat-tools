@@ -30,14 +30,29 @@ from .usb_connection import (
 # unterminated chunk — the loop keeps going with the next readline() call.
 _MAX_LINE_BYTES = 4096
 
+# The readiness line every BomberCat firmware prints once at boot
+# (BomberCatControl::begin() / SerialControl::begin()). It LOOKS like a
+# command reply ("+OK ..."), and it can land in the middle of a command's
+# answer — e.g. right after a reboot, when the board re-announces itself
+# while the host is already waiting for the reply to its command. It is never
+# the answer to a command, so it is skipped like log noise.
+_READY_BANNER = "+OK bombercat ready"
+
 
 @dataclass
 class Response:
-    """One command's reply. `data` holds the `:key value` lines by key."""
+    """One command's reply. `data` holds the `:key value` lines by key.
+
+    `data_lines` keeps those same lines (as `"key value"`) in arrival order,
+    for replies where one key repeats across records and the dict would
+    clobber it — e.g. `mifare results show all`, which concatenates several
+    dumps whose `:mifare_dump_sN` keys collide. Most callers only need `data`.
+    """
 
     ok: bool
     message: str = ""
     data: Dict[str, str] = field(default_factory=dict)
+    data_lines: List[str] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return self.ok
@@ -45,6 +60,39 @@ class Response:
 
 class DeviceError(Exception):
     """A device command failed or the link misbehaved (timeout, closed port)."""
+
+
+# Substrings the USB/serial layer uses when the PORT went away (the board
+# rebooted, was unplugged, or the kernel took the device back) rather than when
+# the device refused the command. pyserial's canonical wording is "device
+# reports readiness to read but returned no data (device disconnected or
+# multiple access on port?)".
+_LINK_LOST_MARKERS = (
+    "device disconnected",
+    "multiple access on port",
+    "device reports readiness to read",
+    "input/output error",
+    "no such file or directory",
+    "could not open port",
+    "port is closed",
+    "that is not open",  # pyserial: "use a port that is not open"
+    "unplugged",
+    "lost connection",
+)
+
+
+def link_lost(message: str) -> bool:
+    """True when an error says the USB link went away, not that the board
+    refused the command.
+
+    A BomberCat that reboots (or is unplugged) re-enumerates its CDC, and the
+    open file descriptor dies with it: the next read returns EOF and pyserial
+    raises "device reports readiness to read but returned no data". That is a
+    recoverable situation (re-open the port and retry), so callers need to tell
+    it apart from "the command was rejected".
+    """
+    low = (message or "").lower()
+    return any(marker in low for marker in _LINK_LOST_MARKERS)
 
 
 class DeviceLink:
@@ -90,6 +138,33 @@ class DeviceLink:
             self._ser.close()
             self._ser = None
 
+    def reopen(self, ready_timeout: float = 15.0) -> bool:
+        """Close and re-open the port, then wait for the board to answer.
+
+        The recovery path for a board that vanished mid-command: a reboot
+        re-enumerates the CDC, so the old file descriptor is dead and the link
+        has to be built again from scratch. A board that just rebooted needs a
+        moment to boot before its REPL answers, so this waits for the
+        handshake instead of assuming the port is live.
+
+        Returns True when the board answered `ping` again, False on timeout.
+        """
+        self.close()
+        deadline = time.monotonic() + ready_timeout
+        while True:
+            try:
+                self.open()
+            except (serial.SerialException, OSError):
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.5)
+                continue
+            if self.ping():
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.5)
+
     def __enter__(self) -> "DeviceLink":
         return self.open()
 
@@ -120,11 +195,15 @@ class DeviceLink:
             raise DeviceError(f"serial error sending {line!r}: {e}")
 
         data: Dict[str, str] = {}
+        data_lines: List[str] = []
         while time.monotonic() < deadline:
             try:
                 raw = self._ser.readline(_MAX_LINE_BYTES)
             except serial.SerialException as e:
-                raise DeviceError(f"serial error reading reply to {line!r}: {e}")
+                raise DeviceError(
+                    f"the device disconnected while answering {line!r} ({e}) — "
+                    "it rebooted or lost USB; re-plug it and retry"
+                )
             if not raw:
                 continue  # readline timeout tick; keep waiting until deadline
             text = raw.decode("ascii", "replace").strip("\r\n")
@@ -135,12 +214,15 @@ class DeviceLink:
             if marker == ":":
                 key, _, value = text[1:].partition(" ")
                 data[key] = value
+                data_lines.append(text[1:])
             elif marker == "+":  # +OK [message]
+                if text == _READY_BANNER:
+                    continue  # the boot banner, not this command's reply
                 _, _, msg = text.partition(" ")
-                return Response(ok=True, message=msg, data=data)
+                return Response(ok=True, message=msg, data=data, data_lines=data_lines)
             elif marker == "-":  # -ERR message
                 _, _, msg = text.partition(" ")
-                return Response(ok=False, message=msg, data=data)
+                return Response(ok=False, message=msg, data=data, data_lines=data_lines)
             # else: log noise, ignore
         raise DeviceError(f"timed out waiting for a reply to {line!r}")
 

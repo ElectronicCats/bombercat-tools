@@ -40,3 +40,5 @@ MK1*.json
 *.mfd
 *.eml
 *.dump
+# canonical dump output name used throughout the docs (fixtures are card_1k/4k.json)
+card.json

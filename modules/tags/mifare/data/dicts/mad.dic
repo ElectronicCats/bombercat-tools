@@ -1,0 +1,15 @@
+# mad.dic — MIFARE Application Directory keys (Fase 2, familia "mad")
+#
+# The MAD (sector 0, and sector 16 for MAD2 on 4K cards) is authenticated with
+# the public MAD key A defined by NXP AN10787 / MIFARE Application Directory.
+# In the registry this family is *sector-biased* to sectors 0 and 16, so these
+# keys are tried FIRST there (where they actually belong) before the rest of
+# the queue — see dicts.py.
+#
+# Provenance: NXP application note AN10787 "MIFARE Application Directory (MAD)",
+# public specification. Also present in the open default-key sets. Key values
+# are facts, not copyrightable. See dicts/README.md.
+#
+# Format: one 12-hex key per line; `#` comments and blanks ignored (load_keys).
+
+A0A1A2A3A4A5

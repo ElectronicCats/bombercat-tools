@@ -181,11 +181,20 @@ a terminal). Both boards are usually plugged into the same host — address each
 one by its ID with `-d/--device`. See the
 [end-to-end guide](docs/usage.md).
 
+No VPS running an `nfcgate-server`? Run one on this machine — it is embedded in
+the CLI, so there is nothing else to install (no Docker):
+
+```sh
+bombercat relay server run              # listens on :5566, prints the LAN address for --server
+```
+
+See [`relay server run`](docs/commands/relay.md#relay-server-run).
+
 ## Documentation
 
 | Page | What's in it |
 |---|---|
-| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`, `mifare *`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `emvy …` (`info`/`read`/`apdu`/`tag`/`mag`/`cardscan`/`emu *`/`nfcinfo`/`reboot`), `proto`, `testserver`, `completion`, and device selection with `-d`/`-p`. |
+| [Command reference](docs/reference.md) | Every command and subcommand: purpose, flags, examples, expected output. `device`, `status` (flashed firmware), `flash`, `relay …` (`config`/`run`/`stop`/`status`/`monitor`/`server run`), `identify`, `capture`, `tags …` (`read`/`watch`/`scan`/`info`, `mifare *`), `readers …` (`read`/`watch`/`scan`/`info`), `magspoof …` (`play`/`show`/`watch`/`info`, `nfc *`, `card *`), `emvy …` (`info`/`read`/`apdu`/`tag`/`mag`/`cardscan`/`emu *`/`nfcinfo`/`reboot`), `proto`, `completion`, and device selection with `-d`/`-p`. |
 | [End-to-end usage](docs/usage.md) | The real workflow on hardware — two BomberCats via `nfcgate-server` (Path A) and against the NFCGate Android app (Path B) — config → run → monitor → capture — plus the standalone `tags`/`readers` workflows on DetectTags/DetectReaders. |
 | [Control protocol](docs/protocol.md) | The line-based `SerialControl` protocol (`:key value`, `+OK`, `-ERR`), the `DeviceLink` client, and how ports are discovered and numbered. For developers. |
 | [Capture / Wireshark](docs/commands/capture.md) | How `capture` taps a copy of every relayed APDU, the classic-pcap vs pcapng distinction, and the `DLT_ISO_14443` encapsulation. |
@@ -201,20 +210,20 @@ one by its ID with `-d/--device`. See the
 ## Dev tooling
 
 These wrap the reproducible build/test scripts (see docs/NFCGATE_PLAN.md Fases 1–5);
-full details in [`proto`](docs/commands/proto.md) and [`testserver`](docs/commands/testserver.md):
+full details in [`proto`](docs/commands/proto.md):
 
 ```sh
 bombercat proto gen                   # regenerate firmware/core/src/proto/*.pb.{c,h}
-bombercat testserver run [-p 5566]    # local nfcgate-server in Docker
-bombercat testserver smoke [host port]# relay smoke test (no RF)
 ```
 
-See [`testserver/README.md`](testserver/README.md) for the local server fixture.
+The Docker server fixture, the relay smoke test and the latency-patch verifier
+are scripts under [`testserver/`](testserver/README.md). Users get the server
+itself as `bombercat relay server run`.
 
 ## Tests (dev-only, no hardware)
 
 Unit tests — the CLI surface (every command, its output and its exit code) with
-the serial, Docker and Wireshark layers faked, so they run anywhere:
+the serial and Wireshark layers faked, so they run anywhere:
 
 ```sh
 pytest                          # the whole suite (tools/tests/test_*.py)
@@ -228,7 +237,7 @@ against a fake device or a live server:
 ```sh
 python3 tools/tests/serialctl_hosttest.py         # DeviceLink protocol parser (pty)
 python3 tools/tests/capture_hosttest.py           # pcap writer + ISO 14443 vs tshark
-tools/testserver/codec_hosttest/build_and_run.sh  # firmware codec vs live server
+testserver/codec_hosttest/build_and_run.sh        # firmware codec vs live server
 ```
 
 Both suites run on every push — see [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
@@ -242,7 +251,7 @@ behavior and relay scope — see [Current limitations](docs/limitations.md).
 
 ## Appendix: run the server on a dedicated VPS
 
-`bombercat testserver run` is for a **local, ephemeral** server. To keep a
+`bombercat relay server run` is for a **local, ephemeral** server. To keep a
 relay up **permanently** on a VPS or LAN box (Docker or systemd), verify the
 latency patch, and do day-2 ops — see [Deployment](docs/deployment.md).
 

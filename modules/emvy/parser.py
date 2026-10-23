@@ -17,7 +17,7 @@
 
 import json
 import re
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, Optional
 
 
 class EmvyError(Exception):

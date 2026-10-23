@@ -35,10 +35,7 @@ from .firmwares import (
     resolve_status_port,
 )
 from ..device.cli import device as _device
-from ..nfcgate.cli import (
-    relay as _relay,
-    status_cmd as _status,
-)
+from ..nfcgate.cli import relay as _relay
 from ..capture.cli import capture as _capture
 from ..emvy.cli import emvy as _emvy
 from ..firmware.cli import flash as _flash
@@ -46,7 +43,6 @@ from ..magspoof.cli import magspoof as _magspoof
 from ..proto.cli import proto as _proto
 from ..readers.cli import readers as _readers
 from ..tags.cli import tags as _tags
-from ..testserver.cli import testserver as _testserver
 from ..utils.cli_options import target_options
 from ..utils.system_cli import setup_env as _setup_env
 
@@ -572,10 +568,11 @@ def completion_install(shell):
 
 # ===================== Dev tooling gate =====================
 #
-# `proto` and `testserver` are wrappers around files that only exist in a
-# source checkout (gen_proto.sh, testserver/, firmware/). A packaged install
-# (.deb, .pkg, .exe) ships none of them, so registering the commands there
-# would only advertise two ways to fail. Set BOMBERCAT_DEV=1 to force them on.
+# `proto` wraps files that only exist in a source checkout (gen_proto.sh,
+# firmware/). A packaged install (.deb, .pkg, .exe) ships none of them, so
+# registering it there would only advertise a way to fail. Set BOMBERCAT_DEV=1
+# to force it on. The local nfcgate-server is not dev tooling: it lives under
+# `relay server`, embedded, in every install.
 
 
 def _dev_checkout() -> bool:
@@ -606,7 +603,6 @@ def main_cli() -> None:
     # Dev tooling under tools/ — only where the checkout it drives is present.
     if _dev_checkout():
         cli.add_command(_proto)
-        cli.add_command(_testserver)
 
     if platform.system() in ["Linux", "Darwin"]:
         cli.add_command(completion)

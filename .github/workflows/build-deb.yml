@@ -116,3 +116,21 @@ jobs:
             echo "::error::proto/testserver leaked into the packaged --help"
             exit 1
           fi
+
+      # `relay server run` es el nfcgate-server embebido (solo stdlib): el
+      # paquete instalado tiene que levantarlo y aceptar conexiones sin nada más.
+      - name: Local relay server starts
+        run: |
+          bombercat relay server run -p 5566 & server=$!
+          python3 -c "
+          import socket, time
+          for _ in range(50):
+              try:
+                  socket.create_connection(('127.0.0.1', 5566), 1).close()
+                  break
+              except OSError:
+                  time.sleep(0.2)
+          else:
+              raise SystemExit('::error::relay server never listened on :5566')
+          "
+          kill "$server"

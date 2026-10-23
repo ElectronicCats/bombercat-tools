@@ -493,7 +493,14 @@ def test_monitor_warns_on_a_real_loglevel_failure(runner, use_link):
 
 
 def test_relay_group_exposes_every_subcommand():
-    assert set(relay.commands) == {"config", "run", "stop", "status", "monitor"}
+    assert set(relay.commands) == {
+        "config",
+        "run",
+        "stop",
+        "status",
+        "monitor",
+        "server",
+    }
 
 
 def test_relay_status_runs_through_the_group(runner, use_link):

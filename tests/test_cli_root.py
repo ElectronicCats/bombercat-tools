@@ -121,7 +121,14 @@ def test_relay_group_holds_the_nfcgate_subcommands(monkeypatch):
         main_cli()
 
     relay = cli.commands["relay"]
-    assert set(relay.commands) == {"config", "run", "stop", "status", "monitor"}
+    assert set(relay.commands) == {
+        "config",
+        "run",
+        "stop",
+        "status",
+        "monitor",
+        "server",
+    }
 
 
 @pytest.mark.parametrize("name", ["config", "run", "stop", "monitor"])
